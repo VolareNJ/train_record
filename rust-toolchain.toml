@@ -1,0 +1,18 @@
+﻿# ============================================================
+# rust-toolchain.toml —— 项目工具链固定
+# ============================================================
+# 【教学说明】
+# 有了这个文件，进入本项目目录时：
+#   - `cargo fmt` 自动使用 nightly 的 rustfmt（支持大括号换行）
+#   - `cargo build/check/run` 自动使用 nightly 编译器
+#   - 不需要每次手动敲 `cargo +nightly`
+#
+# 但注意：nightly 编译器用于日常构建可能不稳定。
+# 我们的代码只需要 stable 就能编译，只是 rustfmt 需要 nightly。
+# 所以更保守的做法是：保持 stable 编译，格式化时手动 +nightly。
+# 如果你希望简单统一，就用这个文件；否则删掉它。
+# ============================================================
+[toolchain]
+channel = "nightly"
+# components = ["rustfmt"]   # 只需要 rustfmt 时取消注释
+profile = "minimal"

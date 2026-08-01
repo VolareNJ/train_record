@@ -1,0 +1,43 @@
+﻿# ============================================================
+# rustfmt.toml —— 项目级 rustfmt 配置
+# ============================================================
+# 【教学说明】
+# rustfmt 是 Rust 官方代码格式化工具（cargo fmt 会调用它）。
+# 本文件放在项目根目录，只对这个项目生效。
+# 注意：下面这些选项是 nightly 版的 rustfmt 才支持的，
+# 所以必须用 `cargo +nightly fmt` 而不是 `cargo fmt`。
+# ============================================================
+
+# 大括号换行（Allman 风格）：函数/结构体的左大括号放在新行
+# 例如：
+#   fn main()
+#   {
+#       ...
+#   }
+# 而不是：
+#   fn main() {
+#       ...
+#   }
+brace_style = "AlwaysNextLine"
+# 控制结构（if/for/while/match）的左大括号也换行
+control_brace_style = "AlwaysNextLine"
+
+# 导入语句按字母顺序排序（use 排序）
+reorder_imports = true
+# 多个 use 语句按 Crate 粒度合并
+imports_granularity = "Crate"
+
+# 数组/切片一行放不下时换行
+use_small_heuristics = "Default"
+
+# 行宽：超过此宽度自动折行
+max_width = 100
+
+# 每个缩进层级使用 4 个空格
+tab_spaces = 4
+
+# 匹配分支的竖线缩进风格
+match_block_trailing_comma = true
+
+# 允许 trailing comma 在匹配分支
+# 其它可选项：需要时可添加更多配置
