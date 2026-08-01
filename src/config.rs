@@ -48,20 +48,38 @@ impl AppConfig
     /// env::var 返回 String，为了类型一致这里也用 String。
     pub fn from_env() -> Self
     {
+        // 【函数式设计：依赖注入】
+        // 我们不直接读环境变量，而是把"读取动作"作为函数参数传下去。
+        // 好处：
+        //   1. from_reader 是纯函数，只根据参数算出结果，没有副作用
+        //   2. 测试时可以传入假读取器，不用动真实环境变量（因此无需 unsafe）
+        Self::from_reader(|name| std::env::var(name).ok())
+    }
+
+    /// 纯函数版构造函数：接受一个"按名字读配置值"的函数
+    ///
+    /// 【教学说明】
+    /// - Fn(&str) -> Option<String> 是函数类型：传入名字，返回 Option 值
+    /// - 闭包 |name| std::env::var(name).ok() 把 Result 转成 Option
+    /// - .ok() 是 Result 的适配器：Ok(v) -> Some(v)，Err(_) -> None
+    /// - 这样 from_reader 与"真实环境变量"解耦，测试无需 unsafe
+    fn from_reader<F>(read: F) -> Self
+    where
+        F: Fn(&str) -> Option<String>,
+    {
         // 端口：默认 8080。注意 parse() 把 String 转成 u16
-        let port = std::env::var("PORT")
-            .unwrap_or_else(|_| "8080".to_string())
+        let port = read("PORT")
+            .unwrap_or_else(|| "8080".to_string())
             .parse()
             .expect("PORT 必须是数字");
 
         // 数据库路径：默认放在项目根目录的 train_record.db
-        let database_path =
-            std::env::var("DATABASE_PATH").unwrap_or_else(|_| "train_record.db".to_string());
+        let database_path = read("DATABASE_PATH").unwrap_or_else(|| "train_record.db".to_string());
 
         // 会话密钥：开发默认值。生产必须覆盖！
         // TODO(M1): 生产环境应从环境变量读取，否则有安全风险
-        let session_secret = std::env::var("SESSION_SECRET")
-            .unwrap_or_else(|_| "dev-only-secret-change-me".to_string());
+        let session_secret =
+            read("SESSION_SECRET").unwrap_or_else(|| "dev-only-secret-change-me".to_string());
 
         Self {
             port,
@@ -74,8 +92,15 @@ impl AppConfig
 // ============================================================
 // 【测试教学】
 // 这里是单元测试。cargo test 会执行 #[cfg(test)] 模块里的函数。
-// 好处：验证 from_env() 在无环境变量时能正确返回默认值。
+// 好处：验证 from_reader() 在不同输入下能正确返回配置。
 // 运行方式：cargo test
+//
+// 【函数式测试技巧】
+// 我们测试的是"纯函数" from_reader，而不是会碰真实环境变量的
+// from_env。这样：
+//   1. 无需修改环境变量（避免 unsafe 的 remove_var）
+//   2. 测试结果与机器当前环境无关，永远可复现
+//   3. 闭包 |_| None 表示"所有配置都缺失"，完美模拟空环境
 // ============================================================
 #[cfg(test)]
 mod tests
@@ -83,19 +108,30 @@ mod tests
     use super::*;
 
     #[test]
-    fn from_env_uses_defaults()
+    fn from_reader_uses_defaults_when_empty()
     {
-        // 手动删除环境变量，确保测试用默认值
-        // 【教学】unsafe 的 env::remove_var 在 Rust 2024 里需要 unsafe 块
-        // 因为并发读写环境变量本身是不安全操作
-        unsafe {
-            std::env::remove_var("PORT");
-            std::env::remove_var("DATABASE_PATH");
-        }
-
-        let config = AppConfig::from_env();
+        // |_| None：任何名字都读不到 → 全部走默认值
+        // 闭包里的 _ 表示"忽略参数"（这里我们不需要读到的名字）
+        let config = AppConfig::from_reader(|_| None);
         // assert_eq! 是断言宏：如果两边不等就 panic，测试失败
         assert_eq!(config.port, 8080);
         assert_eq!(config.database_path, "train_record.db");
+        assert_eq!(config.session_secret, "dev-only-secret-change-me");
+    }
+
+    #[test]
+    fn from_reader_honors_custom_values()
+    {
+        // 模拟一个"什么都能读到"的环境：根据名字返回不同值
+        let config = AppConfig::from_reader(|name| match name
+        {
+            "PORT" => Some("9000".to_string()),
+            "DATABASE_PATH" => Some("/tmp/test.db".to_string()),
+            "SESSION_SECRET" => Some("my-secret".to_string()),
+            _ => None,
+        });
+        assert_eq!(config.port, 9000);
+        assert_eq!(config.database_path, "/tmp/test.db");
+        assert_eq!(config.session_secret, "my-secret");
     }
 }

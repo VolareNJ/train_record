@@ -110,7 +110,9 @@ train_record/
 ├── docs/
 │   ├── proposal.md         # 项目背景与动机
 │   ├── structure.md        # 完整设计文档（需求/表结构/页面/计划）
-│   └── learning_path.md    # 🗺️ 开发路径图（从零到能跑）
+│   └── learning_path/      # 🗺️ 分阶段开发路径图
+│       ├── M0.md           # M0 脚手架路径图（已完成）
+│       └── M1.md ~ M7.md   # 后续阶段（开工时创建）
 ├── Python_pkg/             # 原 Python 版（历史数据与参考）
 │   ├── sys.py              # 原记录程序
 │   ├── table.xlsx          # 原 Excel 记录表
@@ -133,7 +135,7 @@ train_record/
 | **M6** | 备份：导出/导入、CSV/JSON 导出、PWA | ⬜ 未开始 |
 | **M7** | 打磨：界面美化、响应式、错误处理 | ⬜ 未开始 |
 
-> 开发是**边写边学**模式：每个文件都带有【教学注释】，从 [`docs/learning_path.md`](docs/learning_path.md) 开始阅读。
+> 开发是**边写边学**模式：每个文件都带有【教学注释】，从 [`docs/learning_path/M0.md`](docs/learning_path/M0.md) 开始阅读。
 
 ---
 
@@ -141,13 +143,13 @@ train_record/
 
 - [`docs/proposal.md`](docs/proposal.md) —— 项目背景：为什么重写
 - [`docs/structure.md`](docs/structure.md) —— **设计地基**：完整需求结论、数据库 DDL、页面规格、开发计划
-- [`docs/learning_path.md`](docs/learning_path.md) —— **开发路径图**：文件依赖顺序、M0→M7 里程碑、常见坑
+- [`docs/learning_path/M0.md`](docs/learning_path/M0.md) —— **开发路径图**：文件依赖顺序、M0 里程碑、常见坑（M1~M7 开工时各自创建）
 
 ---
 
 ## 🤝 协作约定
 
-- **代码风格**：函数式优先（迭代器/适配器）、大括号换行（Allman）、中文注释
+- **代码风格**：函数式优先（迭代器/适配器）、大括号换行（Allman）、中文注释、**禁止 unsafe**
 - **文档先行**：需求变更先改 `docs/structure.md`，再改代码
 - **教学注释**：关键代码带【教学说明】，边开发边学习
 
