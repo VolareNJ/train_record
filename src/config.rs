@@ -32,6 +32,34 @@ pub struct AppConfig
     pub database_path: String,
     /// 会话签名密钥（用于保护登录 cookie）
     /// 生产环境必须通过环境变量 SESSION_SECRET 提供！
+    ///
+    /// 【教学：session_secret 是干什么的？】
+    /// 背景：HTTP 是"无记忆"的，服务器记不住"你是谁"。
+    /// M1 登录功能要让服务器记住登录状态，做法是：
+    ///   1. 登录成功 → 服务器发一张"通行证"（cookie）
+    ///   2. 之后每次请求浏览器自动带上它，服务器一看就知道"这是张三"
+    ///
+    /// 问题：通行证是浏览器里的一串文本，会被伪造。
+    /// 如果通行证内容是 user_id=1，黑客可以自己构造一个冒充管理员。
+    ///
+    /// session_secret 就是用来防伪造的"私章"：
+    ///   服务器发证时：cookie = "user_id=1" + 签名(内容, session_secret)
+    ///                 签名是用私章算出的"指纹"
+    ///   服务器验证时：重新算一遍指纹，对得上 → 是真的；对不上 → 伪造，拒绝
+    /// 攻击者不知道密钥，就永远算不出正确指纹，伪造不了通行证。
+    ///
+    /// 类比：session_secret=印章，签名=盖的章，cookie=盖了章的文件。
+    /// 为什么叫 secret：必须保密，只有服务器自己知道。
+    ///
+    /// 阶段划分：
+    ///   M0：这个字段只是存着，谁都没读它
+    ///   M1：登录功能才会用它给 cookie 签名 / 验签
+    /// 一句话：它是 M1 登录用的"私章"，现在只是提前占个位置。
+    ///
+    /// 默认值 "dev-only-secret-change-me" 是开发用临时章：
+    ///   本地开发：随便一个值就能跑，方便
+    ///   生产环境：默认值写在代码里，黑客知道就能伪造所有登录状态 → 必须覆盖！
+    ///   所以部署时要用 SESSION_SECRET=一串随机长字符串 环境变量换掉它
     pub session_secret: String,
 }
 
@@ -53,6 +81,20 @@ impl AppConfig
         // 好处：
         //   1. from_reader 是纯函数，只根据参数算出结果，没有副作用
         //   2. 测试时可以传入假读取器，不用动真实环境变量（因此无需 unsafe）
+        //
+        // 【教学：为什么用 .ok() 而不是 match 或 ?】
+        //   std::env::var() 返回 Result<String, VarError>，
+        //   但 from_reader 要求闭包返回 Option<String>。
+        //   .ok() 把 Result 转成 Option：Ok→Some，Err→None（错误被"吞掉"）。
+        //
+        //   为什么不用 ?：
+        //     1. 编译不过！? 只能解同类型：返回 Option 的闭包里
+        //        不能对 Result 用 ?（类型不匹配，E0277）
+        //     2. 语义不对！? 是"出错就中断"，而我们的需求是
+        //        "没读到就当没值，继续用默认值"（优雅降级，不是快速失败）
+        //
+        //   为什么不用 match：可以但啰嗦（三行 vs 一行），
+        //   .ok() 是标准库惯用适配器，意图更清晰。
         Self::from_reader(|name| std::env::var(name).ok())
     }
 
@@ -63,6 +105,15 @@ impl AppConfig
     /// - 闭包 |name| std::env::var(name).ok() 把 Result 转成 Option
     /// - .ok() 是 Result 的适配器：Ok(v) -> Some(v)，Err(_) -> None
     /// - 这样 from_reader 与"真实环境变量"解耦，测试无需 unsafe
+    ///
+    /// 【教学：为什么 from_env 和 from_reader 分开？】
+    /// 因为 from_reader 不关心数据从哪来，只接收一个"读取函数"。
+    /// 这带来两个好处：
+    ///   1. 【可测试】测试时传假读取器，不碰真实环境变量，永远可复现
+    ///   2. 【可扩展】将来加配置文件读取，只需新增 from_file()：
+    ///        内部照样调 from_reader(|name| 从 config.toml 读)
+    ///      完全不用改 from_reader 的代码（这就是依赖注入的价值）
+    /// 一句话：from_env 管"从哪读"，from_reader 管"怎么算"。
     fn from_reader<F>(read: F) -> Self
     where
         F: Fn(&str) -> Option<String>,
@@ -78,6 +129,21 @@ impl AppConfig
 
         // 会话密钥：开发默认值。生产必须覆盖！
         // TODO(M1): 生产环境应从环境变量读取，否则有安全风险
+        //
+        // 【教学：unwrap_or_else 是什么？】
+        // 拆开看：
+        //   read("SESSION_SECRET")          返回 Option<String>（Some 值 或 None）
+        //   .unwrap_or_else(|| "默认值")    是 None 就用闭包里的默认值，是 Some 就用值
+        // 大白话："有值用值，没值用默认值顶上。"
+        //
+        // 为什么叫 unwrap_or_else 而不叫 unwrap_or？
+        //   unwrap_or(值)      ：默认值每次都提前算好
+        //   unwrap_or_else(闭包)：默认值需要时才算（懒执行）
+        // 这里 .to_string() 创建字符串有成本，用 _else 只有 None 时才创建。
+        //
+        // 注意：下面三行是同一个模式重复三次——
+        //   read(名字).unwrap_or_else(默认值)
+        // 理解了这一个，PORT 和 DATABASE_PATH 那两行也全懂了。
         let session_secret =
             read("SESSION_SECRET").unwrap_or_else(|| "dev-only-secret-change-me".to_string());
 
