@@ -34,9 +34,11 @@
 //
 // 📌 阶段要求：M0 会用即可（新写文件要在这里加一行 mod）。
 // 🎯 验收：能说出这 4 个 mod 各自对应 src/ 下的哪个文件。
+mod auth;
 mod config;
 mod db;
 mod error;
+mod handlers;
 mod models;
 
 // 【教学：use 导入】
@@ -44,7 +46,11 @@ mod models;
 //
 // 📌 阶段要求：M0 会"照抄"；M1 起每加新依赖/新模块，能自己补 use。
 // 🎯 验收：能解释 use axum::{Router, ...} 里的花括号是"一次导多个"。
-use axum::{Router, extract::State, routing::get};
+use axum::{
+    Router,
+    extract::State,
+    routing::{get, post},
+};
 use config::AppConfig;
 use sqlx::SqlitePool;
 use tower_http::services::ServeDir;
@@ -197,6 +203,19 @@ async fn main()
     let state = AppState { pool, config };
 
     // --------------------------------------------------------
+    // 3.5 确保管理员存在（M1 新增）
+    // --------------------------------------------------------
+    // 【教学：首次启动引导】
+    // 新系统没有任何用户 → 没人能登录 → 没人能创建用户 → 死锁！
+    // 解决方案：环境变量 ADMIN_USERNAME / ADMIN_PASSWORD 指定首个管理员，
+    // 启动时若该用户名不存在则自动创建。
+    // 若环境变量为空（默认），则跳过（已有用户的系统不会重复创建）。
+    //
+    // 📌 阶段要求：M1 理解"为什么需要首个管理员"即可。
+    // 🎯 验收：能说出没有这段引导会怎样（无法登录 → 无法创建用户）。
+    ensure_admin(&state).await;
+
+    // --------------------------------------------------------
     // 4. 构建路由 (Router)
     // --------------------------------------------------------
     // 【教学：Router = "地址 → 函数" 的映射表】
@@ -234,6 +253,21 @@ async fn main()
     // 🎯 验收：M1 结束时能自己加一个 /hello 路由并访问成功。
     let app = Router::new()
         .route("/", get(home))
+        // M1 新增：登录页 + 登录提交（GET 显示表单，POST 处理提交）
+        // 【教学：同一路径两个方法】
+        // .route("/login", get(login_page).post(login))
+        // get() 处理 GET 请求，post() 处理 POST 请求，两个函数共用路径
+        .route(
+            "/login",
+            get(handlers::auth::login_page).post(handlers::auth::login),
+        )
+        // 登出（POST /logout）
+        .route("/logout", post(handlers::auth::logout))
+        // 用户管理（仅管理员，守卫在 handler 内部检查）
+        .route(
+            "/admin/users",
+            get(handlers::auth::admin_users).post(handlers::auth::admin_create_user),
+        )
         .nest_service("/static", ServeDir::new("static"))
         .with_state(state);
 
@@ -247,6 +281,55 @@ async fn main()
         .await
         .expect("端口绑定失败");
     axum::serve(listener, app).await.expect("服务器运行失败");
+}
+
+// ============================================================
+// 【教学：ensure_admin —— 首次启动引导】
+// 作用：若配置了 ADMIN_USERNAME/ADMIN_PASSWORD，且该用户不存在，
+//       自动创建它（密码哈希后入库）。
+// 为什么在 main 里调用：main 是程序入口，启动时只执行一次。
+// 为什么幂等：先查是否存在，存在就跳过 → 重复启动不会重复创建。
+//
+// 与 handler 的区别：这个函数不处理 HTTP 请求，只做启动准备。
+// 📌 阶段要求：M1 理解"首次启动引导"思路即可，写法可照抄。
+// 🎯 验收：能说出如果跳过这步，全新部署会怎样（无人能登录）。
+// ============================================================
+async fn ensure_admin(state: &AppState)
+{
+    // 环境变量没配 → 跳过（可能是已有用户的系统）
+    if state.config.admin_username.is_empty() || state.config.admin_password.is_empty()
+    {
+        return;
+    }
+
+    // 查该用户名是否存在
+    // 【教学：EXISTS 子查询 + query_scalar】
+    // SELECT EXISTS(...) 返回 0 或 1（SQLite 里 EXISTS 结果是 0/1）
+    // fetch_one 只取第一行第一列 → bool 类型
+    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM users WHERE username = ?)")
+        .bind(&state.config.admin_username)
+        .fetch_one(&state.pool)
+        .await
+        .unwrap_or(false);
+
+    if exists
+    {
+        tracing::info!("管理员 {} 已存在，跳过创建", state.config.admin_username);
+        return;
+    }
+
+    // 不存在 → 创建：哈希密码后插入
+    let password_hash =
+        crate::auth::hash_password(&state.config.admin_password).expect("密码哈希失败");
+    sqlx::query("INSERT INTO users (username, password_hash, is_admin) VALUES (?, ?, ?)")
+        .bind(&state.config.admin_username)
+        .bind(&password_hash)
+        .bind(true)
+        .execute(&state.pool)
+        .await
+        .expect("创建管理员失败");
+
+    tracing::info!("已自动创建管理员: {}", state.config.admin_username);
 }
 
 // ============================================================

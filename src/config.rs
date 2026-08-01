@@ -61,6 +61,14 @@ pub struct AppConfig
     ///   生产环境：默认值写在代码里，黑客知道就能伪造所有登录状态 → 必须覆盖！
     ///   所以部署时要用 SESSION_SECRET=一串随机长字符串 环境变量换掉它
     pub session_secret: String,
+    /// 首次启动时创建的管理员用户名（环境变量 ADMIN_USERNAME）
+    /// 为空 = 不自动创建（适合已有用户的部署）
+    /// 【教学】首次部署需要"第一个管理员"，没有它就没人能创建用户。
+    /// 两种方案：启动脚本创建 / 环境变量指定。本项目用环境变量。
+    pub admin_username: String,
+    /// 首次启动时创建的管理员密码（环境变量 ADMIN_PASSWORD）
+    /// 生产环境必须设置！默认空 = 不自动创建管理员
+    pub admin_password: String,
 }
 
 impl AppConfig
@@ -147,10 +155,19 @@ impl AppConfig
         let session_secret =
             read("SESSION_SECRET").unwrap_or_else(|| "dev-only-secret-change-me".to_string());
 
+        // 管理员账号：默认不自动创建（空 = 跳过）
+        // 【教学】M1 新增的两个配置项，模式与上面完全一样：
+        //   read(名字).unwrap_or_else(默认值)
+        // 生产环境部署时用环境变量 ADMIN_USERNAME / ADMIN_PASSWORD 指定。
+        let admin_username = read("ADMIN_USERNAME").unwrap_or_default();
+        let admin_password = read("ADMIN_PASSWORD").unwrap_or_default();
+
         Self {
             port,
             database_path,
             session_secret,
+            admin_username,
+            admin_password,
         }
     }
 }
@@ -183,6 +200,9 @@ mod tests
         assert_eq!(config.port, 8080);
         assert_eq!(config.database_path, "train_record.db");
         assert_eq!(config.session_secret, "dev-only-secret-change-me");
+        // 新字段：管理员默认不自动创建（空字符串）
+        assert_eq!(config.admin_username, "");
+        assert_eq!(config.admin_password, "");
     }
 
     #[test]
@@ -194,10 +214,14 @@ mod tests
             "PORT" => Some("9000".to_string()),
             "DATABASE_PATH" => Some("/tmp/test.db".to_string()),
             "SESSION_SECRET" => Some("my-secret".to_string()),
+            "ADMIN_USERNAME" => Some("admin".to_string()),
+            "ADMIN_PASSWORD" => Some("admin-pass".to_string()),
             _ => None,
         });
         assert_eq!(config.port, 9000);
         assert_eq!(config.database_path, "/tmp/test.db");
         assert_eq!(config.session_secret, "my-secret");
+        assert_eq!(config.admin_username, "admin");
+        assert_eq!(config.admin_password, "admin-pass");
     }
 }
