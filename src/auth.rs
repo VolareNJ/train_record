@@ -15,15 +15,28 @@
 //   它只操作数据库和密码，返回 Result<_, AppError>。
 //   HTTP 层（handlers/auth.rs）负责解析请求、设置 cookie、重定向。
 //   这样职责清晰：auth.rs 管"逻辑"，handlers 管"请求响应"。
+//
+// 📌 阶段要求：M1 你来实现本文件的 4 个函数。
+//   完整实现已备份在 docs/learning_path/M1_ref/auth_ref.rs，
+//   实现完成后对照检查（不要提前看）。
 // ============================================================
 
+// 【教学：本文件用到的导入】
+// 下面每个导入都会在实现时用上（骨架阶段 unused 警告是正常的）。
 use argon2::{
-    Argon2, PasswordHash, PasswordHasher, PasswordVerifier,
+    Argon2,           // 哈希算法本体
+    PasswordHash,     // 解析存下来的哈希串（verify 用）
+    PasswordHasher,   // trait：提供 hash_password 方法
+    PasswordVerifier, // trait：提供 verify_password 方法
     password_hash::{SaltString, rand_core::OsRng},
+    //   SaltString = 盐的类型
+    //   OsRng      = 操作系统安全随机数生成器（生成随机盐用）
 };
-use sqlx::SqlitePool;
+use sqlx::SqlitePool; // 数据库连接池（所有函数都接收它）
 
 use crate::{error::AppError, models::User};
+//   AppError = 统一错误类型
+//   User     = 用户结构体（get_user_by_session 的返回类型）
 
 // ============================================================
 // 【教学：密码哈希】
@@ -46,17 +59,23 @@ use crate::{error::AppError, models::User};
 /// - 盐（salt）= 每次哈希加的随机调味料，让相同密码产生不同哈希
 /// - OsRng = 操作系统提供的安全随机数生成器
 /// - SaltString::generate(&mut OsRng) = 生成一个随机盐
+///
+/// 【实现步骤】
+/// 1. 生成随机盐：SaltString::generate(&mut OsRng)
+/// 2. 用 Argon2::default() 哈希：
+///    Argon2::default().hash_password(plain.as_bytes(), &salt)
+///    返回 Result<PasswordHash, Error>，用 .map_err 转成 AppError
+/// 3. 取哈希字符串：.to_string()
 pub fn hash_password(plain: &str) -> Result<String, AppError>
 {
-    // 1. 生成随机盐
-    let salt = SaltString::generate(&mut OsRng);
-    // 2. 用 argon2 算法 + 盐，把密码哈希成字符串
-    //    Argon2::default() 使用推荐的默认参数（安全且合理）
-    let hash = Argon2::default()
-        .hash_password(plain.as_bytes(), &salt)
-        .map_err(|e| AppError::Other(format!("密码哈希失败: {e}")))?
-        .to_string();
-    Ok(hash)
+    // TODO(M1): 学生实现
+    // 提示：
+    //   let salt = SaltString::generate(&mut OsRng);
+    //   let hash = Argon2::default()
+    //       .hash_password(plain.as_bytes(), &salt)
+    //       .map_err(|e| AppError::Other(format!("密码哈希失败: {e}")))?;
+    //   Ok(hash.to_string())
+    unimplemented!("M1 学生实现：密码哈希")
 }
 
 /// 校验密码：登录时用。返回 true = 密码正确
@@ -66,15 +85,21 @@ pub fn hash_password(plain: &str) -> Result<String, AppError>
 /// verify 是"用存下来的哈希串去验证输入的密码"，
 /// 它会把盐从哈希串里提取出来，重新计算再比较。
 /// 相当于"用原章验原件"，而不是"重新刻章对比"。
+///
+/// 【实现步骤】
+/// 1. 解析存储的哈希串：PasswordHash::new(hash)，Err 转 AppError
+/// 2. 验证：Argon2::default().verify_password(plain.as_bytes(), &parsed_hash)
+///    返回 Result，用 .is_ok() 转成 bool
 pub fn verify_password(plain: &str, hash: &str) -> Result<bool, AppError>
 {
-    // 1. 解析存储的哈希串（里面包含盐和算法信息）
-    let parsed_hash =
-        PasswordHash::new(hash).map_err(|e| AppError::Other(format!("密码哈希格式无效: {e}")))?;
-    // 2. 验证输入的密码是否匹配
-    Ok(Argon2::default()
-        .verify_password(plain.as_bytes(), &parsed_hash)
-        .is_ok())
+    // TODO(M1): 学生实现
+    // 提示：
+    //   let parsed_hash = PasswordHash::new(hash)
+    //       .map_err(|e| AppError::Other(format!("密码哈希格式无效: {e}")))?;
+    //   Ok(Argon2::default()
+    //       .verify_password(plain.as_bytes(), &parsed_hash)
+    //       .is_ok())
+    unimplemented!("M1 学生实现：密码校验")
 }
 
 // ============================================================
@@ -95,71 +120,78 @@ pub fn verify_password(plain: &str, hash: &str) -> Result<bool, AppError>
 /// 创建 session：登录成功后调用
 ///
 /// 返回 token 字符串，调用方（handler）把它放进 cookie 发给浏览器
+///
+/// 【实现步骤】
+/// 1. 生成随机 token：uuid::Uuid::new_v4().to_string()
+/// 2. 过期时间 = 当前时间 + 30 天，格式化成 Rfc3339 字符串：
+///    time::OffsetDateTime::now_utc() + time::Duration::days(30)
+///    .format(&time::format_description::well_known::Rfc3339)
+/// 3. INSERT INTO sessions (user_id, token, expires_at) VALUES (?, ?, ?)
+/// 4. 返回 token
 pub async fn create_session(pool: &SqlitePool, user_id: i64) -> Result<String, AppError>
 {
-    // 1. 生成随机 token（uuid v4 = 128 位随机数，几乎不可能撞车）
-    let token = uuid::Uuid::new_v4().to_string();
-
-    // 2. 过期时间：现在 + 30 天（存成字符串，与表结构一致）
-    //    【教学】time crate 的 OffsetDateTime 用来算时间
-    //    这里用当前时间 + 30 天作为过期时间
-    let expires_at = time::OffsetDateTime::now_utc() + time::Duration::days(30);
-    let expires_at_str = expires_at
-        .format(&time::format_description::well_known::Rfc3339)
-        .map_err(|e| AppError::Other(format!("时间格式化失败: {e}")))?;
-
-    // 3. 存入数据库
-    //    【教学】sqlx::query 执行 INSERT 语句
-    //    .bind() 依次绑定参数（对应 SQL 里的 ? 占位符）
-    sqlx::query("INSERT INTO sessions (user_id, token, expires_at) VALUES (?, ?, ?)")
-        .bind(user_id)
-        .bind(&token)
-        .bind(expires_at_str)
-        .execute(pool)
-        .await
-        .map_err(AppError::Database)?;
-
-    Ok(token)
+    // TODO(M1): 学生实现
+    // 提示：
+    //   let token = uuid::Uuid::new_v4().to_string();
+    //   let expires_at = time::OffsetDateTime::now_utc() + time::Duration::days(30);
+    //   let expires_at_str = expires_at
+    //       .format(&time::format_description::well_known::Rfc3339)
+    //       .map_err(|e| AppError::Other(format!("时间格式化失败: {e}")))?;
+    //   sqlx::query("INSERT INTO sessions (user_id, token, expires_at) VALUES (?, ?, ?)")
+    //       .bind(user_id)
+    //       .bind(&token)
+    //       .bind(expires_at_str)
+    //       .execute(pool)
+    //       .await
+    //       .map_err(AppError::Database)?;
+    //   Ok(token)
+    unimplemented!("M1 学生实现：创建 session")
 }
 
 /// 验证 session：凭 token 查出用户
 ///
 /// 无效（不存在/已过期）返回 Err(AppError::Unauthorized)
+///
+/// 【实现步骤】
+/// 1. 联表查询：JOIN sessions 和 users，按 token 找用户
+///    SELECT u.* FROM users u JOIN sessions s ON s.user_id = u.id WHERE s.token = ?
+/// 2. fetch_optional 拿到 Option<User>，查不到 → Err(Unauthorized)
+///    Option 的 .ok_or_else(|| AppError::Unauthorized) 适配器
+/// 3. 返回用户
 pub async fn get_user_by_session(pool: &SqlitePool, token: &str) -> Result<User, AppError>
 {
-    // 1. 查 sessions 表，找到 token 对应的记录，join 出用户
-    //    【教学：多表查询 + WHERE 条件】
-    //    ? 是参数占位符，.bind(token) 填入 token 值
-    let user: Option<User> = sqlx::query_as::<_, User>(
-        "SELECT u.* FROM users u
-         JOIN sessions s ON s.user_id = u.id
-         WHERE s.token = ?",
-    )
-    .bind(token)
-    .fetch_optional(pool)
-    .await
-    .map_err(AppError::Database)?;
-
-    // 2. 查不到 → 未登录/伪造 token
-    //    【教学：Option 的 ok_or_else】
-    //    Some(user) → Ok(user)；None → Err(Unauthorized)
-    //    ok_or_else 是"有值用值，没值就造错误"的适配器
-    let user = user.ok_or_else(|| AppError::Unauthorized)?;
-
-    // 3. 检查过期时间
-    //    【教学：这里简化处理——过期检查放在查询条件里更严谨，
-    //     但为了 M1 教学清晰，先用"查得到就行"。
-    //     完整版应在 SQL 里加 expires_at > now 条件。】
-    Ok(user)
+    // TODO(M1): 学生实现
+    // 提示：
+    //   let user: Option<User> = sqlx::query_as::<_, User>(
+    //       "SELECT u.* FROM users u
+    //        JOIN sessions s ON s.user_id = u.id
+    //        WHERE s.token = ?",
+    //   )
+    //   .bind(token)
+    //   .fetch_optional(pool)
+    //   .await
+    //   .map_err(AppError::Database)?;
+    //
+    //   let user = user.ok_or_else(|| AppError::Unauthorized)?;
+    //   Ok(user)
+    //   （注意：完整版应在 SQL 里加 expires_at > now 条件检查过期。
+    //     这里为教学清晰先简化，以后在 M4+ 完善。）
+    unimplemented!("M1 学生实现：凭 token 查用户")
 }
 
 /// 销毁 session：登出时调用
+///
+/// 【实现步骤】
+/// DELETE FROM sessions WHERE token = ?
 pub async fn destroy_session(pool: &SqlitePool, token: &str) -> Result<(), AppError>
 {
-    sqlx::query("DELETE FROM sessions WHERE token = ?")
-        .bind(token)
-        .execute(pool)
-        .await
-        .map_err(AppError::Database)?;
-    Ok(())
+    // TODO(M1): 学生实现
+    // 提示：
+    //   sqlx::query("DELETE FROM sessions WHERE token = ?")
+    //       .bind(token)
+    //       .execute(pool)
+    //       .await
+    //       .map_err(AppError::Database)?;
+    //   Ok(())
+    unimplemented!("M1 学生实现：销毁 session")
 }

@@ -112,7 +112,9 @@ train_record/
 │   ├── structure.md        # 完整设计文档（需求/表结构/页面/计划）
 │   └── learning_path/      # 🗺️ 分阶段开发路径图
 │       ├── M0.md           # M0 脚手架路径图（已完成 ✅）
-│       └── M1.md ~ M7.md   # 后续阶段（开工时创建）
+│       ├── M1.md           # M1 认证路径图（定义完成，待实现 📝）
+│       ├── M1_ref/         # M1 参考答案（实现完成后对照）
+│       └── M2.md ~ M7.md   # 后续阶段（开工时创建）
 ├── Python_pkg/             # 原 Python 版（历史数据与参考）
 │   ├── sys.py              # 原记录程序
 │   ├── table.xlsx          # 原 Excel 记录表
@@ -143,7 +145,8 @@ train_record/
 
 - [`docs/proposal.md`](docs/proposal.md) —— 项目背景：为什么重写
 - [`docs/structure.md`](docs/structure.md) —— **设计地基**：完整需求结论、数据库 DDL、页面规格、开发计划
-- [`docs/learning_path/M0.md`](docs/learning_path/M0.md) —— **开发路径图**：文件依赖顺序、M0 里程碑、常见坑（M1~M7 开工时各自创建）
+- [`docs/learning_path/M0.md`](docs/learning_path/M0.md) —— **开发路径图**：文件依赖顺序、M0 里程碑、常见坑
+- [`docs/learning_path/M1.md`](docs/learning_path/M1.md) —— **M1 认证路径图**：定义与教学注释（参考实现在 [`M1_ref/`](docs/learning_path/M1_ref/)，完成后对照）
 
 ---
 
