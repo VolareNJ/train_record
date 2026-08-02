@@ -60,6 +60,35 @@ use crate::{error::AppError, models::User};
 /// - OsRng = 操作系统提供的安全随机数生成器
 /// - SaltString::generate(&mut OsRng) = 生成一个随机盐
 ///
+/// 【教学：为什么 generate 的参数是 &mut OsRng（可变引用）？】
+/// 一句话：随机数生成器（RNG）是【有内部状态】的，
+/// 生成一个随机数 = 推进（改变）这个状态，所以要可变访问权。
+///
+/// 类比抽奖机（老虎机）：机器内部有个转轮（状态）。
+/// 每拉一次杆，转轮转一次，状态变了。
+/// 想拉杆就必须"碰"这台机器；只允许"看"（&）的话，
+/// 你只能看到转轮当前停在哪，拉不了杆。
+///
+/// 为什么"取下一个随机数"必然改变状态？
+/// - 伪随机（如 ChaCha）：内部有种子/计数器，下一个数依赖上一个，
+///   每次输出后计数器要更新，否则永远生成同一个数
+/// - 真随机（从系统熵池读）：每次读取会消耗熵池，系统要跟踪剩余量
+///
+/// 这是 trait 签名决定的（rand_core::RngCore）：
+///   fn next_u32(&mut self) -> u32
+///   fn fill_bytes(&mut self, dest: &mut [u8])
+/// SaltString::generate 内部要调 fill_bytes，所以参数必须是 &mut。
+///
+/// 编译期强制：写 SaltString::generate(&OsRng) 会报 E0596
+/// （cannot borrow as mutable）——借用规则：要修改一个值必须持有 &mut。
+///
+/// 微妙点：OsRng 本身是单元结构体、没有内部状态（每次直接向 OS 请求），
+/// 但 API 统一用 &mut，是为了兼容有状态的 RNG（如 StdRng）——
+/// 同一个 trait 能接住任何 RNG 实现，调用方不用区分。
+///
+/// 为什么不用 RefCell 搞成 &self？可以，但把"运行时检查"搬进了每次调用，
+/// 更慢还可能 panic；Rust 社区选择编译期就用 &mut 解决问题。
+///
 /// 【实现步骤】
 /// 1. 生成随机盐：SaltString::generate(&mut OsRng)
 /// 2. 用 Argon2::default() 哈希：
@@ -75,7 +104,13 @@ pub fn hash_password(plain: &str) -> Result<String, AppError>
     //       .hash_password(plain.as_bytes(), &salt)
     //       .map_err(|e| AppError::Other(format!("密码哈希失败: {e}")))?;
     //   Ok(hash.to_string())
-    unimplemented!("M1 学生实现：密码哈希")
+    // unimplemented!("M1 学生实现：密码哈希")
+
+    let random_salt = SaltString::generate(&mut OsRng);
+    let hashed = Argon2::default()
+        .hash_password(plain.as_bytes(), &random_salt)
+        .map_err(|e| AppError::Other(format!("密码哈希失败: {}", e)))?;
+    Ok(hashed.to_string())
 }
 
 /// 校验密码：登录时用。返回 true = 密码正确
