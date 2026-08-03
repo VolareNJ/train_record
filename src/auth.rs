@@ -346,6 +346,42 @@ pub async fn create_session(pool: &SqlitePool, user_id: i64) -> Result<String, A
 ///
 /// 无效（不存在/已过期）返回 Err(AppError::Unauthorized)
 ///
+/// 【教学：query_as vs query 有什么区别？】
+///   query     → 只执行 SQL，结果行保持"原始"状态，不转换
+///               （适合 INSERT/DELETE，反正不看结果）
+///   query_as  → 执行 SQL 后把【每行自动转成指定类型】，
+///               用 .fetch_optional() 拿回 Option<T>
+///               （适合 SELECT，要拿结构化数据）
+/// query_as 的 T 必须实现 FromRow trait——User 结构体在 models.rs
+/// 里已经 #[derive(FromRow)]，字段名和表列名对应。
+///
+/// 【教学：query_as 的两个泛型参数 ::<_, User> 是什么？】
+///   sqlx::query_as::<_, User>(...)
+///                    ↑      ↑
+///                数据库类型  行转换类型
+/// - 第二个 User：每行转成什么类型（我们关心的）
+/// - 第一个 _：数据库类型（SQLite/MySQL/PostgreSQL）
+///   写 _ 让编译器自己推断（pool: &SqlitePool 已确定是 SQLite）
+/// 记忆点：见到 _ 就是"这里有个类型，但让编译器猜"。
+///
+/// 【教学：fetch_optional 是"SQL 套 CASE WHEN EXISTS"吗？】
+/// 方向对，但机制不同——它不是 SQL 的一部分，而是 Rust 层处理：
+///   SQL 层：数据库照常返回所有匹配行（0 行或 1 行）
+///   Rust 层：fetch_optional 拿结果后判断：
+///     0 行 → None；1 行 → Some(那行)；多行 → 报错（期望最多一行）
+/// 对应关系：
+///   CASE WHEN EXISTS（SQL 层判断存在性，返回 0/1）
+///   fetch_optional（Rust 层把"拿到的行"包成 Option，取件口：
+///     有货 → Some，没货 → None）
+///
+/// 【教学：为什么查不到要返回 Unauthorized（ok_or_else）？】
+/// fetch_optional 给出 Option<User>，但函数要求 Result<User, AppError>。
+/// ok_or_else(|| AppError::Unauthorized)：
+///   Some(user) → Ok(user)；None → Err(Unauthorized)
+/// 语义：查不到 session = 没登录/伪造/过期 → 一律按"未授权"处理。
+/// 注意过期检查：完整版应加 expires_at > datetime('now')，
+/// 学生实现里主动加上了（比参考更进一步，SQLite 语法正确）。
+///
 /// 【实现步骤】
 /// 1. 联表查询：JOIN sessions 和 users，按 token 找用户
 ///    SELECT u.* FROM users u JOIN sessions s ON s.user_id = u.id WHERE s.token = ?
@@ -370,7 +406,20 @@ pub async fn get_user_by_session(pool: &SqlitePool, token: &str) -> Result<User,
     //   Ok(user)
     //   （注意：完整版应在 SQL 里加 expires_at > now 条件检查过期。
     //     这里为教学清晰先简化，以后在 M4+ 完善。）
-    unimplemented!("M1 学生实现：凭 token 查用户")
+    // unimplemented!("M1 学生实现：凭 token 查用户")
+
+    let user_op = sqlx::query_as::<_, User>(
+        "SELECT u.* FROM users u
+         INNER JOIN sessions s ON s.user_id = u.id
+         WHERE s.token = ?
+         AND expires_at > datetime('now')",
+    )
+    .bind(token)
+    .fetch_optional(pool)
+    .await
+    .map_err(AppError::Database)?;
+    let existing_user = user_op.ok_or_else(|| AppError::Unauthorized)?;
+    Ok(existing_user)
 }
 
 /// 销毁 session：登出时调用
