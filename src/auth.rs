@@ -165,7 +165,13 @@ pub fn verify_password(plain: &str, hash: &str) -> Result<bool, AppError>
     //   Ok(Argon2::default()
     //       .verify_password(plain.as_bytes(), &parsed_hash)
     //       .is_ok())
-    unimplemented!("M1 学生实现：密码校验")
+    // unimplemented!("M1 学生实现：密码校验")
+
+    let parsed_hash =
+        PasswordHash::new(hash).map_err(|e| AppError::Other(format!("解析哈希失败: {}", e)))?;
+    Ok(Argon2::default()
+        .verify_password(plain.as_bytes(), &parsed_hash)
+        .is_ok())
 }
 
 // ============================================================
@@ -266,6 +272,36 @@ pub fn verify_password(plain: &str, hash: &str) -> Result<bool, AppError>
 ///
 /// 返回 token 字符串，调用方（handler）把它放进 cookie 发给浏览器
 ///
+/// 【教学：sqlx 参数化查询（为什么用 ? + bind 而不是拼字符串？）】
+/// 初学者容易把 sqlx::query 当 println! 用：
+///   sqlx::query("INSERT ... VALUES ({}, {}, {})", a, b, c)  ❌
+/// sqlx::query 只接受【一个】SQL 字符串参数，真正的流程是：
+///   1. SQL 里用 ? 占位（不是 {}）
+///   2. .bind(值) 按顺序把每个 ? 绑定上
+///   3. .execute(pool).await 才真正执行（前面只是"搭好没跑"）
+///
+/// 为什么不能把值直接拼进 SQL 字符串？——【SQL 注入】
+/// 如果值是用户输入，拼进去可能改变 SQL 结构：
+///   用户输密码：' OR '1'='1
+///   SELECT * FROM users WHERE password = '' OR '1'='1'   ← 恒真！绕过验证
+/// bind 是参数化查询：值走独立通道传给数据库，
+/// 永远不可能被当成 SQL 代码执行。这是数据库安全的底线。
+///
+/// 【教学：为什么 bind(&token) 而不是 bind(token)？（所有权移动）】
+/// String 不实现 Copy（管理堆内存），.bind(token) 会把 token 的
+/// 【所有权】移交进查询对象——就像把书借出去，自己手上就没书了。
+/// 后面还要 Ok(token)，所以只能【借用】：
+///   .bind(&token)   // 借出去用一下，用完后自己还留着
+/// 记忆点：传给别人的值，如果后面还要用，就借（&）而不是交（move）。
+///
+/// 【教学：map_err 的两种等价写法】
+///   .map_err(AppError::Database)          // 直接传构造函数（提示的风格）
+///   .map_err(|e| AppError::Database(e))   // 闭包包装（另一种写法）
+/// 两者 100% 等价：枚举变体构造器本身就是函数，
+/// 类型是 fn(sqlx::Error) -> AppError，可以直接传给 map_err。
+/// 区别只在场景：纯转换用前者（简洁）；需要附加逻辑
+/// （拼错误信息、打日志）用后者。本项目两种写法都正确。
+///
 /// 【实现步骤】
 /// 1. 生成随机 token：uuid::Uuid::new_v4().to_string()
 /// 2. 过期时间 = 当前时间 + 30 天，格式化成 Rfc3339 字符串：
@@ -290,7 +326,20 @@ pub async fn create_session(pool: &SqlitePool, user_id: i64) -> Result<String, A
     //       .await
     //       .map_err(AppError::Database)?;
     //   Ok(token)
-    unimplemented!("M1 学生实现：创建 session")
+    // unimplemented!("M1 学生实现：创建 session")
+
+    let new_token = uuid::Uuid::new_v4().to_string();
+    let expire_dt = (time::OffsetDateTime::now_utc() + time::Duration::days(30))
+        .format(&time::format_description::well_known::Rfc3339)
+        .map_err(|e| AppError::Other(format!("计算时间失败: {}", e)))?;
+    sqlx::query("INSERT INTO sessions (user_id, token, expires_at) VALUES (?, ?, ?)")
+        .bind(user_id)
+        .bind(&new_token)
+        .bind(expire_dt)
+        .execute(pool)
+        .await
+        .map_err(|e| AppError::Database(e))?;
+    Ok(new_token)
 }
 
 /// 验证 session：凭 token 查出用户
