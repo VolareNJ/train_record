@@ -436,5 +436,12 @@ pub async fn destroy_session(pool: &SqlitePool, token: &str) -> Result<(), AppEr
     //       .await
     //       .map_err(AppError::Database)?;
     //   Ok(())
-    unimplemented!("M1 学生实现：销毁 session")
+    // unimplemented!("M1 学生实现：销毁 session")
+
+    sqlx::query("DELETE FROM sessions WHERE token = ?")
+        .bind(token)
+        .execute(pool)
+        .await
+        .map_err(AppError::Database)?;
+    Ok(())
 }
