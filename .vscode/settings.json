@@ -13,7 +13,7 @@
         "--"
     ],
     // 保存文件时自动格式化
-    "editor.formatOnSave": true,
+    "editor.formatOnSave": false,
     // 把 Rust 文件默认格式化器设为 rust-analyzer
     "[rust]": {
         "editor.defaultFormatter": "rust-lang.rust-analyzer"
