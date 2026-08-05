@@ -49,9 +49,12 @@ mod models;
 use axum::{
     Router,
     extract::State,
+    http::HeaderMap,
+    response::{Html, IntoResponse, Redirect, Response},
     routing::{get, post},
 };
 use config::AppConfig;
+use error::AppError;
 use sqlx::SqlitePool;
 use tower_http::services::ServeDir;
 
@@ -254,9 +257,32 @@ async fn main()
     let app = Router::new()
         .route("/", get(home))
         // M1 新增：登录页 + 登录提交（GET 显示表单，POST 处理提交）
-        // 【教学：同一路径两个方法】
-        // .route("/login", get(login_page).post(login))
-        // get() 处理 GET 请求，post() 处理 POST 请求，两个函数共用路径
+        // 【教学：同一路径两个方法 —— "并列 vs 链式"】
+        // get() 和 post() 是两个并列的方法处理器，怎么用"链式"写？
+        // 关键认知：并列关系体现在【数据结构】里，不在【语法】里。
+        //
+        // 拆解 get(login_page).post(login) 发生了什么：
+        //   1. get(login_page) —— 创建并返回一个 MethodRouter 对象
+        //      这个对象内部专门管"哪种 HTTP 方法 → 哪个 handler"的映射
+        //      此时对象里只有一项：GET → login_page
+        //   2. .post(login) —— 在这个对象上"追加配置"（builder 模式）
+        //      往对象里增加一项：POST → login，再返回对象
+        //      此时对象里有并列的两项：GET 和 POST 各存一个 handler
+        //   3. .route("/login", 那个对象) —— 把"路径 → 方法路由器"绑起来
+        //
+        // 所以这不是"get 和 post 两个东西链起来"，
+        // 而是"先创建对象，再往对象里填第二个字段"——
+        // 和你熟悉的 C++ set 链式调用（set_a().set_b()）完全同构。
+        //
+        // 为什么不用 operator| 或变参函数？
+        //   - 变参：Rust 稳定版没有变参泛型，做不到 get(a, b, c)
+        //   - operator|：语法可行但可读性差，还容易误看成"位或"
+        //   - 方法链：Rust 生态最主流的 builder 写法（tokio/clap 全是）
+        //
+        // 请求到来时是"两层查表"：
+        //   先查路径 /login → 找到这个 MethodRouter
+        //   再查方法 POST  → 找到 login 函数
+        // 一句话：关系存成结构（并列字段），语法写成串行（逐个填充）。
         .route(
             "/login",
             get(handlers::auth::login_page).post(handlers::auth::login),
@@ -333,12 +359,281 @@ async fn ensure_admin(state: &AppState)
 }
 
 // ============================================================
-// 【教学：handler（处理器）】
-// handler = 处理 HTTP 请求的函数。当浏览器访问对应路径时被调用。
-// 签名规则：
-//   - async fn
-//   - 第一个参数可以是提取器（State/Path/Query/Form/Json...）
-//   - 返回类型实现 IntoResponse（String/&str/Html/Json...）
+// 【教学：handler —— 一次请求的完整生命周期】★ 本文件最重要的总览
+// ============================================================
+// 下面这些概念（Handler/FromRequestParts/State/call/from_request_parts）
+// 看起来又多又乱，其实它们是一条链上的不同环节。
+// 用 home 当案例，把这条链从头到尾走一遍：
+//
+//   ┌─────────────────────────────────────────────────────────┐
+//   │ ① 注册（编译期）                                          │
+//   │   get(home) 被调用                                        │
+//   │     → 编译器检查：home 实现 Handler<(State,HeaderMap),   │
+//   │         AppState> 吗？                                   │
+//   │     → 检查方式：看每个参数类型有没有 FromRequestParts     │
+//   │     → 通过 → home 是合法 handler，注册成功                │
+//   └─────────────────────────────────────────────────────────┘
+//                                ↓
+//   ┌─────────────────────────────────────────────────────────┐
+//   │ ② 请求到达（运行时）                                      │
+//   │   浏览器访问 /                                            │
+//   │     → Router 查路径表 → 找到 home                        │
+//   │     → axum 调 Handler::call(home, req, state)            │
+//   └─────────────────────────────────────────────────────────┘
+//                                ↓
+//   ┌─────────────────────────────────────────────────────────┐
+//   │ ③ 提取参数（call 内部，宏展开的顺序语句）                   │
+//   │   t1 = State<AppState>::from_request_parts(...)          │
+//   │   t2 = HeaderMap::from_request_parts(...)                │
+//   │      （每参数一行，不是循环）                               │
+//   └─────────────────────────────────────────────────────────┘
+//                                ↓
+//   ┌─────────────────────────────────────────────────────────┐
+//   │ ④ 真正调用你的函数                                        │
+//   │   home(t1, t2).await → 你的守卫、查库、返回 HTML          │
+//   │     返回值再 .into_response() 转成 HTTP 响应              │
+//   └─────────────────────────────────────────────────────────┘
+//
+// 记住两个 trait 的分工，整条链就通了：
+//   - Handler<T, S>    ："这个函数能当 handler 吗？"（外层包装）
+//   - FromRequestParts： "怎么从请求里造出一个参数？"（内层零件）
+//
+// ============================================================
+// 【教学①：编译期检查 —— 怎么"知道" handler 的签名】
+// ============================================================
+// get(home) 传的不是函数指针，是函数本身（函数项）。get 是泛型的：
+//   pub fn get<H, T, S>(handler: H) -> MethodRouter<S>
+//   where H: Handler<T, S>          // ★ 关键约束
+// 而 Handler trait 对"任意函数"自动生效（blanket impl）：
+//   impl<F, Fut, Args, Res, S> Handler<Args, S> for F
+//   where
+//       Args: FromRequestParts<S> + Send,   // ① 每个参数都是合法提取器
+//       Fut: Future<Output = Res>,
+//       Res: IntoResponse,                  // ② 返回值能转 HTTP 响应
+// 所以"怎么知道签名"的答案是：编译期静态推断，不是运行时查表。
+//   签名不合格 → 编译直接报错，程序根本跑不起来。
+//
+// 请求到来时，axum 按参数【顺序】逐个调用提取器，把结果依次传进函数。
+// 所以 handler 参数可以任意组合：State、HeaderMap、Form、Query...
+// 只看"类型 + 顺序"，不管具体是啥。
+//
+// ============================================================
+// 【教学②：FromRequestParts —— 提取器的"许可证"】
+// ============================================================
+// 一个类型想当 handler 参数，就必须实现 FromRequestParts，
+// 并告诉 axum："怎么从请求里把我造出来"。它是统一的提取器契约。
+// 定义（简化）：
+//   trait FromRequestParts<S>: Sized {
+//       type Rejection: IntoResponse;  // 提取失败时返回什么（如 401）
+//       fn from_request_parts(
+//           parts: &mut Parts,  // 方法/URI/请求头（Cookie 就在 headers 里！）
+//           state: &S,          // AppState 的引用（连接池就在这！）
+//       ) -> impl Future<Output = Result<Self, Self::Rejection>> + Send;
+//   }
+// from_request_parts 就是这个 trait 的【唯一方法】——"提取动作本身"。
+// 它拿到 parts（请求头）和 state（AppState），就能造出自己。
+// 这正是未来 M2+ 写 AuthUser 所需的全部材料：
+//   读 headers 里的 cookie → 查 session → 返回 User。
+//
+// ============================================================
+// 【教学③：State —— "装值盒子" + blanket impl】
+// ============================================================
+//   pub struct State<S>(pub S);   // 就这一行，一个包着 S 类型值的空壳
+// 它不是枚举（没有变体、不用 match）。存在意义 = 类型标记：
+//   让类型系统能区分"这是状态提取器"和"这只是个 AppState 值"。
+//
+// 为什么 AppState 不需要标 FromRequestParts？
+//   因为限界标记根本不在 AppState 身上，而在 State 身上！
+//   axum 内置了 blanket 实现（对任意类型 S 都成立）：
+//     impl<S> FromRequestParts<S> for State<S>
+//     where S: Clone + Send + Sync {
+//         fn from_request_parts(parts, state) -> ... {
+//             Ok(State(state.clone()))   // 提取动作就一句：clone 装盒
+//         }
+//     }
+//   AppState 只是恰好填进泛型 S 这个"坑位"。
+//   这也解释了为什么 AppState 必须 #[derive(Clone)]：
+//     上面那句 state.clone() 就是 main.rs 那段
+//     "axum 要求 Clone" 注释的源码出处。
+//
+// 为什么 get 不直接要求参数就是 State？
+//   因为 handler 的参数类型不只有 State 一种：
+//   HeaderMap / Path / Query / Form 以及未来的 AuthUser
+//   全都实现同一个 FromRequestParts trait。
+//   泛型 + trait 限界是【统一机制】：不关心你具体是啥，
+//   只要你说得清"怎么从请求里造出我"就能当参数。
+//   这就是开放设计：任何人实现这个 trait 就能用。
+//
+// ============================================================
+// 【教学④：Handler::call —— 宏展开 + 单态化（性能上零开销）】
+// ============================================================
+// 问：get 是不是变参模板？内部是不是维护 vtable 装 &dyn Trait，
+//      然后 home(vtable[0], vtable[1]).await？会不会有虚调用开销？
+// 答：三层拆解。
+//
+// ① get 不是变参 —— Rust 没有变参泛型（做不到 get(a,b,c) 任意个数）。
+//    axum 的解法：Handler trait 的第二个泛型参数 T 是一个【元组】，
+//    元组长度 = 参数个数。再用宏批量生成"每个长度各一份实现"：
+//      impl Handler<(T1,), S> for F           // 1 参数版本
+//      impl Handler<(T1, T2), S> for F        // 2 参数版本
+//      impl Handler<(T1, T2, T3), S> for F    // 3 参数版本
+//      ... 一直到 64 个参数
+//    相当于 C++ 手写 64 个重载，只是用宏代劳了。
+//
+// ② call 内部不是循环 —— 是宏展开出来的【顺序语句】：
+//      let t1 = T1::from_request_parts(&mut parts, &state).await?;
+//      let t2 = T2::from_request_parts(&mut parts, &state).await?;
+//      let res = self(t1, t2).await;   // 调用你写的 home
+//    编译时 T1/T2 都是具体类型（State<AppState>、HeaderMap），
+//    所以 T1::from_request_parts(...) 是直接调用，没有指针跳转。
+//    这就是【单态化】（monomorphization）——Rust 版的模板实例化。
+//
+// ③ vtable 直觉对了一半，但位置不对：
+//    - 参数提取层：纯静态分发，零虚调用，编译期内联。
+//    - 路由存储层：Router 要同时装 home/login/logout...它们类型各不同，
+//      必须类型擦除成 Box<dyn Service> 才能放进同一个路由表
+//      ——这才是你说的 vtable/&dyn Trait。每请求【一次】装箱间接调用，
+//      固定成本，相对网络 IO / 数据库查询可以忽略不计。
+//
+// 和 C++ 的对照：
+//   C++ 变参模板(parameter pack)  →  Rust 元组 + 宏展开
+//   C++ 模板实例化                 →  Rust 单态化 (monomorphization)
+//   C++ std::function/vtable       →  Rust Box<dyn Trait> 类型擦除
+// 一句话：axum 把"变参"翻译成"元组+宏"，提取层全静态，只在路由层
+// 做一次装箱——这是所有 web 框架都躲不掉的最小代价。
+//
+// ============================================================
+// 【教学④·补充：axum 内部的两层结构 —— 函数如何"变成"handler】
+// ============================================================
+// 学生追问：为什么没看到 impl Handler for home？trait 不是只能
+//   impl 给 struct 吗？是不是有个 Handler"类"包装了函数？
+//   答：分两层（这层理解透，axum 内核就通了）。
+//
+// ── 第一层：trait 直接写在函数类型上（编译期，零包装）───────
+//   Rust 的 trait 可以 impl 给【任何类型】，包括函数本身：
+//   每个函数都有一个唯一的"函数项类型"（匿名、零大小、不占内存），
+//   它实现了 FnOnce(Args) -> Fut —— "能被调用，参数是 Args"。
+//   然后 blanket impl（一揽子实现）自动覆盖这种类型：
+//     impl<F, Fut, Args, Res, S> Handler<Args, S> for F
+//     where
+//         F: FnOnce(Args) -> Fut + Clone + Send + 'static,
+//         Args: FromRequestParts<S> + Send,
+//         Fut: Future<Output = Res> + Send,
+//         Res: IntoResponse,
+//   编译器见到 get(home) 时自动匹配，无需手写一行 impl。
+//   （这就是 Rust 和 C++ 的根本差异：方法不是只能加在 class 上）
+//
+// ── 第二层：HandlerService 才是那个"包装"（≈ std::function）──
+//   路由表要求所有东西都是统一的 Box<dyn Service>，但 home 的
+//   类型很特殊 → axum 用 HandlerService::new(home) 包一层，
+//   使它实现 tower::Service，Router 才能存它、调它。
+//   与 std::function 的区别：std::function 是运行时类型擦除
+//   （堆分配 + 虚调用）；HandlerService 是编译期泛型（单态化）。
+//
+//   C++ 对照表：
+//     Handler trait  = C++ concepts（模板约束）
+//     HandlerService = std::function 的角色（但零擦除开销）
+//     函数项类型     = 模板实参的具体类型（F，不是 std::function）
+//
+// ── 完整调用链（编译期 → 运行期）───────────────────────────
+//   编译期：get(home)
+//     → blanket impl 自动判定 home 实现 Handler
+//     → axum 用 HandlerService::new(home) 包成 Service
+//     → 存入路由表（类型擦除成 Box<dyn Service>）
+//   运行期：请求 → Router 查路径表 → 命中那个 Service 的 call
+//     → 内部调 <home 类型 as Handler>::call(req, state)
+//     → call 里 let (mut parts, body) = req.into_parts()
+//     → 逐个 T::from_request_parts(&mut parts, &state).await?
+//     → let res = self(t1, t2).await     // 调用你的 home
+//     → res.into_response()
+//   注意：get() 只在编译期出现一次；运行期入口是路由表里
+//   那个 Service 的 call，不是"get 方法"。
+//
+// ── 关键纠正：from_request_parts 是"构造"，不是"剥包装" ────
+//   它返回的就是 Self 本身（带着包装）：
+//     State::<AppState>::from_request_parts(...) → State<AppState>
+//     HeaderMap::from_request_parts(...)         → HeaderMap
+//   home 的参数类型（State<AppState>、HeaderMap）与提取器返回值
+//   完全一致，call 里直接传进去，中间没有任何"拆开再传"。
+//   State(state) 是【参数模式】：home 被调用的瞬间自动解构盒子，
+//   把 AppState 绑定到 state —— 等价于 C++ 的
+//   auto [a, b] = p;，只是把解构从函数体提前到了参数位置。
+//
+// ── parts 是什么？──────────────────────────────────────────
+//   req.into_parts() 把请求拆成 (Parts, Body)：
+//     Parts = 方法 / URI / 请求头（Cookie 在这）/ 扩展数据
+//     Body  = 请求体（只有 Form/Json 这类提取器才需要）
+//   各提取器各取所需：HeaderMap → 读 headers；Path/Query → 解析 uri；
+//   State → 两个都不读，只要 state 参数（clone 装盒）。
+//   为什么 parts 是 &mut？因为 Extension 会从 parts 里【取走】东西
+//   （所有权转移）。为什么分两个 trait？Form/Json 需要整个请求
+//   （FromRequest），State/HeaderMap 只需头部（FromRequestParts）。
+//
+// ── 抽象链：从"通用框架"到"你的代码"，每层一种抽象手段 ──────
+//
+//   浏览器
+//     │  HTTP 请求（字节流）
+//     ▼
+//   [Router 路由表]              抽象①：类型擦除（运行时多态）
+//   装 Box<dyn Service>          home/login/logout 类型各异，
+//     │  match 路径 → 命中目标      统一擦成"Service"才能同表存放
+//     ▼                           （vtable，每请求 1 次间接调用）
+//   [HandlerService<H, T, S>]   抽象②：泛型适配（≈ std::function）
+//   实现 tower::Service          包一层让"特殊类型"也能当 Service
+//     │  Service::call(req, state) 编译期泛型，零虚调用
+//     ▼
+//   [Handler trait]             抽象③：blanket impl
+//   <home类型 as Handler>::call  函数项类型自动获得"能当 handler"
+//     │                             的资格，不需要手写 impl
+//     ▼
+//   [宏展开 + 提取器]           抽象④：统一契约（构造 Self）
+//   T1::from_request_parts(&mut parts, &state).await?   ← 宏逐参数展开
+//   T2::from_request_parts(&mut parts, &state).await?   State → State<AppState>
+//     │  每参数一行，编译期单态化                            HeaderMap → HeaderMap
+//     ▼
+//   [你的函数 home]             抽象⑤：具体业务代码（无抽象）
+//   State(state) 参数模式解构    守卫 → 查库 → 返回 Html / Redirect
+//     │
+//     ▼
+//   [Response] → 回浏览器
+//
+//   抽象手段沿链路递减：
+//     类型擦除(vtable) → 泛型适配 → trait + blanket impl
+//     → 宏展开(单态化) → 具体函数
+//   越往上越通用（框架层替你兜底），越往下越具体（你的代码）。
+//
+// ============================================================
+// 【教学⑤：impl Future / impl Trait —— 返回"匿名类型"】
+// ============================================================
+//   - 普通写法 fn f() -> SomeConcreteType：必须写死一个具体类型。
+//   - impl Trait 写法 fn f() -> impl Future<...>：不写具体类型，
+//     只承诺"返回的东西实现了 Future trait"。
+//     调用方知道"它是 Future，可以 .await"，但不用知道它具体叫什么。
+//   为什么这里必须用 impl Trait？因为 from_request_parts 内部是
+//     async 块（async {} 或 .await 链），async 块编译后会生成一个
+//     【编译器才知道名字的匿名类型】——人没法写出它的名字，
+//     所以用 impl Future 说"就是个 Future，能 await 就行"。
+//   注意：impl Trait 只隐藏"具体是哪个类型"，不隐藏 trait 能力。
+//   这比 C++ 的 auto 更严格：auto 随便什么都能推导，impl Trait
+//   必须满足指定的 trait，否则编译不过。
+//
+// ============================================================
+// 【教学⑥：实战易错点 —— 两个"坑"（都是学生踩过的）】
+// ============================================================
+// 坑 1：在返回 String 的 handler 里用 ? 报错
+//   ? 的意思是"如果是 Err，就 return 这个错误"。
+//   但 String 没有"错误通道"——? 想 return 的 AppError 装不进去。
+//   解决：返回类型改成 Result<Response, AppError>（或 Result<String, ...>）。
+//
+// 坑 2：.into_response() 报"method not found"
+//   into_response 是 trait 方法，必须把 IntoResponse 也 use 进来：
+//     use axum::response::{Html, IntoResponse, Redirect, Response};
+//   （只导入类型不够，trait 本身也要在作用域内，类似 Iterator）
+//
+// 为什么 home 返回 Result<Response, AppError> 而不是 Result<String, ...>？
+//   因为成功分支有两种返回值：HTML 字符串 / 重定向 Redirect。
+//   它们类型不同，String 装不下，只有 Response（"通用响应"）能装下。
+//   这两种值都实现 IntoResponse，用 .into_response() 转成统一类型。
 //
 // 这个 home handler 展示 M0 的成果：
 // 首页显示一行欢迎语 + 数据库状态。
@@ -349,7 +644,7 @@ async fn ensure_admin(state: &AppState)
 //   M2+：返回 askama 模板（Html）、处理 JSON
 // 🎯 验收：M0 结束能自己新写一个 handler 并注册路由。
 // ============================================================
-async fn home(State(state): State<AppState>) -> String
+async fn home(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, AppError>
 {
     // 【教学：State(state) 提取器】
     // 参数里的 State(state) 会自动从请求里取出我们传入的 AppState。
@@ -367,13 +662,26 @@ async fn home(State(state): State<AppState>) -> String
     //   M1：会用 query_as + FromRow 查整行转 struct
     //   M2+：会用 query! 宏（编译期检查 SQL）
     // 🎯 验收：能说出 fetch_one 和 fetch_all 的区别（一行 vs 多行）。
+
+    // 未登录 → 重定向到登录页；其他错误 → 原样返回
+    let user = match handlers::auth::require_user(&state, &headers).await
+    {
+        Ok(user) => user,
+        Err(AppError::Unauthorized) => return Ok(Redirect::to("/login").into_response()),
+        Err(e) => return Err(e),
+    };
+
     let user_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users")
         .fetch_one(&state.pool)
         .await
-        .unwrap_or(-1);
+        .map_err(AppError::Database)?;
 
-    // 返回 HTML 字符串
-    format!("<h1>训练记录系统</h1><p>M0 脚手架运行成功！</p><p>数据库用户数: {user_count}</p>")
+    // 返回 HTML 字符串（显示当前登录用户名，让守卫取出的 user 真正用上）
+    Ok(Html(format!(
+        "<h1>训练记录系统</h1><p>欢迎回来，{}！</p><p>M0 脚手架运行成功！</p><p>数据库用户数: {user_count}</p>",
+        user.username
+    ))
+    .into_response())
 }
 
 // ============================================================

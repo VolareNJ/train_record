@@ -311,6 +311,21 @@ CREATE INDEX idx_records_date ON records(record_date);
 | 权限 | 管理员：用户管理 + 全部功能；普通用户：仅本人数据 |
 | 数据隔离 | 所有查询强制带 `user_id`，杜绝越权 |
 
+### 5.1.x 路由守卫方案演进（M1 → M2+）
+
+**背景**：需要登录才能访问的页面，要在 handler 处理前验证会话。
+
+- **M1（当前方案 B）**：handler 函数体内调用 `require_user(state, headers)`，未登录返回 `Redirect::to("/login")`。
+  复用 M1 第 2 步已实现的 `require_user`，改动最小；不引入新 trait。
+- **M2+（改造方案 A）**：自定义提取器 `AuthUser`（`impl FromRequestParts<AppState>`）。
+  - handler 签名改为 `async fn home(AuthUser(user): AuthUser, State(state): State<AppState>) -> ...`
+  - 提取器内部完成：token 提取 → session 验证 → 返回 `User`；失败自动返回 401
+  - 好处：每个需要登录的页面只需写 `AuthUser(user)` 一个参数，守卫逻辑零重复；
+    还能做组合提取器 `AdminUser`（先验登录、再验 `is_admin`）
+  - 触发时机：M2 起页面大量出现（阶段/动作/计划/记录都要登录），
+    函数内重复写守卫开始变多，一次性改造为提取器
+- **不改的原因**（若未来出现）：无。方案 A 是 axum 正统做法，M2 必须落地。
+
 ### 5.2 阶段管理
 - 创建阶段：名称、开始日期、备注
 - **坚持天数**：阶段有 `start_date` 起始日期，进入/查看阶段时计算并显示"已坚持 N 天"（沿用原 `sys.py` 的 `Duration` 概念，`N = 今天 − start_date`）

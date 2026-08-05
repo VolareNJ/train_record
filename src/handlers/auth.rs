@@ -368,7 +368,7 @@ pub async fn login(
         SET_COOKIE,
         cookie
             .parse()
-            .map_err(|e| AppError::Other("头文件生成失败".to_string()))?,
+            .map_err(|_e| AppError::Other("头文件生成失败".to_string()))?,
     );
 
     // 7. 返回 (headers, Redirect::to("/"))
@@ -593,7 +593,7 @@ fn extract_token(headers: &HeaderMap) -> Option<String>
 /// 2. auth::get_user_by_session(&state.pool, &token).await
 ///    （注意传 &token：get_user_by_session 收 &str，token 是 String，
 ///      必须传引用才能匹配参数类型）
-async fn require_user(state: &AppState, headers: &HeaderMap) -> Result<User, AppError>
+pub async fn require_user(state: &AppState, headers: &HeaderMap) -> Result<User, AppError>
 {
     // TODO(M1): 学生实现（步骤见上方注释）
     // unimplemented!("M1 学生实现：路由守卫")
