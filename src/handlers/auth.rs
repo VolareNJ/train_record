@@ -36,7 +36,12 @@ use axum::{
 };
 use serde::Deserialize;
 
-use crate::{AppState, auth, error::AppError, models::User};
+use crate::{
+    AppState,
+    auth::{self, get_user_by_session},
+    error::AppError,
+    models::User,
+};
 //   AppState   = 共享数据（连接池等），State(state) 提取器用它
 //   auth       = 上一节实现的认证逻辑（hash/verify/create_session/...）
 //   AppError   = 统一的错误类型，? 运算符自动转
@@ -909,6 +914,69 @@ pub async fn admin_create_user(
 //
 // 📌 M1 学习目标验收：能说出"Rejection 为什么用 AppError"、
 //   "为什么是 FromRequestParts 而不是 FromRequest"。
+//
+// ============================================================
+// 【教学 Q&A：学生实现后的三个追问】
+//
+// ── Q1：M1 和 M2 的守卫，本质区别是什么？──
+// 学生问："是不是 M1 在参数传 state，函数体内从 state 提取 session 再验证；
+//   而 M2 直接在参数提取器提取时就验证了？"
+//
+// 答：验证逻辑完全一样（都调 extract_token + get_user_by_session），
+//   变的是"谁来调用、在哪调用"：
+//     M1（命令式）：参数传 State + HeaderMap，函数体内手动 require_user
+//       → 保安站在每个房间门口，进门时手动盘查（每个函数写一遍）
+//     M2（声明式）：签名写 AuthUser(user): AuthUser，axum 在调用 handler
+//       之前自动执行 from_request_parts 完成验证
+//       → 楼门禁系统统一刷卡，验证失败（401）根本进不了函数体
+//   一句话：M2 不是"验证变快了"，是"验证的位置从函数体搬到了签名"，
+//   由框架自动执行，handler 里少写两行重复守卫。
+//   但注意：提取器内部还是要查库（session → user），这个"成本"没变，
+//   变的只是代码组织方式（封装 + 自动调用）。
+//
+// ── Q2：extract_token 为什么返回 Option 而不是 Result？──
+// 学生问："为什么 extract_token 不直接返回 Result，
+//   而是调用时才把 Option 转 Result？"
+//
+// 答：关键看"没有 token"算不算"错误"：
+//     - 没带 cookie / 没有 session=  → None（正常情况：只是没登录而已）
+//     - 解析逻辑本身不会失败          → 没有"错误信息"需要携带
+//   Option 表达"可能有值，可能没有"，正好够用；
+//   Result 的 Err 要携带错误信息，但这里所有失败原因都归为"未登录"，
+//   Err 里装什么都是多余——用 Result 反而逼 extract_token 替调用方做决策
+//   （"None 算什么错误？"），这是职责越界。
+//
+//   所以 extract_token 只做"解析"（纯函数：有→Some，无→None），
+//   "找不到怎么办"是调用方的事：
+//     require_user：ok_or(Unauthorized)?  → 拒绝请求（强制）
+//     logout：      if let Some 跳过      → 没活可干（温柔）
+//   同一个 None，两种处理，这正是"把决策权留给调用方"的好处。
+//   若 extract_token 返回 Result，调用方还得先 match Err 再决定，
+//   反而多绕一圈（前面 logout 的注释已经演示过这个对比）。
+//
+// ── Q3：pub struct AuthUser(pub User); 是什么写法？──
+// 学生问："这个写法没见过，是不是结构体再带一个参数进去？
+//   为什么不直接放在结构体内部？"
+//
+// 答：这是"元组结构体"（tuple struct）——结构体名后直接跟括号括住的字段类型，
+//   不写字段名。对比三种结构体：
+//     struct User { id: i64 }   // 命名结构体：每个字段有名字
+//     struct AuthUser(User);    // 元组结构体：字段没名字，只有位置（.0）
+//     struct Unit;              // 单元结构体：没有字段
+//   构造：AuthUser(user)；解构：AuthUser(u)（模式匹配位置 0）。
+//
+//   "为什么不写 struct AuthUser { user: User }"？——完全可以！两者等价，
+//   只是元组结构体少写一个字段名。AuthUser 只有一个字段且语义明确
+//   （"已验证登录的用户"），字段名没得可起，用元组结构体最简洁。
+//   单字段包装类型是 Rust 惯例，叫 **newtype 模式**，真正价值是类型安全：
+//   把 User 包成 AuthUser，编译器就能区分"已验证的用户"和"普通 User"，
+//   防止把没验证的用户当已登录用户用（比如写 user: User 参数，
+//   axum 无法区分"这是提取器"还是普通类型，包一层就有了身份）。
+//
+//   还有一层"孤儿规则"：User 是 sqlx 的查询模型（外部类型），
+//   FromRequestParts 是 axum 的 trait（外部 trait）——外部类型不能给
+//   外部 trait 实现 impl（孤儿规则限制）。包成我们自己的 AuthUser，
+//   就能合法地 impl FromRequestParts<AppState> for AuthUser 了。
 // ============================================================
 
 /// 已登录用户（M2 起作为 handler 的"守卫提取器"）
@@ -927,6 +995,9 @@ impl FromRequestParts<AppState> for AuthUser
     ) -> Result<Self, Self::Rejection>
     {
         // TODO(M2 第 1 步): 学生实现（步骤见上方注释）
-        unimplemented!("M2 学生实现：AuthUser 提取器")
+        let token = extract_token(&parts.headers).ok_or_else(|| AppError::Unauthorized)?;
+        let user = get_user_by_session(&state.pool, &token).await?;
+        Ok(AuthUser(user))
+        // unimplemented!("M2 学生实现：AuthUser 提取器")
     }
 }
