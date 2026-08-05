@@ -26,9 +26,13 @@
 // 下面每个导入都会在某个函数里用到，实现时自然会用上。
 // （骨架阶段有 unused 警告是正常的，实现完就消失了。）
 use axum::{
-    extract::{Form, State},
-    http::{HeaderMap, header::SET_COOKIE}, // SET_COOKIE：设置响应头用（login/logout）
-    response::Redirect,                    // 重定向：登录成功跳首页、登出跳登录页
+    extract::{Form, FromRequestParts, State},
+    http::{
+        HeaderMap,
+        header::SET_COOKIE, // SET_COOKIE：设置响应头用（login/logout）
+        request::Parts, // Parts：请求的"非 body 部分"（headers/method/uri...），提取器从这里拿数据
+    },
+    response::Redirect, // 重定向：登录成功跳首页、登出跳登录页
 };
 use serde::Deserialize;
 
@@ -830,4 +834,99 @@ pub async fn admin_create_user(
     Ok(Redirect::to("/admin/users"))
 
     // unimplemented!("M1 学生实现：创建用户")
+}
+
+// ============================================================
+// 【M2 第 1 步】AuthUser 提取器（方案 A：声明式守卫）★ 本阶段核心
+// ============================================================
+// 【教学：为什么 M2 要引入 AuthUser？】
+// M1 的守卫写法（方案 B）：
+//   async fn list(State(state): State<AppState>, headers: HeaderMap)
+//       -> Result<..., AppError>
+//   {
+//       let user = require_user(&state, &headers).await?;   // ← 每个函数都写
+//       ...
+//   }
+// M2 有 14 个 handler 都要登录，照 M1 写法每个函数都要重复两行：
+//   headers: HeaderMap 参数 + require_user(&state, &headers).await?
+// 重复代码一多，就值得"封装"了。
+//
+// 【教学：声明式 vs 命令式 —— 守卫的两种哲学】
+//   方案 B（命令式）：
+//     函数体里自己调用 require_user，"拿到再继续"——
+//     像保安在门口手动盘查，每个房间门口都要站一个保安。
+//
+//   方案 A（声明式）：
+//     签名里写 user: AuthUser，axum 在调用 handler 之前自动做守卫——
+//     像大厦门禁系统：你刷了卡才能进，进门的事由系统管，
+//     办公室里不用再设保安。
+//
+//   axum 里"声明式"的实现方式，就是实现 FromRequestParts：
+//   告诉 axum"AuthUser 这种参数，从请求里怎么提取出来"。
+//   handler 签名里出现 AuthUser，axum 就会自动调用我们的提取逻辑。
+//   M1 我们剖析过 State/HeaderMap 的提取器机制，现在自己实现一个。
+//
+// 【教学：FromRequestParts vs FromRequest —— 为什么守卫用 parts 版】
+//   FromRequestParts：只能读请求的"非 body 部分"（headers、method、uri...）
+//   FromRequest：    能读整个请求（包括 body）
+//   守卫只需要读 Cookie 头，不碰 body，所以用 FromRequestParts 就够了。
+//   好处：parts 版可以和其他需要 body 的提取器（如 Form）同时用，
+//         请求体不会被抢走（body 只能被一个提取器消费）。
+//
+// 【教学：Rejection = AppError —— 提取器失败返回什么】
+//   type Rejection = AppError;
+//   意思是：提取失败时返回 AppError（这里就是 Unauthorized 401）。
+//   为什么这样设计？handler 的返回类型是 Result<_, AppError>，
+//   提取器返回的 Rejection 必须能转成 handler 的错误类型，? 才能用。
+//   我们直接让 Rejection = AppError，两边一致，零转换。
+//   （这也意味着：AuthUser 提取失败 → 401 → 前端自动跳登录页。）
+//
+// 【教学：元组结构体 AuthUser(pub User) —— 包装器模式】
+//   为什么不直接返回 User？因为提取器是按"参数类型"匹配的，
+//   如果直接写 user: User，axum 无法区分"这是提取器"还是普通类型。
+//   包一层 AuthUser 就是告诉 axum："这个类型是我的自定义提取器"。
+//   用的时候模式解构：
+//     async fn list(State(state): State<AppState>, AuthUser(user): AuthUser)
+//   解构后 user 就是 User，和 M1 的 require_user 返回的一样。
+//
+// 【教学：复用 vs 重写 —— 提取器只是"换个入口"】
+//   AuthUser 提取器内部做的事，和 require_user 一模一样：
+//     extract_token(&parts.headers) → get_user_by_session(&state.pool, token)
+//   我们直接复用这两个既有函数，不重新写解析逻辑。
+//   这就是分层的好处：逻辑层（auth.rs）写好一次，
+//   表现层（守卫函数、提取器）想用几次用几次。
+//   require_user 本身保留：admin 页面还要用它（它返回 User 方便 .is_admin），
+//   以及作为教学对照。
+//
+// 【实现步骤】（学生填写 impl 块里的函数体）
+// 1. 取 token：
+//      let token = extract_token(&parts.headers).ok_or(AppError::Unauthorized)?;
+//    （extract_token 收 &HeaderMap，parts.headers 就是 HeaderMap）
+// 2. 查用户：
+//      let user = auth::get_user_by_session(&state.pool, &token).await?;
+// 3. 包一层返回：
+//      Ok(AuthUser(user))
+//
+// 📌 M1 学习目标验收：能说出"Rejection 为什么用 AppError"、
+//   "为什么是 FromRequestParts 而不是 FromRequest"。
+// ============================================================
+
+/// 已登录用户（M2 起作为 handler 的"守卫提取器"）
+///
+/// 用法：handler 签名里写 `AuthUser(user): AuthUser`，
+/// 未登录请求会在调用 handler 前被拦截（401 → 重定向登录页）。
+pub struct AuthUser(pub User);
+
+impl FromRequestParts<AppState> for AuthUser
+{
+    type Rejection = AppError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection>
+    {
+        // TODO(M2 第 1 步): 学生实现（步骤见上方注释）
+        unimplemented!("M2 学生实现：AuthUser 提取器")
+    }
 }
