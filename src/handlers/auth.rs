@@ -671,7 +671,7 @@ pub async fn admin_users(
 
     if !user.is_admin
     {
-        return Err(AppError::Validation("需要管理员权限".to_string()));
+        return Err(AppError::Forbidden("需要管理员权限".to_string()));
     }
 
     let users = sqlx::query_as::<_, User>("SELECT * FROM users ORDER BY id ASC")
@@ -785,6 +785,13 @@ pub async fn admin_users(
 ///        .execute(&state.pool).await.map_err(AppError::Database)?
 /// 6. 重定向回管理页：Ok(Redirect::to("/admin/users"))
 /// 返回类型说明：创建成功返回重定向（回到用户管理页）
+///
+/// 【教学：401 vs 403 —— 两个"拒绝"的区别】
+///   require_user 失败          → 401（还没登录，你是谁？）
+///   is_admin 为 false          → 403（登录了但权限不够，你不配）
+///   两者都是"拒绝"，但语义不同，HTTP 状态码也不同。
+///   旧代码用 Validation（422 参数不合法）是偷懒——权限问题和
+///   表单校验混为一谈；正确语义是 Forbidden（403）。
 pub async fn admin_create_user(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -796,7 +803,7 @@ pub async fn admin_create_user(
 
     if !user.is_admin
     {
-        return Err(AppError::Validation("需要管理员权限".to_string()));
+        return Err(AppError::Forbidden("需要管理员权限".to_string()));
     }
 
     if form.username.trim().is_empty() || form.password.len() < 6

@@ -338,9 +338,13 @@ async fn ensure_admin(state: &AppState)
         .await
         .unwrap_or(false);
 
+    // 已存在 → 直接返回（无感静默）
+    // 【产品直觉】日志是给"值得关注的事件"用的：
+    //   - "创建了管理员"  → 首次部署的信号，值得打日志 ✅
+    //   - "已存在，跳过"  → 每次启动都会发生的常态，打日志是噪音 ❌
+    // 常态不报站，异常才报站——用户无感进入系统。
     if exists
     {
-        tracing::info!("管理员 {} 已存在，跳过创建", state.config.admin_username);
         return;
     }
 

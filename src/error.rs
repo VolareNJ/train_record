@@ -45,6 +45,8 @@ pub enum AppError
     NotFound(String),
     /// 参数校验失败（如体重是负数）
     Validation(String),
+    /// 拒绝
+    Forbidden(String),
     /// 其他未分类错误
     Other(String),
 }
@@ -93,6 +95,11 @@ impl IntoResponse for AppError
             {
                 // 422：参数不合法
                 (StatusCode::UNPROCESSABLE_ENTITY, msg)
+            },
+            AppError::Forbidden(msg) =>
+            {
+                // 403：拒绝
+                (StatusCode::FORBIDDEN, msg)
             },
             AppError::Other(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
         };
