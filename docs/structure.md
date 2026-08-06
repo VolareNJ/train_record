@@ -224,9 +224,9 @@ CREATE TABLE exercises (
     name         TEXT NOT NULL,                  -- 动作名（同用户下唯一）
     body_part    TEXT NOT NULL DEFAULT '',       -- 部位分组：胸/背/腿/肩/臂/核心
     default_mode TEXT NOT NULL DEFAULT 'bar',    -- 默认模式: bar/support/std/lb
-    bar_weight   REAL NOT NULL DEFAULT 20.0,     -- 默认杆重（bar 模式）
-    default_sets INTEGER NOT NULL DEFAULT 3,     -- 默认组数
-    default_reps INTEGER NOT NULL DEFAULT 8,     -- 默认次数
+    bar_weight   REAL NOT NULL DEFAULT 20.0,     -- 默认杆重（bar 模式，前端预填，DEFAULT 仅兜底）
+    default_sets INTEGER NOT NULL DEFAULT 3,     -- 默认组数（前端预填，DEFAULT 仅兜底）
+    default_reps INTEGER NOT NULL DEFAULT 8,     -- 默认次数（前端预填，DEFAULT 仅兜底）
     key_points   TEXT NOT NULL DEFAULT '',       -- 动作要领
     created_at   TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
     UNIQUE(user_id, name)

@@ -70,6 +70,7 @@ pub struct ListQuery
 //   bar_weight   REAL（默认 20.0）      —— 表单层用 String！
 //   default_sets INTEGER（默认 3）
 //   default_reps INTEGER（默认 8）
+//   （"默认"指前端表单预填的值，用户可见可改；见下方说明）
 //
 // 为什么数字字段也用 String 接收？和 start_date 同理：
 //   HTML 表单提交的一切都是字符串（"20"、"3"、"8"）。
@@ -85,10 +86,15 @@ pub struct ListQuery
 // 失败时我们转成 Validation(422)——"你填的不是数字"是用户输入问题，
 // 不是服务器问题，不该 500。
 //
-// 加上"留空 → 默认值"的规则，bar_weight 的完整转换：
-//   空串 → 20.0（表默认）
-//   非空且是数字 → 解析值
-//   非空但不是数字 → Err(Validation("杆重必须是数字"))
+// 【默认值语义：由前端实现，不在后端判断】
+// 表单的默认值（杆重 20、组数 3、次数 8）由**前端表单预填**：
+//   bar_weight      → <select> 第一个 option 默认选中（value="20"）
+//   default_sets/reps → <input type="number" value="3"> / value="8"
+// 前端保证提交时一定有值，后端只 parse，不做"空串 → 默认值"判断。
+// 三层防线各司其职：
+//   ① 前端预填 = 正常路径的默认值（用户看到、可改）
+//   ② 数据库 DEFAULT = 兜底（INSERT 漏了列才触发，正常不会）
+//   ③ 后端 parse 失败 = 拒绝（绕过前端直接 POST 空串 → 422）
 //
 // 【教学：下拉选择（<select>）】
 // body_part（胸/背/腿/肩/臂/核心）和 default_mode（bar/support/std/lb2kg）
@@ -217,8 +223,9 @@ pub async fn list(
 /// 【教学：这个表单和 create_form 的异同】
 /// 和 phases 的 create_form 结构一样（GET 显示 / POST 处理分离），
 /// 但字段多了：name/body_part/default_mode 用输入框或下拉框，
-/// bar_weight/default_sets/default_reps 是数字输入框
-/// （<input type="number">，浏览器自带数字校验），key_points 是文本域。
+/// bar_weight 是下拉框（学生设计：杠铃规格有限，只能选），
+/// default_sets/default_reps 是数字输入框（<input type="number">，
+/// 浏览器自带数字校验，**前端预填默认值 3 / 8**），key_points 是文本域。
 ///
 /// 【教学：<select> 下拉框的完整写法】
 ///   <label>部位
@@ -234,27 +241,111 @@ pub async fn list(
 ///   提交时 value 进表单。用户看到中文、提交的也是中文，
 ///   和数据库存的中文一致（body_part TEXT）。
 ///
-/// 【教学：数字输入框 + 默认值提示】
-///   <input type="number" name="bar_weight" step="0.5" placeholder="默认 20">
-///   type="number"   → 浏览器只让输入数字
-///   step="0.5"      → 允许小数（片重常是 0.5 的倍数）
-///   placeholder     → 灰色提示文字（不是真实值，只是提示）
-///   不填提交 → 空串 → 后端转默认值（bar_weight → 20.0）
+/// 【教学：select 的"显示文字 / 值"分离 —— 学生设计】
+/// 学生问："bar_weight 用下拉框，但健身房杠铃就三种，基本不用填数字"。
+/// 这正是 <select> 的经典用法——**显示和值分离**：
+///   <option value="20">Olympic(20kg)</option>
+///          ↑ 传回后端        ↑ 用户看到
+///   用户看到 "Olympic(20kg)"，提交的是 "20"，后端 parse 成 20.0。
+///   好处：用户不用猜数字，后端也不用校验非法输入（选项都是合法值）。
+///   代价：杠铃种类被写死在代码里，以后加新杆要改这里（枚举的固有局限）。
+///   （这就是为什么 default_sets/reps 用输入框、bar_weight 用下拉框：
+///     组数/次数是连续值要自由填，杠铃是有限规格只能选。）
+///
+/// 【教学：bar_weight 条件显示 —— 服务端 vs 客户端的边界】
+/// 学生问："希望 default_mode 为 bar 时 bar_weight 才显示，如何设置？"
+/// 关键认知：这是**浏览器端**的问题，服务端做不到。
+///   服务端拼 HTML 时，用户还没选 default_mode——
+///   静态 HTML 不可能知道"用户将来会选什么"。
+///   而"选择后动态显示/隐藏"发生在用户已经选完的浏览器里。
+/// 所以必须引入一小段 JavaScript（本项目第一个 JS）：
+///   <select id="default_mode" onchange="toggleBarWeight()"> ...
+///     onchange：select 值变化时触发函数（HTML 内联事件）。
+///   function toggleBarWeight() {
+///       var mode = document.getElementById('default_mode').value;
+///       document.getElementById('bar_weight_row').style.display =
+///           (mode === 'bar') ? '' : 'none';
+///   }
+///   toggleBarWeight();   // 页面加载时先执行一次，同步初始状态
+/// 概念：**关注点分离**——服务端负责"页面有什么"（内容），
+/// 客户端负责"怎么响应用户操作"（交互）。
+///
+/// 【教学：display:none 的字段仍会随表单提交！】
+/// 隐藏 bar_weight 的 select 后，提交表单时它**照样提交**，
+/// 提交的是当前选中的 option（默认第一个："20"）。
+/// 所以 mode ≠ bar 时，后端收到 bar_weight = "20" → parse → 20.0，
+/// 恰好是表默认值，逻辑自洽——这正是我们想要的行为。
+/// 反过来提醒：以后若想隐藏字段且**不提交**，要用 disabled 属性
+/// （disabled 的字段不会进表单）。
 ///
 /// 【实现步骤】
 /// 1. 签名：State + AuthUser
 /// 2. 返回 <form method="post" action="/exercises"> 的 HTML
-///    （下拉框：body_part 6 项、default_mode 4 项；
-///     数字框：bar_weight/default_sets/default_reps；
-///     文本域：key_points）
-/// 3. 返回链接 /exercises
+///    （下拉框：body_part 6 项、default_mode 4 项、bar_weight 3 项；
+///     数字框：default_sets/default_reps；文本域：key_points）
+/// 3. default_mode 加 id + onchange（bar 在前 + selected，表默认 bar），
+///    bar_weight 包进 <div id="bar_weight_row">，
+///    页面底部放 <script> 切换显隐
+/// 4. 返回链接 /exercises
 pub async fn create_form(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
 ) -> Result<String, AppError>
 {
-    // TODO(M2 第 3 步): 学生实现（步骤见上方注释）
-    unimplemented!("M2 学生实现：创建动作表单页")
+    Ok(r#"
+        <h1>创建训练动作</h1>
+        <form method="post" action="/exercises">
+            <label>动作名称
+                <input name="name" required>
+            </label><br>
+            <label>部位
+                <select name="body_part" required>
+                    <option value="胸">胸</option>
+                    <option value="背">背</option>
+                    <option value="腿">腿</option>
+                    <option value="肩">肩</option>
+                    <option value="臂">臂</option>
+                    <option value="核心">核心</option>
+                </select>
+            </label><br>
+            <label>计重方式
+                <select name="default_mode" id="default_mode" onchange="toggleBarWeight()">
+                    <option value="bar" selected>杠铃</option>
+                    <option value="support">支撑</option>
+                    <option value="std">标准kg</option>
+                    <option value="lb2kg">标准lb</option>
+                </select>
+            </label><br>
+            <div id="bar_weight_row">
+                <label>杠铃重量
+                    <select name="bar_weight">
+                        <option value="20">Olympic(20kg)</option>
+                        <option value="11.3">Smith(11.3kg)</option>
+                        <option value="10">短杠(10kg)</option>
+                    </select>
+                </label>
+            </div><br>
+            <label>默认组数
+                <input type="number" name="default_sets" step="1" value="3">
+            </label><br>
+            <label>默认组容量
+                <input type="number" name="default_reps" step="1" value="8">
+            </label><br>
+            <label>动作要点
+                <textarea name="key_points"></textarea>
+            </label><br>
+            <button type="submit">提交</button>
+        </form>
+        <script>
+            function toggleBarWeight() {
+                var mode = document.getElementById('default_mode').value;
+                document.getElementById('bar_weight_row').style.display =
+                    (mode === 'bar') ? '' : 'none';
+            }
+            toggleBarWeight();
+        </script>
+        "#
+    .to_string())
 }
 
 // ============================================================
@@ -273,21 +364,13 @@ pub async fn create_form(
 /// AppError::Validation（业务语义错误），? 解包。
 /// （|_| 是闭包——忽略错误细节，只转换类型。M3 详细讲闭包。）
 ///
-/// 【教学：空串 → 默认值 的判断（数字版）】
-/// bar_weight 的完整逻辑：
-///   空串 → 20.0（用表默认值）
-///   非空 → parse（可能失败 → 422）
-/// 写法：
-///   let bar_weight = if form.bar_weight.trim().is_empty()
-///   {
-///       20.0
-///   }
-///   else
-///   {
-///       form.bar_weight.trim().parse::<f64>()
-///           .map_err(|_| AppError::Validation("杆重必须是数字".to_string()))?
-///   };
-/// default_sets/default_reps 同理（默认 3 / 8，类型 i64）。
+/// 【教学：数字字段的转换 —— 前端已预填默认值，后端只 parse】
+/// 默认值语义在前端（create_form 预填），后端不需要判断空串：
+///   form.bar_weight.parse::<f64>()
+///       .map_err(|_| AppError::Validation("杆重必须是数字".to_string()))?
+/// 前端正常提交时 bar_weight 必有值（select 默认选中 "20"）。
+/// parse 失败 = 用户改坏了（或绕过前端直接 POST 空串）→ 422。
+/// default_sets/default_reps 同理（.parse::<i64>()，类型 i64）。
 ///
 /// 【教学：create 的其他部分 —— 与 phases 相同】
 ///   校验 name 非空 → 查重（UNIQUE(user_id, name)）
@@ -302,7 +385,7 @@ pub async fn create_form(
 /// 3. 查重：SELECT id FROM exercises WHERE user_id = ? AND name = ?
 ///    → 查到就 Err(Validation("动作名已存在"))
 /// 4. 转换数字字段：bar_weight → f64，default_sets/reps → i64
-///    （空串 → 默认值；非空 → parse，失败 → 422）
+///    （前端已预填默认值，后端只 parse，失败 → 422）
 /// 5. INSERT INTO exercises (user_id, name, body_part, default_mode,
 ///    bar_weight, default_sets, default_reps, key_points) VALUES (?,?,?,?,?,?,?,?)
 /// 6. Ok(Redirect::to("/exercises"))
@@ -312,8 +395,53 @@ pub async fn create(
     Form(form): Form<ExerciseForm>,
 ) -> Result<Redirect, AppError>
 {
-    // TODO(M2 第 3 步): 学生实现（步骤见上方注释）
-    unimplemented!("M2 学生实现：创建动作")
+    // 校验：name 非空（空则立刻返回 422）
+    let name = form.name.trim();
+    if name.is_empty()
+    {
+        return Err(AppError::Validation("动作名称不能为空".to_string()));
+    }
+    // 查重：查到重名 → 422（is_some() 压成 bool，链不打断）
+    if sqlx::query_scalar::<_, i64>("SELECT id FROM exercises WHERE user_id = ? AND name = ?")
+        .bind(user.id)
+        .bind(name)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(AppError::Database)?
+        .is_some()
+    {
+        return Err(AppError::Validation("动作名已存在".to_string()));
+    }
+    // 转换数字字段：前端已预填默认值，后端只 parse（失败 → 422）
+    let bar_weight: f64 = form
+        .bar_weight
+        .parse::<f64>()
+        .map_err(|_| AppError::Validation("杠铃重必须是数字".to_string()))?;
+    let default_sets: i64 = form
+        .default_sets
+        .parse::<i64>()
+        .map_err(|_| AppError::Validation("默认组数必须是整数".to_string()))?;
+    let default_reps: i64 = form
+        .default_reps
+        .parse::<i64>()
+        .map_err(|_| AppError::Validation("默认次数必须是整数".to_string()))?;
+    // INSERT（9 列）。create 不需要 rows_affected：
+    // INSERT 成功必然影响 1 行，execute() 的结果直接丢弃。
+    sqlx::query(
+        "INSERT INTO exercises (user_id, name, body_part, default_mode, bar_weight, default_sets, default_reps, key_points) VALUES (?,?,?,?,?,?,?,?)",
+    )
+    .bind(user.id)
+    .bind(name)
+    .bind(&form.body_part)
+    .bind(&form.default_mode)
+    .bind(bar_weight)
+    .bind(default_sets)
+    .bind(default_reps)
+    .bind(&form.key_points)
+    .execute(&state.pool)
+    .await
+    .map_err(AppError::Database)?;
+    Ok(Redirect::to("/exercises"))
 }
 
 // ============================================================
@@ -372,7 +500,7 @@ pub async fn edit_form(
 /// 不同：
 ///   ① phases 有"归档禁编辑"守卫；exercises 没有归档概念，直接更新。
 ///   ② phases 没做查重（保留现状，靠 UNIQUE 兜底）；exercises 同样。
-///   ③ 数字字段要重新 parse（和 create 一样，空串 → 默认值）。
+///   ③ 数字字段要重新 parse（和 create 一样，前端预填，后端只 parse）。
 ///
 /// 【教学：为什么 exercises 的 update 可以不做查重？】
 /// 和 phases 的 update 同理：不排除自己（id != ?）的查重会误伤
