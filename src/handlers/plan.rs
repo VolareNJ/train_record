@@ -1,4 +1,4 @@
-﻿// ============================================================
+// ============================================================
 // handlers/plan.rs —— 训练计划（模板 Template + 当日计划 Plan）的 HTTP 处理器
 // ============================================================
 // 【教学说明】
@@ -41,8 +41,8 @@ use sqlx::SqlitePool;
 use crate::{
     AppState,
     error::AppError,
-    handlers::auth::AuthUser, // M2 的成果：声明式守卫提取器
-    models::{Plan, PlanItem, Template, TemplateItem},
+    handlers::auth::AuthUser,
+    models::{Exercise, Phase, Plan, PlanItem, Template, TemplateItem},
 };
 
 // ============================================================
@@ -134,7 +134,44 @@ pub async fn list_templates(
     //   阶段已归档（archived=1）→ 列表页顶部加提示"已归档，只读"
     //   然后查模板列表，每行：模板名 + 编辑/删除链接
     //   最后加"新建模板"链接：/phases/{phase_id}/templates/new
-    unimplemented!("M3 学生实现：模板列表")
+    let phase_ret = sqlx::query_as::<_, Phase>("SELECT * FROM phases WHERE id = ? AND user_id = ?")
+        .bind(&phase_id)
+        .bind(&user.id)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(AppError::Database)?
+        .ok_or_else(|| AppError::NotFound("Phase not found".to_string()))?;
+
+    let template_ret = sqlx::query_as::<_, Template>("SELECT * FROM templates WHERE phase_id = ?")
+        .bind(&phase_ret.id)
+        .fetch_all(&state.pool)
+        .await
+        .map_err(AppError::Database)?
+        .iter()
+        .map(|item| {
+            format!(
+                "<tr><td>{tmp_id}</td><td>{pha_id}</td><td>{tmp_name}</td></tr>",
+                tmp_id = item.id,
+                pha_id = item.phase_id,
+                tmp_name = item.name
+            )
+        })
+        .collect::<Vec<String>>()
+        .join("\n");
+
+    Ok(Html(format!(
+        r#"
+                <h2>训练模板</h2>
+                    <table border="1"><tr><th>ID</th><th>阶段ID</th><th>名称</th></tr>
+                        {tmp_content}
+                    </table>
+                <p><a href="/phases/{phase_id}/templates/new">创建训练模板</a></p>
+                <p><a href="/">返回首页</a></p>"
+            "#,
+        tmp_content = template_ret,
+        phase_id = phase_ret.id
+    )))
+    // unimplemented!("M3 学生实现：模板列表")
 }
 
 // ============================================================
@@ -164,7 +201,43 @@ pub async fn template_create_form(
     // 提示：动作列表用 exercises 表的 map 生成 checkbox 行
     //   <label><input type="checkbox" name="exercise_ids" value="{id}"> {name}</label>
     // 表单 action = /phases/{phase_id}/templates
-    unimplemented!("M3 学生实现：新建模板表单")
+    let phase_ret = sqlx::query_as::<_, Phase>("SELECT * FROM phases WHERE id = ? AND user_id = ?")
+        .bind(&phase_id)
+        .bind(&user.id)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(AppError::Database)?
+        .ok_or_else(|| AppError::NotFound("Phase not found".to_string()))?;
+
+    let checkbox_rows = sqlx::query_as::<_, Exercise>
+    ("SELECT * FROM exercises WHERE user_id = ?")
+    .bind(&user.id)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(AppError::Database)?
+    .iter()
+    .map(|ex| format!(
+            r#"<label><input type="checkbox" name="exercise_ids" value="{id}"> {name}</label><br>"#,
+            id = ex.id,
+            name = ex.name
+        ))
+    .collect::<Vec::<String>>()
+    .join("\n");
+
+    Ok(Html(format!(
+        r#"
+    <h2>创建训练模板</h2>
+    <form method="post" action="/phases/{phase_id}/templates">
+        模板名：<input name="name"><br>
+        {checkbox_rows}
+        <button type="submit">创建</button>
+    </form>
+    <p><a href="/phases/{phase_id}/templates">返回模板列表</a></p>
+    "#,
+        phase_id = phase_ret.id,
+        checkbox_rows = checkbox_rows,
+    )))
+    // unimplemented!("M3 学生实现：新建模板表单")
 }
 
 // ============================================================
