@@ -475,19 +475,190 @@ pub async fn create(
 ///   迭代器 + 条件拼字符串（"当前值加 selected，其他不加"）。
 ///   format! 里 {sel} 是空串或 " selected"。
 ///
+/// 【教学：match &str 必加 _ 通配 —— non-exhaustive 错误】
+/// 学生问："match *mode 报 non-exhaustive patterns，为什么？"
+/// 看类型链条：
+///   ["bar", "support", "std", "lb2kg"]   → [&str; 4]（字符串引用数组）
+///     .iter()                            → 元素是 &str（对数组元素的引用）
+///     .map(|mode| ...)                   → mode: &&str（闭包参数是引用）
+///       match *mode                       → *mode: &str（解一层引用）
+/// match 的对象是 &str——字符串切片是**无界类型**（可以指向任意字符串），
+/// 编译器无法枚举它的所有可能值，所以即使列全了 4 个已知值，
+/// 也必须加 _ 通配分支，否则报 non-exhaustive patterns。
+/// 修复：最后加 `_ => *mode`（未知值原样显示，比写死"未知"更诚实）。
+///
+/// 对照：Rust 枚举（Option/Result）可以穷尽匹配免通配——
+/// 编译器知道枚举的全部变体，能证明你列全了。
+/// 而 &str/String 这类开放类型**永远**需要 _ 兜底。
+/// 这不是麻烦，是安全设计：强制显式处理未知值。
+///
+/// 【教学：编辑表单的 HTML 三坑（对照 phases.rs 的 edit_form）】
+/// ① action 必须带 id：
+///    <form action="/exercises/edit"> 是错的——提交到不存在的地址。
+///    应为 <form action="/exercises/{id}/edit">，用 Path(id) 的 id 拼：
+///    format!(..., id = id) → action="/exercises/3/edit"
+/// ② 一个元素不能有两个 value 属性：
+///    <input value="3" value="{current_sets}"> ——浏览器只认第一个！
+///    编辑页会永远显示 3，而不是数据库里的当前值。
+///    预填只留 value="{current_sets}"。
+/// ③ textarea 没有 value 属性：
+///    <textarea value="..."></textarea> 是错的——value 会被忽略，
+///    旧值要放在开始/结束标签之间：
+///    <textarea name="key_points">{current_key_points}</textarea>
+///    （input 是自闭合型标签用 value 属性，textarea 是容器型标签
+///      内容写标签中间——HTML 设计的历史遗留，记住即可。）
+///
+/// 【教学：format! 与 JS 的 {} 冲突 —— 命名参数传入】
+/// edit_form 用 format! 拼 HTML（要填 id/options 等），
+/// 但 JS 里也有 { }（函数体花括号），会被 format! 当成占位符！
+/// 例：function toggleBarWeight() { 里的 { 触发解析
+///   → 报错 "expected }, found ..."（create_form 用 .to_string()
+///     没有 format!，所以没这个坑）。
+/// 关键认知：r#"..."# 只让 " 和 \ 字面化，**不阻止 format! 解析 {}**。
+/// 修复：把整段 JS 作为命名参数传给 format!：
+///   javascript = "function toggleBarWeight(){ ... }"
+///   模板里写 <script>{javascript}</script>——
+///   JS 内容是参数值，不再经过 format! 的 {} 解析。
+///
 /// 【实现步骤】
 /// 1. 签名：State + AuthUser + Path(id)
 /// 2. 查这一行：SELECT * FROM exercises WHERE id = ? AND user_id = ?
 ///    → fetch_optional → None 则 Err(NotFound)
-/// 3. 拼表单：input 的 value 填旧值，select 的 option 加 selected
+/// 3. 拼表单：input 的 value 填旧值，select 的 option 加 selected，
+///    textarea 旧值放标签间，action 带 {id}
+/// 4. JS 用命名参数（javascript = "..."）传给 format!，避开 {} 冲突
 pub async fn edit_form(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
     Path(id): Path<i64>,
 ) -> Result<String, AppError>
 {
-    // TODO(M2 第 3 步): 学生实现（步骤见上方注释）
-    unimplemented!("M2 学生实现：编辑动作表单页")
+    let record_to_edit =
+        sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE id = ? AND user_id = ?")
+            .bind(&id)
+            .bind(&user.id)
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(AppError::Database)?
+            .ok_or_else(|| AppError::NotFound("Record not found".to_string()))?;
+
+    Ok(format!(
+        r#"
+        <h1>编辑训练动作</h1>
+        <form method="post" action="/exercises/{id}/edit">
+            <label>动作名称
+                <input name="name" required value="{current_name}">
+            </label><br>
+            <label>部位
+                <select name="body_part" required>
+                    {body_part_options}
+                </select>
+            </label><br>
+            <label>计重方式
+                <select name="default_mode" id="default_mode" onchange="toggleBarWeight()">
+                    {mode_options}
+                </select>
+            </label><br>
+            <div id="bar_weight_row">
+                <label>杠铃重量
+                    <select name="bar_weight">
+                        {bar_weight_options}
+                    </select>
+                </label>
+            </div><br>
+            <label>默认组数
+                <input type="number" name="default_sets" step="1" value="{current_sets}">
+            </label><br>
+            <label>默认组容量
+                <input type="number" name="default_reps" step="1" value="{current_reps}">
+            </label><br>
+            <label>动作要点
+                <textarea name="key_points">{current_key_points}</textarea>
+            </label><br>
+            <button type="submit">提交</button>
+        </form>
+        <script>
+            {javascript}
+        </script>
+        "#,
+        id = id,
+        current_name = record_to_edit.name,
+        current_sets = record_to_edit.default_sets,
+        current_reps = record_to_edit.default_reps,
+        current_key_points = record_to_edit.key_points,
+        body_part_options = ["胸", "背", "腿", "肩", "臂", "核心"]
+            .iter()
+            .map(|part| {
+                format!(
+                    r#"<option value="{part}"{sel}>{part}</option>"#,
+                    sel = if *part == record_to_edit.body_part
+                    {
+                        " selected"
+                    }
+                    else
+                    {
+                        ""
+                    }
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        mode_options = ["bar", "support", "std", "lb2kg"]
+            .iter()
+            .map(|mode| {
+                format!(
+                    r#"<option value="{mode}"{sel}>{mode_name}</option>"#,
+                    sel = if *mode == record_to_edit.default_mode
+                    {
+                        " selected"
+                    }
+                    else
+                    {
+                        ""
+                    },
+                    mode_name = match *mode
+                    {
+                        "bar" => "杠铃",
+                        "support" => "支撑",
+                        "std" => "标准kg",
+                        "lb2kg" => "标准lb",
+                        _ => *mode,
+                    }
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        bar_weight_options = ["20", "11.3", "10"]
+            .iter()
+            .map(|bar_weight| {
+                format!(
+                    r#"<option value="{bar_weight}"{sel}>{bar_weight_name}</option>"#,
+                    sel = if *bar_weight == format!("{}", record_to_edit.bar_weight)
+                    {
+                        " selected"
+                    }
+                    else
+                    {
+                        ""
+                    },
+                    bar_weight_name = match *bar_weight
+                    {
+                        "20" => "Olympic(20kg)",
+                        "11.3" => "Smith(11.3kg)",
+                        "10" => "短杠(10kg)",
+                        _ => *bar_weight,
+                    }
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        javascript = "function toggleBarWeight(){
+                var mode = document.getElementById('default_mode').value;
+                document.getElementById('bar_weight_row').style.display =
+                    (mode === 'bar') ? '' : 'none';
+                }
+                toggleBarWeight();"
+    ))
 }
 
 // ============================================================
@@ -523,8 +694,51 @@ pub async fn update(
     Form(form): Form<ExerciseForm>,
 ) -> Result<Redirect, AppError>
 {
-    // TODO(M2 第 3 步): 学生实现（步骤见上方注释）
-    unimplemented!("M2 学生实现：更新动作")
+    if form.name.trim().is_empty()
+    {
+        return Err(AppError::Validation("动作名称不能为空".to_string()));
+    }
+
+    // 【教学：分步写法 —— 为什么拆成 let + if，而不是链式嵌进 if】
+    // 若写 if sqlx::query(...).bind(...).await?.rows_affected() == 0 { ... }
+    //   → 可读性差：一行塞下整条查询链 + 条件判断，rustfmt 还拆得很难看。
+    // 拆成两步（与 phases 的 update 一致）：
+    //   1. let ext_ret = 查询链.await.map_err(...)?  → 拿到 SqliteQueryResult
+    //   2. if ext_ret.rows_affected() == 0           → 单独判断
+    // 职责分离：第一步"执行 SQL 拿结果"，第二步"根据结果做决策"。
+    let ext_ret = sqlx::query(
+        "UPDATE exercises SET name = ?, body_part = ?, default_mode = ?,
+          bar_weight = ?, default_sets = ?, default_reps = ?, key_points = ?
+          WHERE id = ? AND user_id = ?",
+    )
+    .bind(form.name)
+    .bind(form.body_part)
+    .bind(form.default_mode)
+    .bind(
+        form.bar_weight
+            .parse::<f64>()
+            .map_err(|_| AppError::Validation("杠铃重量必须输入数字".to_string()))?,
+    )
+    .bind(
+        form.default_sets
+            .parse::<i64>()
+            .map_err(|_| AppError::Validation("组数必须输入整数".to_string()))?,
+    )
+    .bind(
+        form.default_reps
+            .parse::<i64>()
+            .map_err(|_| AppError::Validation("次数必须输入整数".to_string()))?,
+    )
+    .bind(form.key_points)
+    .execute(&state.pool)
+    .await
+    .map_err(AppError::Database)?;
+
+    if ext_ret.rows_affected() == 0
+    {
+        return Err(AppError::NotFound("查无此动作".to_string()));
+    }
+    Ok(Redirect::to("/exercises"))
 }
 
 // ============================================================
@@ -563,8 +777,18 @@ pub async fn delete(
     Path(id): Path<i64>,
 ) -> Result<Redirect, AppError>
 {
-    // TODO(M2 第 3 步): 学生实现（步骤见上方注释）
-    unimplemented!("M2 学生实现：删除动作")
+    let ext_ret = sqlx::query("DELETE FROM exercises WHERE id = ? AND user_id = ?")
+        .bind(id)
+        .bind(user.id)
+        .execute(&state.pool)
+        .await
+        .map_err(AppError::Database)?;
+
+    if ext_ret.rows_affected() == 0
+    {
+        return Err(AppError::NotFound("未找到这个动作模板".to_string()));
+    }
+    Ok(Redirect::to("/exercises"))
 }
 
 // ============================================================
