@@ -35,7 +35,7 @@
 // 区别只是**数据在请求的哪个位置**。
 use axum::{
     extract::{Form, Path, Query, State},
-    response::Redirect,
+    response::{Html, Redirect},
 };
 use serde::Deserialize;
 
@@ -165,10 +165,10 @@ pub async fn list(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
     Query(query): Query<ListQuery>,
-) -> Result<String, AppError>
+) -> Result<Html<String>, AppError>
 {
     // TODO(M2 第 3 步): 学生实现（步骤见上方注释）
-    Ok(format!(
+    Ok(Html(format!(
         r#"
         <h1>动作库</h1>
         <table border="1">
@@ -212,7 +212,7 @@ pub async fn list(
     })
     .collect::<Vec<String>>()
     .join("\n")
-    ))
+    )))
 }
 
 // ============================================================
@@ -290,9 +290,10 @@ pub async fn list(
 pub async fn create_form(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
-) -> Result<String, AppError>
+) -> Result<Html<String>, AppError>
 {
-    Ok(r#"
+    Ok(Html(
+        r#"
         <h1>创建训练动作</h1>
         <form method="post" action="/exercises">
             <label>动作名称
@@ -345,7 +346,8 @@ pub async fn create_form(
             toggleBarWeight();
         </script>
         "#
-    .to_string())
+        .to_string(),
+    ))
 }
 
 // ============================================================
@@ -531,7 +533,7 @@ pub async fn edit_form(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
     Path(id): Path<i64>,
-) -> Result<String, AppError>
+) -> Result<Html<String>, AppError>
 {
     let record_to_edit =
         sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE id = ? AND user_id = ?")
@@ -542,7 +544,7 @@ pub async fn edit_form(
             .map_err(AppError::Database)?
             .ok_or_else(|| AppError::NotFound("Record not found".to_string()))?;
 
-    Ok(format!(
+    Ok(Html(format!(
         r#"
         <h1>编辑训练动作</h1>
         <form method="post" action="/exercises/{id}/edit">
@@ -658,7 +660,7 @@ pub async fn edit_form(
                     (mode === 'bar') ? '' : 'none';
                 }
                 toggleBarWeight();"
-    ))
+    )))
 }
 
 // ============================================================
@@ -706,6 +708,16 @@ pub async fn update(
     //   1. let ext_ret = 查询链.await.map_err(...)?  → 拿到 SqliteQueryResult
     //   2. if ext_ret.rows_affected() == 0           → 单独判断
     // 职责分离：第一步"执行 SQL 拿结果"，第二步"根据结果做决策"。
+    //
+    // 【踩坑实录：UPDATE 漏 bind WHERE 条件 —— 运行时静默 404】
+    // 学生写完 update 后，浏览器实测：GET 编辑页 200，POST 更新却 404。
+    // 排查后发现：SQL 里有 9 个 ?（7 个 SET + 2 个 WHERE id/user_id），
+    // 但 bind 只写了 7 个——漏了最后两个 .bind(id).bind(user.id)！
+    // 后果非常隐蔽：编译不报错、服务器不报错，
+    //   SQLite 把缺失的参数当 NULL → WHERE id = NULL → 永假
+    //   → UPDATE 影响 0 行 → rows_affected() == 0 → 404。
+    // 教训：SQL 的 ? 数 = bind 数，必须一一对应（数一遍再跑）。
+    //   （phases 的 update 注释里也提过这个坑，这里复习一遍。）
     let ext_ret = sqlx::query(
         "UPDATE exercises SET name = ?, body_part = ?, default_mode = ?,
           bar_weight = ?, default_sets = ?, default_reps = ?, key_points = ?
@@ -730,6 +742,8 @@ pub async fn update(
             .map_err(|_| AppError::Validation("次数必须输入整数".to_string()))?,
     )
     .bind(form.key_points)
+    .bind(id)
+    .bind(user.id)
     .execute(&state.pool)
     .await
     .map_err(AppError::Database)?;
@@ -812,7 +826,7 @@ pub async fn detail(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
     Path(id): Path<i64>,
-) -> Result<String, AppError>
+) -> Result<Html<String>, AppError>
 {
     let exercise =
         sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE id = ? AND user_id = ?")
@@ -823,7 +837,7 @@ pub async fn detail(
             .map_err(AppError::Database)?
             .ok_or_else(|| AppError::NotFound("动作不存在".to_string()))?;
 
-    Ok(format!(
+    Ok(Html(format!(
         r#"
         <h1>动作详情</h1>
         <p>名称：{name}</p>
@@ -842,5 +856,5 @@ pub async fn detail(
         default_sets = exercise.default_sets,
         default_reps = exercise.default_reps,
         key_points = exercise.key_points,
-    ))
+    )))
 }

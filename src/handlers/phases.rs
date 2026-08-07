@@ -25,7 +25,7 @@
 // 签名里写 AuthUser(user) 就是"已登录用户"，axum 自动注入。
 use axum::{
     extract::{Form, Path, State},
-    response::Redirect,
+    response::{Html, Redirect},
 };
 use serde::Deserialize;
 use sqlx::SqlitePool;
@@ -250,7 +250,7 @@ pub struct PhaseForm
 pub async fn list(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
-) -> Result<String, AppError>
+) -> Result<Html<String>, AppError>
 {
     let active_phases = sqlx::query_as::<_, Phase>(
         "SELECT * FROM phases WHERE user_id = ? AND archived  = 0 ORDER BY created_at DESC",
@@ -291,7 +291,7 @@ pub async fn list(
         .collect::<Vec<_>>()
         .join("\n");
 
-    Ok(format!(
+    Ok(Html(format!(
         r#"<h2>进行中</h2>
             <table border="1"><tr><th>ID</th><th>名称</th><th>备注</th><th>归档</th></tr>
                 {active_rows}
@@ -302,7 +302,7 @@ pub async fn list(
             </table>
         <p><a href="/phases/new">创建阶段</a></p>
         <p><a href="/">返回首页</a></p>"#
-    ))
+    )))
 }
 
 // ============================================================
@@ -391,9 +391,10 @@ pub async fn list(
 pub async fn create_form(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
-) -> Result<String, AppError>
+) -> Result<Html<String>, AppError>
 {
-    Ok(r#"
+    Ok(Html(
+        r#"
         <h1>开启新征程</h1>
         <form method="post" action="/phases">
             <label>名称 <input name="name" required></label><br>
@@ -403,7 +404,8 @@ pub async fn create_form(
         </form>
         <p><a href="/phases">返回</a></p>
         "#
-    .to_string())
+        .to_string(),
+    ))
 }
 
 // ============================================================
@@ -614,7 +616,7 @@ pub async fn edit_form(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
     Path(id): Path<i64>,
-) -> Result<String, AppError>
+) -> Result<Html<String>, AppError>
 {
     let phase = sqlx::query_as::<_, Phase>("SELECT * FROM phases WHERE id = ? AND user_id = ?")
         .bind(&id)
@@ -627,7 +629,7 @@ pub async fn edit_form(
     // Option<String> 解包：Some → 日期字符串，None → ""（日期框留空）
     let start_date = phase.start_date.as_deref().unwrap_or("");
 
-    Ok(format!(
+    Ok(Html(format!(
         r#"
         <h1>编辑训练阶段</h1>
         <p>欢迎，{username} —— 正在编辑：{phase_name}</p>
@@ -644,7 +646,7 @@ pub async fn edit_form(
         phase_note = phase.note,
         start_date = start_date,
         id = id,
-    ))
+    )))
 }
 
 // ============================================================

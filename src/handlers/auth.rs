@@ -32,7 +32,7 @@ use axum::{
         header::SET_COOKIE, // SET_COOKIE：设置响应头用（login/logout）
         request::Parts, // Parts：请求的"非 body 部分"（headers/method/uri...），提取器从这里拿数据
     },
-    response::Redirect, // 重定向：登录成功跳首页、登出跳登录页
+    response::{Html, Redirect}, // 重定向：登录成功跳首页、登出跳登录页
 };
 use serde::Deserialize;
 
@@ -110,28 +110,27 @@ pub struct CreateUserForm
 // ============================================================
 /// 显示登录页面
 ///
-/// 【教学：M1 先用内联 HTML，M2 换 askama 模板】
-/// 返回类型 String 会被 axum 当作 text/html 响应。
-/// 完整实现已在参考文件里，直接对照抄写即可。
-pub async fn login_page() -> String
+/// 【教学：为什么返回 Html 而不是 String —— 隐藏的 text/plain bug】
+/// 2026-08-08 排查：登录页在浏览器里显示为纯文本（<pre> + 转义），
+/// 但 curl 看到的是正常 HTML。原因：axum 对 String 的默认 Content-Type
+/// 是 text/plain（纯文本）！浏览器收到纯文本就把 <form> 当普通文字显示。
+/// 必须用 Html 包裹，axum 才会返回 text/html（浏览器才渲染）。
+///
+/// 教训：本地开发用 curl 测试页面，curl 不渲染只显示 body，
+/// 看不到 text/plain 的问题；只有在浏览器里打开才发现。
+/// 这也是为什么教学注释说 M2 换 askama 模板（自动处理类型）。
+pub async fn login_page() -> Html<String>
 {
-    // TODO(M1): 学生实现
-    // 提示：返回一个 HTML 字符串，包含 form 表单
-    //   <form method="post" action="/login">
-    //     <label>用户名 <input name="username" required></label><br>
-    //     <label>密码 <input name="password" type="password" required></label><br>
-    //     <button type="submit">登录</button>
-    //   </form>
-    // unimplemented!("M1 学生实现：登录页")
-
-    r#"
-    <form method="post" action="/login">
-      <label>用户名 <input name="username" required></label><br>
-      <label>密码 <input name="password" type="password" required></label><br>
-      <button type="submit">登录</button>
-    </form>
-    "#
-    .to_string()
+    Html(
+        r#"
+        <form method="post" action="/login">
+          <label>用户名 <input name="username" required></label><br>
+          <label>密码 <input name="password" type="password" required></label><br>
+          <button type="submit">登录</button>
+        </form>
+        "#
+        .to_string(),
+    )
 }
 
 // ============================================================
@@ -673,7 +672,7 @@ pub async fn require_user(state: &AppState, headers: &HeaderMap) -> Result<User,
 pub async fn admin_users(
     State(state): State<AppState>,
     headers: HeaderMap,
-) -> Result<String, AppError>
+) -> Result<Html<String>, AppError>
 {
     // TODO(M1): 学生实现（步骤见上方注释）
     let user = require_user(&state, &headers).await?;
@@ -708,7 +707,7 @@ pub async fn admin_users(
         .collect::<Vec<_>>()
         .join("\n");
 
-    Ok(format!(
+    Ok(Html(format!(
         r#"<!DOCTYPE html>
                 <html lang="zh">
                 <head><meta charset="UTF-8"><title>用户管理</title></head>
@@ -729,7 +728,7 @@ pub async fn admin_users(
             </body>
             </html>"#,
         user_vec
-    ))
+    )))
 }
 
 // ============================================================

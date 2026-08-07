@@ -294,7 +294,28 @@ async fn main()
             "/admin/users",
             get(handlers::auth::admin_users).post(handlers::auth::admin_create_user),
         )
-        .nest_service("/static", ServeDir::new("static"))
+        .nest_service("/static", ServeDir::new("static")) // 已有
+        .route(
+            "/phases",
+            get(handlers::phases::list).post(handlers::phases::create),
+        )
+        .route("/phases/new", get(handlers::phases::create_form))
+        .route(
+            "/phases/{id}/edit",
+            get(handlers::phases::edit_form).post(handlers::phases::update),
+        )
+        .route("/phases/{id}/archive", post(handlers::phases::archive))
+        .route("/phases/{id}/unarchive", post(handlers::phases::unarchive))
+        .route(
+            "/exercises",
+            get(handlers::exercises::list).post(handlers::exercises::create),
+        )
+        .route("/exercises/new", get(handlers::exercises::create_form))
+        .route(
+            "/exercises/{id}/edit",
+            get(handlers::exercises::edit_form).post(handlers::exercises::update),
+        )
+        .route("/exercises/{id}/delete", post(handlers::exercises::delete))
         .with_state(state);
 
     // --------------------------------------------------------
@@ -682,8 +703,13 @@ async fn home(State(state): State<AppState>, headers: HeaderMap) -> Result<Respo
 
     // 返回 HTML 字符串（显示当前登录用户名，让守卫取出的 user 真正用上）
     Ok(Html(format!(
-        "<h1>训练记录系统</h1><p>欢迎回来，{}！</p><p>M0 脚手架运行成功！</p><p>数据库用户数: {user_count}</p>",
-        user.username
+        r#"<h1>训练记录系统</h1><p>欢迎回来，{username}！</p><br>
+        <p>数据库用户数: {usercount}</p><br>
+        <a href="/phases">查看训练阶段</a>
+        <a href="/exercises">查看训练动作</a>
+        "#,
+        username = user.username,
+        usercount = user_count
     ))
     .into_response())
 }
