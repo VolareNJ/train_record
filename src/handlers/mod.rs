@@ -7,6 +7,7 @@
 //   auth.rs    → 登录/登出/用户管理（M1）
 //   phases.rs  → 阶段管理（M2）
 //   exercises.rs → 动作库（M2）
+//   plan.rs    → 模板 + 当日计划（M3）
 //   ...
 //
 // 为什么 main.rs 里只写 mod handlers; 就能用 handlers::auth::xxx？
@@ -17,3 +18,4 @@
 pub mod auth;
 pub mod exercises;
 pub mod phases;
+pub mod plan;

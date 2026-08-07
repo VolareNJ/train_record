@@ -106,15 +106,16 @@ train_record/
 │   ├── config.rs           # 配置（端口/数据库路径/密钥）
 │   ├── error.rs            # 统一错误类型 → HTTP 状态码
 │   ├── db.rs               # 数据库连接池 + 迁移
-│   └── models.rs           # 数据模型（User/Phase/Exercise/...）
+│   ├── models.rs           # 数据模型（User/Phase/Exercise/...）
+│   └── handlers/           # HTTP 处理器（登录/阶段/动作/模板计划）
 ├── docs/
 │   ├── proposal.md         # 项目背景与动机
 │   ├── structure.md        # 完整设计文档（需求/表结构/页面/计划）
 │   └── learning_path/      # 🗺️ 分阶段开发路径图
 │       ├── M0.md           # M0 脚手架路径图（已完成 ✅）
-│       ├── M1.md           # M1 认证路径图（定义完成，待实现 📝）
-│       ├── M1_ref/         # M1 参考答案（实现完成后对照）
-│       └── M2.md ~ M7.md   # 后续阶段（开工时创建）
+│       ├── M1.md           # M1 认证路径图（已完成 ✅，含 M1_ref/ 参考答案）
+│       ├── M2.md           # M2 基础数据路径图（已完成 ✅）
+│       └── M3.md           # M3 计划路径图（骨架就绪，实现中 🚧）
 ├── Python_pkg/             # 原 Python 版（历史数据与参考）
 │   ├── sys.py              # 原记录程序
 │   ├── table.xlsx          # 原 Excel 记录表
@@ -129,9 +130,9 @@ train_record/
 | 里程碑 | 内容 | 状态 |
 |--------|------|------|
 | **M0** | 脚手架：配置/错误/模型/数据库迁移/服务器启动 | ✅ 已完成 |
-| **M1** | 认证：注册/登录/登出、管理员邀请制、路由守卫 | 📝 定义完成，待实现 |
-| **M2** | 基础数据：阶段管理、动作库、坚持天数 | ⬜ 未开始 |
-| **M3** | 计划：模板（A/B 分化）、按日计划、今日页 | ⬜ 未开始 |
+| **M1** | 认证：注册/登录/登出、管理员邀请制、路由守卫 | ✅ 已完成（6 项实测通过） |
+| **M2** | 基础数据：阶段管理、动作库、坚持天数 | ✅ 已完成（CRUD + 理解验证通过） |
+| **M3** | 计划：模板（A/B 分化）、按日计划、今日页 | 🚧 进行中（骨架就绪，模板 CRUD 实现中） |
 | **M4** | 训练记录：录入、重量换算器、即时保存 | ⬜ 未开始 |
 | **M5** | 历史回顾：日历视图、动作详情、折线图/1RM | ⬜ 未开始 |
 | **M6** | 备份：导出/导入、CSV/JSON 导出、PWA | ⬜ 未开始 |
@@ -146,7 +147,9 @@ train_record/
 - [`docs/proposal.md`](docs/proposal.md) —— 项目背景：为什么重写
 - [`docs/structure.md`](docs/structure.md) —— **设计地基**：完整需求结论、数据库 DDL、页面规格、开发计划
 - [`docs/learning_path/M0.md`](docs/learning_path/M0.md) —— **开发路径图**：文件依赖顺序、M0 里程碑、常见坑
-- [`docs/learning_path/M1.md`](docs/learning_path/M1.md) —— **M1 认证路径图**：定义与教学注释（参考实现在 [`M1_ref/`](docs/learning_path/M1_ref/)，完成后对照）
+- [`docs/learning_path/M1.md`](docs/learning_path/M1.md) —— **M1 认证路径图**：已完成（参考实现在 [`M1_ref/`](docs/learning_path/M1_ref/)，完成后对照）
+- [`docs/learning_path/M2.md`](docs/learning_path/M2.md) —— **M2 基础数据路径图**：已完成（阶段 + 动作库 CRUD，含理解验证）
+- [`docs/learning_path/M3.md`](docs/learning_path/M3.md) —— **M3 计划路径图**：进行中（模板 + 当日计划）
 
 ---
 

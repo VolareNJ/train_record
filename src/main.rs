@@ -316,6 +316,42 @@ async fn main()
             get(handlers::exercises::edit_form).post(handlers::exercises::update),
         )
         .route("/exercises/{id}/delete", post(handlers::exercises::delete))
+        // ----------------------------------------------------------
+        // M3 新增：模板（Template）+ 当日计划（Plan）路由
+        // 教学注释见 src/handlers/plan.rs 顶部
+        // ----------------------------------------------------------
+        // 模板：挂在阶段下（/phases/{phase_id}/templates...）
+        .route(
+            "/phases/{phase_id}/templates",
+            get(handlers::plan::list_templates).post(handlers::plan::template_create),
+        )
+        .route(
+            "/phases/{phase_id}/templates/new",
+            get(handlers::plan::template_create_form),
+        )
+        .route(
+            "/templates/{id}/edit",
+            get(handlers::plan::template_edit_form).post(handlers::plan::template_update),
+        )
+        .route(
+            "/templates/{id}/delete",
+            post(handlers::plan::template_delete),
+        )
+        // 计划：挂在阶段下
+        .route(
+            "/phases/{phase_id}/plans",
+            get(handlers::plan::list_plans).post(handlers::plan::plan_create),
+        )
+        .route(
+            "/phases/{phase_id}/plans/new",
+            get(handlers::plan::plan_create_form),
+        )
+        .route("/plans/{id}", get(handlers::plan::plan_detail))
+        .route(
+            "/plans/{id}/edit",
+            get(handlers::plan::plan_edit_form).post(handlers::plan::plan_update),
+        )
+        .route("/plans/{id}/delete", post(handlers::plan::plan_delete))
         .with_state(state);
 
     // --------------------------------------------------------
