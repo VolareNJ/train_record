@@ -692,10 +692,89 @@ pub async fn plan_create_form(
     Path(phase_id): Path<i64>,
 ) -> Result<Html<String>, AppError>
 {
-    // TODO(M3 第 2 步): 学生实现（步骤见上方注释）
-    // 提示：日期默认今天可以用 chrono 或简单拼字符串，
-    // 项目里 sqlite 用 datetime('now','localtime')，Rust 端拼 YYYY-MM-DD 即可
-    unimplemented!("M3 学生实现：新建计划表单")
+    // ① 验证阶段属于当前用户 + 未归档
+    let target_phase =
+        sqlx::query_as::<_, Phase>("SELECT * FROM phases WHERE id = ? AND user_id = ?")
+            .bind(&phase_id)
+            .bind(&user.id)
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(AppError::Database)?
+            .ok_or_else(|| AppError::NotFound("No such phase in your profile".to_string()))?;
+
+    if target_phase.archived
+    {
+        return Err(AppError::Forbidden(
+            "Can not edit archived phase".to_string(),
+        ));
+    }
+
+    // ② 查该阶段的模板列表（下拉框选项）
+    let template_rows = sqlx::query_as::<_, Template>(
+        "SELECT * FROM templates WHERE phase_id = ? ORDER BY sort_order, id",
+    )
+    .bind(&phase_id)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(AppError::Database)?
+    .iter()
+    .map(|t| {
+        format!(
+            // value = 模板 id，提交后 form.template_id = Some(模板id)
+            r#"<option value="{tid}">{tname}</option>"#,
+            tid = t.id,
+            tname = t.name
+        )
+    })
+    .collect::<Vec<String>>()
+    .join("\n");
+
+    // ③ 查全部动作（checkbox 列表）
+    //    ⚠️ checkbox name 用动作 id（唯一键）！不能都叫 exercise_ids
+    //    （serde_urlencoded map 语义会覆盖，见 PlanCreateForm 注释）
+    let checkbox_rows = sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE user_id = ?")
+        .bind(&user.id)
+        .fetch_all(&state.pool)
+        .await
+        .map_err(AppError::Database)?
+        .iter()
+        .map(|ex| {
+            format!(
+                r#"<label><input type="checkbox" name="{id}" value="1"> {name}</label><br>"#,
+                id = ex.id,
+                name = ex.name
+            )
+        })
+        .collect::<Vec<String>>()
+        .join("\n");
+
+    // ④ 今天日期：和数据库保持一致用 SQLite 的 localtime（避免 Rust 端时区偏差）
+    let today = sqlx::query_scalar::<_, String>("SELECT date('now', 'localtime')")
+        .fetch_one(&state.pool)
+        .await
+        .map_err(AppError::Database)?;
+
+    // ⑤ 拼表单
+    Ok(Html(format!(
+        r#"
+        <h2>新建当日计划</h2>
+        <form method="post" action="/phases/{phase_id}/plans">
+            日期：<input type="date" name="date" value="{today}"><br>
+            模板：<select name="template_id">
+                <option value="">（不选模板，手动选动作）</option>
+                {template_rows}
+            </select><br>
+            动作（不选模板时手动勾选）：<br>
+            {checkbox_rows}
+            <button type="submit">创建计划</button>
+        </form>
+        <p><a href="/phases/{phase_id}/plans">返回计划列表</a></p>
+        "#,
+        phase_id = phase_id,
+        today = today,
+        template_rows = template_rows,
+        checkbox_rows = checkbox_rows,
+    )))
 }
 
 // ============================================================
@@ -728,14 +807,134 @@ pub async fn plan_create(
     Form(form): Form<PlanCreateForm>,
 ) -> Result<Redirect, AppError>
 {
-    // TODO(M3 第 2~3 步): 学生实现（步骤见上方注释）
-    // 提示：兜底链 helper 可以写一个函数：
-    //   async fn resolve_plan_values(
-    //       pool: &SqlitePool,
-    //       t_sets: Option<i64>, t_reps: Option<i64>, ex_id: i64,
-    //   ) -> Result<(Option<i64>, Option<i64>), AppError>
-    //   模板项有值用模板项，没有就查动作库 default_sets/default_reps
-    unimplemented!("M3 学生实现：创建计划")
+    // ① 验证阶段属于当前用户 + 未归档
+    let target_phase =
+        sqlx::query_as::<_, Phase>("SELECT * FROM phases WHERE id = ? AND user_id = ?")
+            .bind(&phase_id)
+            .bind(&user.id)
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(AppError::Database)?
+            .ok_or_else(|| AppError::NotFound("No such phase in your profile".to_string()))?;
+
+    if target_phase.archived
+    {
+        return Err(AppError::Forbidden(
+            "Can not edit archived phase".to_string(),
+        ));
+    }
+
+    // ② 查重：同阶段同日期只能有一条计划（数据库有 UNIQUE 约束兜底）
+    //    提前拦截给用户一个明确的错误，而不是等数据库报 UNIQUE 冲突
+    let exists =
+        sqlx::query_scalar::<_, i64>("SELECT id FROM plans WHERE phase_id = ? AND date = ?")
+            .bind(&phase_id)
+            .bind(&form.date)
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(AppError::Database)?;
+    if exists.is_some()
+    {
+        return Err(AppError::Validation(format!(
+            "该日期 {} 已有计划，不能重复创建",
+            form.date
+        )));
+    }
+
+    // ③ 兜底链：解析"组/次从哪来"
+    //    模板项有值 → 用模板项；没有 → 查动作库默认值（default_sets/default_reps）
+    //    返回 (sets, reps) 都是 Option：都没有就保持 None
+    async fn resolve_plan_values(
+        pool: &SqlitePool,
+        t_sets: Option<i64>,
+        t_reps: Option<i64>,
+        ex_id: i64,
+    ) -> Result<(Option<i64>, Option<i64>), AppError>
+    {
+        if t_sets.is_some() && t_reps.is_some()
+        {
+            return Ok((t_sets, t_reps));
+        }
+        let ex = sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE id = ?")
+            .bind(&ex_id)
+            .fetch_one(pool)
+            .await
+            .map_err(AppError::Database)?;
+        let sets = t_sets.or(Some(ex.default_sets));
+        let reps = t_reps.or(Some(ex.default_reps));
+        Ok((sets, reps))
+    }
+
+    // ④ 事务：写两张表（plans 父 + plan_items 子）要么全成要么全败
+    let mut tx = state.pool.begin().await.map_err(AppError::Database)?;
+
+    // 4.1 插入计划（父表），拿回 plan_id
+    let plan_id = sqlx::query_scalar::<_, i64>(
+        "INSERT INTO plans (phase_id, date, note) VALUES (?, ?, '') RETURNING id",
+    )
+    .bind(&phase_id)
+    .bind(&form.date)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(AppError::Database)?;
+
+    // 4.2 分支：选模板 → 复制模板项；没选 → 手动选的动作
+    if let Some(tid) = form.template_id
+    {
+        // ⑤ 从模板复制：查模板的 template_items，逐个复制成 plan_items
+        let template_items = sqlx::query_as::<_, TemplateItem>(
+            "SELECT * FROM template_items WHERE template_id = ? ORDER BY sort_order",
+        )
+        .bind(&tid)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(AppError::Database)?;
+
+        for (idx, ti) in template_items.iter().enumerate()
+        {
+            let (sets, reps) =
+                resolve_plan_values(&state.pool, ti.plan_sets, ti.plan_reps, ti.exercise_id)
+                    .await?;
+            sqlx::query(
+                "INSERT INTO plan_items (plan_id, exercise_id, sort_order, plan_sets, plan_reps)
+            VALUES (?, ?, ?, ?, ?)",
+            )
+            .bind(&plan_id)
+            .bind(&ti.exercise_id)
+            .bind(idx as i64)
+            .bind(sets)
+            .bind(reps)
+            .execute(&mut *tx)
+            .await
+            .map_err(AppError::Database)?;
+        }
+    }
+    else
+    {
+        // ⑥ 手动选动作：每个动作从动作库拿默认组/次
+        let ex_ids: Vec<i64> = form.exercise_ids();
+        for (idx, ex_id) in ex_ids.iter().enumerate()
+        {
+            let (sets, reps) = resolve_plan_values(&state.pool, None, None, *ex_id).await?;
+            sqlx::query(
+                "INSERT INTO plan_items (plan_id, exercise_id, sort_order, plan_sets, plan_reps)
+            VALUES (?, ?, ?, ?, ?)",
+            )
+            .bind(&plan_id)
+            .bind(ex_id)
+            .bind(idx as i64)
+            .bind(sets)
+            .bind(reps)
+            .execute(&mut *tx)
+            .await
+            .map_err(AppError::Database)?;
+        }
+    }
+
+    // ⑦ 全部成功才提交
+    tx.commit().await.map_err(AppError::Database)?;
+
+    Ok(Redirect::to(&format!("/plans/{plan_id}")))
 }
 
 // ============================================================
@@ -887,11 +1086,48 @@ impl TemplateCreateForm
 pub struct PlanCreateForm
 {
     pub date: String,
-    /// Option = 可空：没选模板就是 None
+    /// Option = 可空：没选模板就是 None（下拉框没选 → 不提交 template_id 键）
     pub template_id: Option<i64>,
-    /// 手动选的动作（不选模板时用；和模板二选一）
-    #[serde(default)]
-    pub exercise_ids: Vec<i64>,
+    /// 手动选的动作集合：checkbox 的 name 直接用动作 id，值是 "1"
+    ///
+    /// ⚠️【serde_urlencoded 多选陷阱】（模板表单踩过的坑，这里再讲一遍）
+    /// axum 的 Form<T> 底层用 serde_urlencoded 解析，它是 **map 语义**：
+    ///   - 重复键：后值覆盖前值
+    ///     `exercise_ids=6&exercise_ids=7` → 解析结果只剩 `7`
+    ///   - 想用 `exercise_ids: Vec<i64>` 收集数组：直接 422 报错
+    ///     `invalid type: string "6", expected a sequence`
+    ///   - 加 `[]` 后缀（`exercise_ids[]=6`）也不生效
+    /// 结论：**同名重复键无法收集成数组**，这是 serde_urlencoded 的固有行为。
+    ///
+    /// ✅ 本项目方案：checkbox name = 动作 id（唯一键），value = "1"
+    ///   <input type="checkbox" name="6" value="1"> 卧推
+    ///   <input type="checkbox" name="7" value="1"> 深蹲
+    /// 提交后形如：date=2026-08-09&template_id=2&6=1&7=1
+    /// 结构体用 #[serde(flatten)] 把未匹配键收进 HashMap，再按数字键过滤。
+    #[serde(flatten)]
+    pub rest: HashMap<String, String>,
+}
+
+impl PlanCreateForm
+{
+    /// 从 flatten 的键值对里提取选中的动作 id 列表
+    /// checkbox name 是 "6"、"7"…，值是 "1"（勾选标记）
+    pub fn exercise_ids(&self) -> Vec<i64>
+    {
+        self.rest
+            .iter()
+            .filter_map(|(k, v)| {
+                if v == "1"
+                {
+                    k.parse::<i64>().ok()
+                }
+                else
+                {
+                    None
+                }
+            })
+            .collect()
+    }
 }
 
 /// 计划编辑表单（日期 + 备注 + 动作集合）
