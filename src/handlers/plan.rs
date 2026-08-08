@@ -37,7 +37,7 @@ use axum::{
 };
 use serde::Deserialize;
 use sqlx::SqlitePool;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::{
     AppState,
@@ -216,22 +216,23 @@ pub async fn template_create_form(
         .map_err(AppError::Database)?
         .ok_or_else(|| AppError::NotFound("Phase not found".to_string()))?;
 
-    let checkbox_rows = sqlx::query_as::<_, Exercise>
-    ("SELECT * FROM exercises WHERE user_id = ?")
-    .bind(&user.id)
-    .fetch_all(&state.pool)
-    .await
-    .map_err(AppError::Database)?
-    .iter()
-    .map(|ex| format!(
-            // checkbox 的 name 用动作 id（唯一键），value=1（勾选标记）
-            // 不能用 name="exercise_ids" 重复键——serde_urlencoded 会覆盖
-            r#"<label><input type="checkbox" name="{id}" value="1"> {name}</label><br>"#,
-            id = ex.id,
-            name = ex.name
-        ))
-    .collect::<Vec::<String>>()
-    .join("\n");
+    let checkbox_rows = sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE user_id = ?")
+        .bind(&user.id)
+        .fetch_all(&state.pool)
+        .await
+        .map_err(AppError::Database)?
+        .iter()
+        .map(|ex| {
+            format!(
+                // checkbox 的 name 用动作 id（唯一键），value=1（勾选标记）
+                // 不能用 name="exercise_ids" 重复键——serde_urlencoded 会覆盖
+                r#"<label><input type="checkbox" name="{id}" value="1"> {name}</label><br>"#,
+                id = ex.id,
+                name = ex.name
+            )
+        })
+        .collect::<Vec<String>>()
+        .join("\n");
 
     Ok(Html(format!(
         r#"
@@ -360,11 +361,83 @@ pub async fn template_edit_form(
     Path(id): Path<i64>,
 ) -> Result<Html<String>, AppError>
 {
-    // TODO(M3 第 1 步): 学生实现（步骤见上方注释）
-    // 提示：判断"已选"用 HashSet：
-    //   let selected: HashSet<i64> = template_items.iter().map(|t| t.exercise_id).collect();
-    //   checkbox 行：if selected.contains(&ex.id) { " checked" } else { "" }
-    unimplemented!("M3 学生实现：编辑模板表单")
+    // ① 查模板 + 验证归属：JOIN phases 一次性把 user_id 也取出来
+    //    模板不属于当前用户 → NotFound（数据隔离）
+    let current_template = sqlx::query_as::<_, Template>(
+        "SELECT t.* FROM templates t INNER JOIN phases p ON t.phase_id = p.id
+    WHERE t.id = ? AND p.user_id = ?",
+    )
+    .bind(&id)
+    .bind(&user.id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(AppError::Database)?
+    .ok_or_else(|| AppError::NotFound("No template found in such user and phase".to_string()))?;
+
+    // ② 查模板已有的动作（只查 exercise_id 一列）
+    //    注意返回类型是 i64（跟数据库列类型一致），不是 String！
+    let current_template_item_ids = sqlx::query_scalar::<_, i64>(
+        "SELECT exercise_id FROM template_items WHERE template_id = ?",
+    )
+    .bind(&id)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(AppError::Database)?;
+
+    // 把 Vec<i64> 转成 HashSet<i64>：判断"这个动作勾没勾"用 O(1) 查找
+    // （用 HashSet 而不是 Vec.contains —— 动作多时哈希查找比线性扫描快）
+    let selected_item_ids: HashSet<i64> = current_template_item_ids.into_iter().collect();
+
+    // ③ 查【全部】动作（和 create_form 一样）→ 生成所有 checkbox 行
+    //    编辑页必须显示全部动作，否则用户没法新增没勾过的动作
+    let checkbox_rows = sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE user_id = ?")
+        .bind(&user.id)
+        .fetch_all(&state.pool)
+        .await
+        .map_err(AppError::Database)?
+        .iter()
+        .map(|ex| {
+            // checked 是条件字符串：选中的输出 " checked"，没选中的输出 ""
+            // 放到 value="1" 后面：value="1" checked> 或 value="1">
+            let checked = if selected_item_ids.contains(&ex.id)
+            {
+                " checked"
+            }
+            else
+            {
+                ""
+            };
+            format!(
+                // checkbox 的 name 用动作 id（唯一键）、value=1 —— 和 create_form 同一套约定
+                // 这样 POST 提交后 #[serde(flatten)] 能收集到所有勾选
+                r#"<label><input type="checkbox" name="{id}" value="1"{checked}> {name}</label><br>"#,
+                id = ex.id,
+                checked = checked,
+                name = ex.name
+            )
+        })
+        .collect::<Vec<String>>()
+        .join("\n");
+
+    // ④ 拼表单：
+    //    - action 指向编辑提交地址 /templates/{id}/edit（不是创建页！）
+    //    - 模板名输入框预填当前名字 value="{name}"
+    //    - 按钮文字改成"保存"
+    Ok(Html(format!(
+        r#"
+        <h2>编辑训练模板</h2>
+        <form method="post" action="/templates/{id}/edit">
+            模板名：<input name="name" value="{name}"><br>
+            {checkbox_rows}
+            <button type="submit">保存</button>
+        </form>
+        <p><a href="/phases/{phase_id}/templates">返回模板列表</a></p>
+        "#,
+        id = id,
+        name = current_template.name,
+        phase_id = current_template.phase_id,
+        checkbox_rows = checkbox_rows,
+    )))
 }
 
 // ============================================================
@@ -391,9 +464,77 @@ pub async fn template_update(
     Form(form): Form<TemplateCreateForm>,
 ) -> Result<Redirect, AppError>
 {
-    // TODO(M3 第 1 步): 学生实现（步骤见上方注释）
-    // 提示："先删后插"三步都在事务里，顺序不能乱
-    unimplemented!("M3 学生实现：更新模板")
+    // ① 先查后改：验证模板归属当前用户（JOIN phases 拿 user_id）
+    //    顺带拿到 phase_id（重定向要用）——一条查询两个用途
+    //    模板不存在或不属于当前用户 → 404，根本不进入事务
+    let current_template = sqlx::query_as::<_, Template>(
+        "SELECT t.* FROM templates t INNER JOIN phases p ON t.phase_id = p.id
+    WHERE t.id = ? AND p.user_id = ?",
+    )
+    .bind(&id)
+    .bind(&user.id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(AppError::Database)?
+    .ok_or_else(|| AppError::NotFound("No template found in such user and phase".to_string()))?;
+
+    // ② 归档阶段不可编辑（改历史数据）
+    let target_phase =
+        sqlx::query_as::<_, Phase>("SELECT * FROM phases WHERE id = ? AND user_id = ?")
+            .bind(&current_template.phase_id)
+            .bind(&user.id)
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(AppError::Database)?
+            .ok_or_else(|| AppError::NotFound("No such phase or not your phase".to_string()))?;
+
+    if target_phase.archived
+    {
+        return Err(AppError::Forbidden(
+            "Can not edit archived phase".to_string(),
+        ));
+    }
+
+    // ③ 开事务：三步"先删后插"要么全成要么全败
+    let mut tx = state.pool.begin().await.map_err(AppError::Database)?;
+
+    // 3.1 更新父表（改名）——只改这一行，不会插入新记录
+    sqlx::query("UPDATE templates SET name = ? WHERE id = ?")
+        .bind(&form.name)
+        .bind(&id)
+        .execute(&mut *tx)
+        .await
+        .map_err(AppError::Database)?;
+
+    // 3.2 删掉所有旧子表行（先删后插：清空重来，避免"残留旧动作"）
+    sqlx::query("DELETE FROM template_items WHERE template_id = ?")
+        .bind(&id)
+        .execute(&mut *tx)
+        .await
+        .map_err(AppError::Database)?;
+
+    // 3.3 重新插入所有勾选的动作（enumerate 生成 sort_order）
+    let ex_ids: Vec<i64> = form.exercise_ids();
+    for (idx, ex_id) in ex_ids.iter().enumerate()
+    {
+        sqlx::query(
+            "INSERT INTO template_items (template_id, exercise_id, sort_order) VALUES (?, ?, ?)",
+        )
+        .bind(&id)
+        .bind(ex_id) // ex_id 已经是 &i64，不用再 &
+        .bind(idx as i64) // ← usize 必须转 i64
+        .execute(&mut *tx) // ← 事务要 &mut *tx（Transaction 可变解引用）
+        .await
+        .map_err(AppError::Database)?;
+    }
+
+    // ④ 全部成功才提交
+    tx.commit().await.map_err(AppError::Database)?;
+
+    Ok(Redirect::to(&format!(
+        "/phases/{phase_id}/templates",
+        phase_id = current_template.phase_id
+    )))
 }
 
 // ============================================================
@@ -417,10 +558,44 @@ pub async fn template_delete(
     Path(id): Path<i64>,
 ) -> Result<Redirect, AppError>
 {
-    // TODO(M3 第 1 步): 学生实现（步骤见上方注释）
-    // 提示：删除父表前先确认存在（fetch_optional 检查），
-    // 不存在 → Err(NotFound)；然后事务里先删子后删父
-    unimplemented!("M3 学生实现：删除模板")
+    // ① 先查后改：验证模板归属当前用户（JOIN phases 拿 user_id）
+    //    顺带拿到 phase_id（重定向要用）——和 template_update 完全一样
+    let current_template = sqlx::query_as::<_, Template>(
+        "SELECT t.* FROM templates t INNER JOIN phases p ON t.phase_id = p.id
+    WHERE t.id = ? AND p.user_id = ?",
+    )
+    .bind(&id)
+    .bind(&user.id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(AppError::Database)?
+    .ok_or_else(|| AppError::NotFound("No template found in such user and phase".to_string()))?;
+
+    // ② 开事务：先删子（template_items）后删父（templates）
+    //    顺序不能反：父表被子表引用时先删父会留孤儿数据
+    let mut tx = state.pool.begin().await.map_err(AppError::Database)?;
+
+    // 2.1 删孩子：模板的所有动作项
+    sqlx::query("DELETE FROM template_items WHERE template_id = ?")
+        .bind(&id)
+        .execute(&mut *tx)
+        .await
+        .map_err(AppError::Database)?;
+
+    // 2.2 删父亲：模板本身
+    sqlx::query("DELETE FROM templates WHERE id = ?")
+        .bind(&id)
+        .execute(&mut *tx)
+        .await
+        .map_err(AppError::Database)?;
+
+    // ③ 全部成功才提交
+    tx.commit().await.map_err(AppError::Database)?;
+
+    Ok(Redirect::to(&format!(
+        "/phases/{phase_id}/templates",
+        phase_id = current_template.phase_id
+    )))
 }
 
 // ============================================================
@@ -652,7 +827,14 @@ impl TemplateCreateForm
         self.rest
             .iter()
             .filter_map(|(k, v)| {
-                if v == "1" { k.parse::<i64>().ok() } else { None }
+                if v == "1"
+                {
+                    k.parse::<i64>().ok()
+                }
+                else
+                {
+                    None
+                }
             })
             .collect()
     }
