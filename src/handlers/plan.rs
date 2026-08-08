@@ -37,6 +37,7 @@ use axum::{
 };
 use serde::Deserialize;
 use sqlx::SqlitePool;
+use std::collections::HashMap;
 
 use crate::{
     AppState,
@@ -180,11 +181,17 @@ pub async fn list_templates(
 /// 显示新建模板的表单（模板名 + 多选动作）
 ///
 /// 【教学：多选（checkbox）表单】
-/// 一个模板包含多个动作，表单里用 <input type="checkbox" name="exercise_ids" value="1">
-/// 每个动作一个勾选框，name 都叫 exercise_ids（重复 name = 数组）。
-/// axum 端用 Form<Vec<i64>> 或自定义结构体接收：
-///   struct TemplateCreateForm { name: String, exercise_ids: Vec<i64> }
-/// 浏览器会提交 exercise_ids=1&exercise_ids=2&exercise_ids=3
+/// 一个模板包含多个动作，表单里每个动作一个勾选框。
+///
+/// ⚠️ 关键陷阱：checkbox 的 name **不能都用 exercise_ids**！
+/// axum 的 Form 用 serde_urlencoded 解析（map 语义）：重复键后值覆盖前值，
+/// 实测 `exercise_ids=6&exercise_ids=7` 只剩 7，且 `Vec<i64>` 会 422。
+///
+/// ✅ 正确做法（本项目采用）：
+///   name = 动作 id（唯一键），value = "1"（勾选标记）
+///   <input type="checkbox" name="{id}" value="1">
+/// 提交后形如：name=模板名&6=1&7=1
+/// 结构体用 #[serde(flatten)] 把未匹配键收进 HashMap，再按数字键过滤。
 ///
 /// 实现步骤：
 /// 1. 签名：State + AuthUser + Path(phase_id)
@@ -217,7 +224,9 @@ pub async fn template_create_form(
     .map_err(AppError::Database)?
     .iter()
     .map(|ex| format!(
-            r#"<label><input type="checkbox" name="exercise_ids" value="{id}"> {name}</label><br>"#,
+            // checkbox 的 name 用动作 id（唯一键），value=1（勾选标记）
+            // 不能用 name="exercise_ids" 重复键——serde_urlencoded 会覆盖
+            r#"<label><input type="checkbox" name="{id}" value="1"> {name}</label><br>"#,
             id = ex.id,
             name = ex.name
         ))
@@ -226,14 +235,14 @@ pub async fn template_create_form(
 
     Ok(Html(format!(
         r#"
-    <h2>创建训练模板</h2>
-    <form method="post" action="/phases/{phase_id}/templates">
-        模板名：<input name="name"><br>
-        {checkbox_rows}
-        <button type="submit">创建</button>
-    </form>
-    <p><a href="/phases/{phase_id}/templates">返回模板列表</a></p>
-    "#,
+        <h2>创建训练模板</h2>
+        <form method="post" action="/phases/{phase_id}/templates">
+            模板名：<input name="name"><br>
+            {checkbox_rows}
+            <button type="submit">创建</button>
+        </form>
+        <p><a href="/phases/{phase_id}/templates">返回模板列表</a></p>
+        "#,
         phase_id = phase_ret.id,
         checkbox_rows = checkbox_rows,
     )))
@@ -278,7 +287,57 @@ pub async fn template_create(
     //   （SQLite 3.35+ 支持 RETURNING，sqlx 的 SQLite 驱动可用）
     // 然后 .bind 循环插入子表。
     // 成功 → Ok(Redirect::to(&format!("/phases/{phase_id}/templates")))
-    unimplemented!("M3 学生实现：创建模板")
+
+    let target_phase =
+        sqlx::query_as::<_, Phase>("SELECT * FROM phases WHERE id = ? AND user_id = ?")
+            .bind(&phase_id)
+            .bind(&user.id)
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(AppError::Database)?
+            .ok_or_else(|| AppError::NotFound("No such phase or not your phase".to_string()))?;
+
+    if target_phase.archived
+    {
+        return Err(AppError::Forbidden(
+            "Can not edit archived phase".to_string(),
+        ));
+    }
+
+    let mut tx = state.pool.begin().await.map_err(AppError::Database)?;
+
+    let template_id = sqlx::query_scalar::<_, i64>(
+        "INSERT INTO templates
+    (phase_id, name, sort_order) VALUES (?, ?, ?)
+    RETURNING id",
+    )
+    .bind(&phase_id)
+    .bind(&form.name)
+    .bind(0_i64)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(AppError::Database)?;
+
+    // form.exercise_ids 是 HashMap<String, String>（flatten 收集的勾选键值对）
+    // checkbox name = 动作 id，值 = "1"（勾选标记）
+    let ex_ids: Vec<i64> = form.exercise_ids();
+
+    for (idx, ex_id) in ex_ids.iter().enumerate()
+    {
+        sqlx::query(
+            "INSERT INTO template_items (template_id, exercise_id, sort_order) VALUES (?, ?, ?)",
+        )
+        .bind(&template_id)
+        .bind(ex_id) // ex_id 已经是 &i64，不用再 &
+        .bind(idx as i64) // ← usize 必须转 i64
+        .execute(&mut *tx) // ← 事务要 &mut *tx（Transaction 可变解引用）
+        .await
+        .map_err(AppError::Database)?;
+    }
+
+    tx.commit().await.map_err(AppError::Database)?;
+
+    Ok(Redirect::to(&format!("/phases/{phase_id}/templates")))
 }
 
 // ============================================================
@@ -571,10 +630,32 @@ pub async fn plan_delete(
 pub struct TemplateCreateForm
 {
     pub name: String,
-    /// checkbox 同名 → 浏览器提交重复 name 参数 → Vec<i64>
-    /// 一个都没勾时这个字段会怎样？axum 对缺失字段默认报错
-    /// （需要 #[serde(default)] 才能容忍空——M3 要求必选，可不加）
-    pub exercise_ids: Vec<i64>,
+    /// 勾选的动作 id 集合：checkbox 的 name 直接用动作 id，值是 "1"
+    ///
+    /// ⚠️ 不能用 exercise_ids: Vec<i64> 或同名重复键！
+    /// axum 的 Form 用 serde_urlencoded 解析，它是 **map 语义**：
+    /// 重复键后值覆盖前值（实测 exercise_ids=6&exercise_ids=7 → 只剩 7），
+    /// 无法收集成数组（实测报 422: invalid type: string "6", expected a sequence）。
+    ///
+    /// 正确做法：checkbox name = 动作 id（唯一键），#[serde(flatten)] 收集全部，
+    /// handler 里按"能解析成 i64 的键"过滤出选中的动作。
+    #[serde(flatten)]
+    pub rest: HashMap<String, String>,
+}
+
+impl TemplateCreateForm
+{
+    /// 从 flatten 的键值对里提取选中的动作 id 列表（保持表单提交顺序）
+    /// checkbox name 是 "6"、"7"…，值是 "1"（勾选标记）
+    pub fn exercise_ids(&self) -> Vec<i64>
+    {
+        self.rest
+            .iter()
+            .filter_map(|(k, v)| {
+                if v == "1" { k.parse::<i64>().ok() } else { None }
+            })
+            .collect()
+    }
 }
 
 /// 计划创建表单（日期 + 可选模板 + 可选手动选动作）

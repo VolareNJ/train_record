@@ -25,3 +25,33 @@ description: Describe when these instructions should be loaded by the agent base
 - 填空答案需学生独立写出后，再对照代码或参考答案检查
 - 老师的完整实现会备份在 `docs/learning_path/<阶段>_ref/` 目录，
   学生实现完成后再对照，不要提前查看
+
+## 跨会话备忘
+
+- **待办与设计决策记录** → `docs/todo.md`（每条标注未来哪个 M 解决）
+- **设计稿** → `docs/structure.md`；**阶段指南** → `docs/learning_path/<M>.md`
+
+## 代码约定
+
+### 事务纪律
+
+- 写多张表的 handler 必须 `begin()` + `commit()`，**遗漏 commit 会全部回滚**
+  （数据静默丢失，页面却显示成功——最难排查的 bug）
+- 事务示例：`let mut tx = state.pool.begin().await?;` → 所有 `execute` 用 `&mut *tx` → `tx.commit().await?;`
+
+### 数据隔离
+
+- 所有按 id 查询必须带 user_id 条件：`WHERE id = ? AND user_id = ?`，不能只按 phase_id/模板 id 查
+
+### 表单多选（checkbox）陷阱
+
+- axum 的 `Form<T>` 用 `serde_urlencoded` 解析（**map 语义**）：
+  重复键后值覆盖前值，`Vec<i64>` 会 422，`[]` 后缀也不生效
+- ✅ 正确模式：checkbox `name` = 动作 id（唯一键）、`value="1"`，
+  结构体 `#[serde(flatten)]` 收进 `HashMap<String, String>`，handler 按数字键过滤
+- 详细踩坑记录见 `docs/todo.md` §2.1
+
+### 字段约定
+
+- `template_items.sort_order` / `plan_items.sort_order`：**实际字段**（`enumerate()` 生成，决定动作顺序）
+- `templates.sort_order`：**预留字段**（暂恒为 0），模板间排序是未来待办 → `docs/todo.md` §1.1

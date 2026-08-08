@@ -238,6 +238,9 @@ CREATE TABLE templates (
     phase_id   INTEGER NOT NULL REFERENCES phases(id),
     name       TEXT NOT NULL,                    -- 如 "A分化" "B分化"
     sort_order INTEGER NOT NULL DEFAULT 0
+    -- ↑ 预留字段（暂恒为 0）：模板间排序是未来待办（M5/M7，见 docs/todo.md §1.1）
+    --   M3 列表查询无 ORDER BY sort_order，不受影响。
+    --   注意与 template_items.sort_order（实际字段，enumerate 生成）区分。
 );
 
 -- 模板动作项
