@@ -961,11 +961,78 @@ pub async fn plan_detail(
     Path(id): Path<i64>,
 ) -> Result<Html<String>, AppError>
 {
-    // TODO(M3 第 2 步): 学生实现（步骤见上方注释）
-    // 提示：None 值显示用 match：
-    //   item.plan_sets.map_or("-".to_string(), |v| v.to_string())
-    // 或 if let Some(v) = item.plan_sets { ... } else { "-" }
-    unimplemented!("M3 学生实现：计划详情")
+    // ① 查计划 + 验证归属（JOIN phases 拿 user_id）
+    let current_plan = sqlx::query_as::<_, Plan>(
+        "SELECT p.* FROM plans p INNER JOIN phases ph ON p.phase_id = ph.id
+    WHERE p.id = ? AND ph.user_id = ?",
+    )
+    .bind(&id)
+    .bind(&user.id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(AppError::Database)?
+    .ok_or_else(|| AppError::NotFound("No plan found in such user and phase".to_string()))?;
+
+    // ② 查计划项（按 sort_order 排序）
+    let plan_items = sqlx::query_as::<_, PlanItem>(
+        "SELECT * FROM plan_items WHERE plan_id = ? ORDER BY sort_order",
+    )
+    .bind(&id)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(AppError::Database)?;
+
+    // ③ 查全部动作 → HashMap 索引（一次查询换 N 次查询）
+    //    计划项表只存 exercise_id（数字），页面要显示动作名
+    //    先全部查出来建索引，拼行时 O(1) 查找
+    let exercises = sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE user_id = ?")
+        .bind(&user.id)
+        .fetch_all(&state.pool)
+        .await
+        .map_err(AppError::Database)?;
+    let ex_map: HashMap<i64, String> = exercises.iter().map(|e| (e.id, e.name.clone())).collect();
+
+    // ④ 拼表格行
+    let item_rows = plan_items
+        .iter()
+        .map(|item| {
+            // 动作名：从索引取，查不到显示 "?"（理论上不会发生）
+            let ex_name = ex_map
+                .get(&item.exercise_id)
+                .cloned()
+                .unwrap_or_else(|| "?".to_string());
+            // None 值显示 "-"：map_or 把 Option 转成字符串
+            let sets = item.plan_sets.map_or("-".to_string(), |v| v.to_string());
+            let reps = item.plan_reps.map_or("-".to_string(), |v| v.to_string());
+            let weight = item.plan_weight.map_or("-".to_string(), |v| v.to_string());
+            format!(
+                "<tr><td>{ex_name}</td><td>{sets}</td><td>{reps}</td><td>{weight}</td></tr>",
+                ex_name = ex_name,
+                sets = sets,
+                reps = reps,
+                weight = weight,
+            )
+        })
+        .collect::<Vec<String>>()
+        .join("\n");
+
+    // ⑤ 拼页面
+    Ok(Html(format!(
+        r#"
+        <h2>计划详情（{plan_date}）</h2>
+        <p>备注：{plan_note}</p>
+        <table border="1"><tr><th>动作</th><th>组数</th><th>次数</th><th>重量</th></tr>
+            {item_rows}
+        </table>
+        <p><a href="/plans/{plan_id}/edit">编辑</a> |
+        <a href="/phases/{phase_id}/plans">返回计划列表</a></p>
+        "#,
+        plan_date = current_plan.date,
+        plan_note = current_plan.note,
+        item_rows = item_rows,
+        plan_id = current_plan.id,
+        phase_id = current_plan.phase_id,
+    )))
 }
 
 // ============================================================
@@ -987,10 +1054,73 @@ pub async fn plan_edit_form(
     Path(id): Path<i64>,
 ) -> Result<Html<String>, AppError>
 {
-    // TODO(M3 第 2 步): 学生实现（步骤见上方注释）
-    // 提示：表单含 date + note + 动作多选（已选的勾上）
-    // 和 template_edit_form 结构几乎一样，只是父表是 plans
-    unimplemented!("M3 学生实现：编辑计划表单")
+    // ① 查计划 + 验证归属（JOIN phases）
+    let current_plan = sqlx::query_as::<_, Plan>(
+        "SELECT p.* FROM plans p INNER JOIN phases ph ON p.phase_id = ph.id
+    WHERE p.id = ? AND ph.user_id = ?",
+    )
+    .bind(&id)
+    .bind(&user.id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(AppError::Database)?
+    .ok_or_else(|| AppError::NotFound("No plan found in such user and phase".to_string()))?;
+
+    // ② 查计划已有的动作 → HashSet 判断勾选状态
+    let current_item_ids =
+        sqlx::query_scalar::<_, i64>("SELECT exercise_id FROM plan_items WHERE plan_id = ?")
+            .bind(&id)
+            .fetch_all(&state.pool)
+            .await
+            .map_err(AppError::Database)?;
+    let selected_item_ids: HashSet<i64> = current_item_ids.into_iter().collect();
+
+    // ③ 查全部动作 → checkbox 行（已选的加 checked）
+    let checkbox_rows = sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE user_id = ?")
+        .bind(&user.id)
+        .fetch_all(&state.pool)
+        .await
+        .map_err(AppError::Database)?
+        .iter()
+        .map(|ex| {
+            let checked = if selected_item_ids.contains(&ex.id)
+            {
+                " checked"
+            }
+            else
+            {
+                ""
+            };
+            format!(
+                // 和模板一样：name = 动作 id（唯一键），value = 1（勾选标记）
+                r#"<label><input type="checkbox" name="{id}" value="1"{checked}> {name}</label><br>"#,
+                id = ex.id,
+                checked = checked,
+                name = ex.name,
+            )
+        })
+        .collect::<Vec<String>>()
+        .join("\n");
+
+    // ④ 拼表单（date + note + 动作多选）
+    Ok(Html(format!(
+        r#"
+        <h2>编辑计划</h2>
+        <form method="post" action="/plans/{plan_id}/edit">
+            日期：<input type="date" name="date" value="{plan_date}"><br>
+            备注：<input name="note" value="{plan_note}"><br>
+            动作：<br>
+            {checkbox_rows}
+            <button type="submit">保存</button>
+        </form>
+        <p><a href="/phases/{phase_id}/plans">返回计划列表</a></p>
+        "#,
+        plan_id = current_plan.id,
+        plan_date = current_plan.date,
+        plan_note = current_plan.note,
+        checkbox_rows = checkbox_rows,
+        phase_id = current_plan.phase_id,
+    )))
 }
 
 // ============================================================
@@ -1010,10 +1140,103 @@ pub async fn plan_update(
     Form(form): Form<PlanEditForm>,
 ) -> Result<Redirect, AppError>
 {
-    // TODO(M3 第 2 步): 学生实现（步骤见上方注释）
-    // 提示：注意 date 可能撞 UNIQUE(phase_id, date)——排除自己再查重：
-    //   SELECT id FROM plans WHERE phase_id = ? AND date = ? AND id != ?
-    unimplemented!("M3 学生实现：更新计划")
+    // ① 先查后改：验证归属（JOIN phases）→ 拿到 phase_id 供重定向
+    let current_plan = sqlx::query_as::<_, Plan>(
+        "SELECT p.* FROM plans p INNER JOIN phases ph ON p.phase_id = ph.id
+    WHERE p.id = ? AND ph.user_id = ?",
+    )
+    .bind(&id)
+    .bind(&user.id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(AppError::Database)?
+    .ok_or_else(|| AppError::NotFound("No plan found in such user and phase".to_string()))?;
+
+    // ② 归档阶段不可编辑
+    let target_phase =
+        sqlx::query_as::<_, Phase>("SELECT * FROM phases WHERE id = ? AND user_id = ?")
+            .bind(&current_plan.phase_id)
+            .bind(&user.id)
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(AppError::Database)?
+            .ok_or_else(|| AppError::NotFound("No such phase in your profile".to_string()))?;
+    if target_phase.archived
+    {
+        return Err(AppError::Forbidden(
+            "Can not edit archived phase".to_string(),
+        ));
+    }
+
+    // ③ 查重：date 撞 UNIQUE(phase_id, date) 时排除自己
+    //    编辑时日期可能没变（自己占着这个日期）——必须 AND id != ?
+    let exists = sqlx::query_scalar::<_, i64>(
+        "SELECT id FROM plans WHERE phase_id = ? AND date = ? AND id != ?",
+    )
+    .bind(&current_plan.phase_id)
+    .bind(&form.date)
+    .bind(&id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(AppError::Database)?;
+    if exists.is_some()
+    {
+        return Err(AppError::Validation(format!(
+            "该日期 {} 已有计划，不能重复",
+            form.date
+        )));
+    }
+
+    // ④ 事务：先删后插（和模板 update 一样的套路）
+    let mut tx = state.pool.begin().await.map_err(AppError::Database)?;
+
+    // 4.1 更新父表（日期 + 备注）
+    sqlx::query("UPDATE plans SET date = ?, note = ? WHERE id = ?")
+        .bind(&form.date)
+        .bind(&form.note)
+        .bind(&id)
+        .execute(&mut *tx)
+        .await
+        .map_err(AppError::Database)?;
+
+    // 4.2 删掉所有旧计划项
+    sqlx::query("DELETE FROM plan_items WHERE plan_id = ?")
+        .bind(&id)
+        .execute(&mut *tx)
+        .await
+        .map_err(AppError::Database)?;
+
+    // 4.3 重新插入勾选的动作（动作库默认值兜底）
+    let ex_ids: Vec<i64> = form.exercise_ids();
+    for (idx, ex_id) in ex_ids.iter().enumerate()
+    {
+        // 每个动作查一次默认值（M3 简化为逐条查询）
+        let ex = sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE id = ?")
+            .bind(ex_id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(AppError::Database)?;
+        sqlx::query(
+            "INSERT INTO plan_items (plan_id, exercise_id, sort_order, plan_sets, plan_reps)
+            VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(&id)
+        .bind(ex_id)
+        .bind(idx as i64)
+        .bind(ex.default_sets)
+        .bind(ex.default_reps)
+        .execute(&mut *tx)
+        .await
+        .map_err(AppError::Database)?;
+    }
+
+    // ⑤ 提交
+    tx.commit().await.map_err(AppError::Database)?;
+
+    Ok(Redirect::to(&format!(
+        "/plans/{plan_id}",
+        plan_id = current_plan.id
+    )))
 }
 
 // ============================================================
@@ -1032,9 +1255,39 @@ pub async fn plan_delete(
     Path(id): Path<i64>,
 ) -> Result<Redirect, AppError>
 {
-    // TODO(M3 第 2 步): 学生实现（步骤见上方注释）
-    // 提示：先子后父，和 template_delete 一模一样
-    unimplemented!("M3 学生实现：删除计划")
+    // ① 先查后改：验证归属（JOIN phases）→ 拿 phase_id 供重定向
+    let current_plan = sqlx::query_as::<_, Plan>(
+        "SELECT p.* FROM plans p INNER JOIN phases ph ON p.phase_id = ph.id
+    WHERE p.id = ? AND ph.user_id = ?",
+    )
+    .bind(&id)
+    .bind(&user.id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(AppError::Database)?
+    .ok_or_else(|| AppError::NotFound("No plan found in such user and phase".to_string()))?;
+
+    // ② 事务：先删子（plan_items）后删父（plans）
+    let mut tx = state.pool.begin().await.map_err(AppError::Database)?;
+
+    sqlx::query("DELETE FROM plan_items WHERE plan_id = ?")
+        .bind(&id)
+        .execute(&mut *tx)
+        .await
+        .map_err(AppError::Database)?;
+
+    sqlx::query("DELETE FROM plans WHERE id = ?")
+        .bind(&id)
+        .execute(&mut *tx)
+        .await
+        .map_err(AppError::Database)?;
+
+    tx.commit().await.map_err(AppError::Database)?;
+
+    Ok(Redirect::to(&format!(
+        "/phases/{phase_id}/plans",
+        phase_id = current_plan.phase_id
+    )))
 }
 
 // ============================================================
@@ -1136,6 +1389,30 @@ pub struct PlanEditForm
 {
     pub date: String,
     pub note: String,
-    #[serde(default)]
-    pub exercise_ids: Vec<i64>,
+    /// ⚠️ 多选陷阱：和 TemplateCreateForm / PlanCreateForm 一样，
+    /// 不能用 exercise_ids: Vec<i64>（serde_urlencoded map 语义，重复键覆盖）
+    /// 用 flatten 收集 checkbox 数字键（name = 动作 id，value = "1"）
+    #[serde(flatten)]
+    pub rest: HashMap<String, String>,
+}
+
+impl PlanEditForm
+{
+    /// 从 flatten 的键值对里提取选中的动作 id 列表
+    pub fn exercise_ids(&self) -> Vec<i64>
+    {
+        self.rest
+            .iter()
+            .filter_map(|(k, v)| {
+                if v == "1"
+                {
+                    k.parse::<i64>().ok()
+                }
+                else
+                {
+                    None
+                }
+            })
+            .collect()
+    }
 }
