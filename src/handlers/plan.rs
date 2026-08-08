@@ -141,7 +141,7 @@ pub async fn list_templates(
         .fetch_optional(&state.pool)
         .await
         .map_err(AppError::Database)?
-        .ok_or_else(|| AppError::NotFound("Phase not found".to_string()))?;
+        .ok_or_else(|| AppError::NotFound("No such phase in your profile".to_string()))?;
 
     let template_ret = sqlx::query_as::<_, Template>("SELECT * FROM templates WHERE phase_id = ?")
         .bind(&phase_ret.id)
@@ -214,7 +214,7 @@ pub async fn template_create_form(
         .fetch_optional(&state.pool)
         .await
         .map_err(AppError::Database)?
-        .ok_or_else(|| AppError::NotFound("Phase not found".to_string()))?;
+        .ok_or_else(|| AppError::NotFound("No such phase in your profile".to_string()))?;
 
     let checkbox_rows = sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE user_id = ?")
         .bind(&user.id)
@@ -486,7 +486,7 @@ pub async fn template_update(
             .fetch_optional(&state.pool)
             .await
             .map_err(AppError::Database)?
-            .ok_or_else(|| AppError::NotFound("No such phase or not your phase".to_string()))?;
+            .ok_or_else(|| AppError::NotFound("No such phase in your profile".to_string()))?;
 
     if target_phase.archived
     {
@@ -619,7 +619,49 @@ pub async fn list_plans(
 ) -> Result<Html<String>, AppError>
 {
     // TODO(M3 第 2 步): 学生实现（步骤见上方注释）
-    unimplemented!("M3 学生实现：计划列表")
+    let phase_ret = sqlx::query_as::<_, Phase>("SELECT * FROM phases WHERE id = ? AND user_id = ?")
+        .bind(&phase_id)
+        .bind(&user.id)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(AppError::Database)?
+        .ok_or_else(|| AppError::NotFound("No such phase in your profile".to_string()))?;
+
+    let plan_ret =
+        sqlx::query_as::<_, Plan>("SELECT * FROM plans WHERE phase_id = ? ORDER BY date DESC")
+            .bind(&phase_ret.id)
+            .fetch_all(&state.pool)
+            .await
+            .map_err(AppError::Database)?
+            .iter()
+            .map(|item| {
+                format!(
+                    "<tr><td>{plan_id}</td><td>{plan_dt}</td><td>{plan_note}</td>\
+                    <td><a href=\"/plans/{plan_id}\">详情</a> \
+                    <a href=\"/plans/{plan_id}/edit\">编辑</a> \
+                    <a href=\"/plans/{plan_id}/delete\">删除</a></td></tr>",
+                    plan_id = item.id,
+                    plan_dt = item.date,
+                    plan_note = item.note
+                )
+            })
+            .collect::<Vec<String>>()
+            .join("\n");
+
+    Ok(Html(format!(
+        r#"
+        <h2>训练计划</h2>
+        <table border="1"><tr><th>ID</th><th>日期</th><th>备注</th><th>操作</th></tr>
+            {content}
+        </table>
+        <p><a href="/phases/{phase_id}/plans/new">创建当日计划</a></p>
+        <p><a href="/">返回首页</a></p>
+        "#,
+        content = plan_ret,
+        phase_id = phase_ret.id
+    )))
+
+    // unimplemented!("M3 学生实现：计划列表")
 }
 
 // ============================================================
