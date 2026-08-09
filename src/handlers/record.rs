@@ -138,6 +138,23 @@ pub async fn today(
 /// 4. 查动作信息（拿 key_points 预填 + bar_weight 给换算器）
 /// 5. 查该计划项最近一条记录（有 → 编辑模式预填；无 → 空表单）
 /// 6. 拼 HTML：计划值 + 上次参考 + 表单（含换算器挂载点）
+///
+/// 【教学：换算器挂载点（配合 static/weight_converter.js）】
+/// record_form 页面要引入换算器脚本 + 提供挂载元素：
+///   <script src="/static/weight_converter.js"></script>
+///   <select id="mode-select">（bar/support/std/lb2kg，默认动作的 default_mode）
+///   <input id="plate-input">     片重/支撑量
+///   <input id="bar-input">       杆重（bar 模式才显示）
+///   <input id="body-input">     体重（support 模式才显示）
+///   <span id="result">           换算结果
+///   <button id="fill-btn">        填入重量
+///   页面 <body data-bar-weight="动作.bar_weight"> 提供初始杆重
+/// 四种模式公式（与 JS 一致）：
+///   bar     = 杆重 + 2×片重
+///   support = 体重 − 支撑量（支撑器械标的是"抵消多少体重"，
+///             如 90kg 体重 + 30kg 支撑做引体 → 实际负重 60kg）
+///   std     = 片重
+///   lb2kg   = 片重 × 0.4536
 pub async fn record_form(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
