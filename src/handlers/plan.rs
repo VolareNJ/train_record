@@ -1066,16 +1066,27 @@ pub async fn plan_edit_form(
     .map_err(AppError::Database)?
     .ok_or_else(|| AppError::NotFound("No plan found in such user and phase".to_string()))?;
 
-    // ② 查计划已有的动作 → HashSet 判断勾选状态
-    let current_item_ids =
-        sqlx::query_scalar::<_, i64>("SELECT exercise_id FROM plan_items WHERE plan_id = ?")
-            .bind(&id)
-            .fetch_all(&state.pool)
-            .await
-            .map_err(AppError::Database)?;
-    let selected_item_ids: HashSet<i64> = current_item_ids.into_iter().collect();
+    // ② 查计划已有的计划项 → 建 exercise_id → PlanItem 索引（回显组/次/重）
+    //    不能只查 exercise_id 列表了：编辑页要给每行回显 sets/reps/weight
+    let current_items = sqlx::query_as::<_, PlanItem>("SELECT * FROM plan_items WHERE plan_id = ?")
+        .bind(&id)
+        .fetch_all(&state.pool)
+        .await
+        .map_err(AppError::Database)?;
+    let item_map: HashMap<i64, PlanItem> = current_items
+        .into_iter()
+        .map(|i| (i.exercise_id, i))
+        .collect();
 
-    // ③ 查全部动作 → checkbox 行（已选的加 checked）
+    // ③ 查全部动作 → 每行 checkbox + 组/次/重三个输入框
+    //    【教学：前缀键方案】
+    //    一个动作 4 个输入框，键必须唯一（serde_urlencoded map 语义，同名覆盖）：
+    //      checkbox：name = 动作 id（如 6），value = "1" —— 勾选标记
+    //      组数/次/重：name = "{字段}_{动作id}"（如 sets_6 / reps_6 / weight_6）
+    //    提交形如：6=1&7=1&sets_6=4&reps_6=8&weight_6=60
+    //    前缀键互不冲突、与数字勾选键也互不冲突，全部进 flatten 的 rest。
+    //    value 回显：已选动作显示计划当前值；未选动作预填动作库默认组/次
+    //    （勾选即用，不用二次填写）；重量默认空。
     let checkbox_rows = sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE user_id = ?")
         .bind(&user.id)
         .fetch_all(&state.pool)
@@ -1083,33 +1094,42 @@ pub async fn plan_edit_form(
         .map_err(AppError::Database)?
         .iter()
         .map(|ex| {
-            let checked = if selected_item_ids.contains(&ex.id)
-            {
-                " checked"
-            }
-            else
-            {
-                ""
-            };
+            let item = item_map.get(&ex.id);
+            let checked = if item.is_some() { " checked" } else { "" };
+            // 回显链：计划项有值 → 用计划项；没有（未选/没设过）→ 动作库默认
+            let sets = item
+                .and_then(|i| i.plan_sets)
+                .map_or(ex.default_sets.to_string(), |v| v.to_string());
+            let reps = item
+                .and_then(|i| i.plan_reps)
+                .map_or(ex.default_reps.to_string(), |v| v.to_string());
+            let weight = item
+                .and_then(|i| i.plan_weight)
+                .map_or(String::new(), |v| v.to_string());
             format!(
-                // 和模板一样：name = 动作 id（唯一键），value = 1（勾选标记）
-                r#"<label><input type="checkbox" name="{id}" value="1"{checked}> {name}</label><br>"#,
+                r#"<label><input type="checkbox" name="{id}" value="1"{checked}> {name}</label>
+                组数<input name="sets_{id}" value="{sets}" size="3">
+                次数<input name="reps_{id}" value="{reps}" size="3">
+                重量<input name="weight_{id}" value="{weight}" size="3"><br>"#,
                 id = ex.id,
                 checked = checked,
                 name = ex.name,
+                sets = sets,
+                reps = reps,
+                weight = weight,
             )
         })
         .collect::<Vec<String>>()
         .join("\n");
 
-    // ④ 拼表单（date + note + 动作多选）
+    // ④ 拼表单（date + note + 动作多选 + 每动作组/次/重）
     Ok(Html(format!(
         r#"
         <h2>编辑计划</h2>
         <form method="post" action="/plans/{plan_id}/edit">
             日期：<input type="date" name="date" value="{plan_date}"><br>
             备注：<input name="note" value="{plan_note}"><br>
-            动作：<br>
+            动作（组/次/重可直接修改）：<br>
             {checkbox_rows}
             <button type="submit">保存</button>
         </form>
@@ -1206,25 +1226,22 @@ pub async fn plan_update(
         .await
         .map_err(AppError::Database)?;
 
-    // 4.3 重新插入勾选的动作（动作库默认值兜底）
+    // 4.3 重新插入勾选的动作
+    //    组/次/重直接来自表单（编辑页已回显当前值，未选动作预填默认值），
+    //    空字符串 → None → 存 NULL（plan_detail 显示 "-"）
     let ex_ids: Vec<i64> = form.exercise_ids();
     for (idx, ex_id) in ex_ids.iter().enumerate()
     {
-        // 每个动作查一次默认值（M3 简化为逐条查询）
-        let ex = sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE id = ?")
-            .bind(ex_id)
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(AppError::Database)?;
         sqlx::query(
-            "INSERT INTO plan_items (plan_id, exercise_id, sort_order, plan_sets, plan_reps)
-            VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO plan_items (plan_id, exercise_id, sort_order, plan_sets, plan_reps, plan_weight)
+            VALUES (?, ?, ?, ?, ?, ?)",
         )
         .bind(&id)
         .bind(ex_id)
         .bind(idx as i64)
-        .bind(ex.default_sets)
-        .bind(ex.default_reps)
+        .bind(form.plan_sets(*ex_id))
+        .bind(form.plan_reps(*ex_id))
+        .bind(form.plan_weight(*ex_id))
         .execute(&mut *tx)
         .await
         .map_err(AppError::Database)?;
@@ -1383,7 +1400,7 @@ impl PlanCreateForm
     }
 }
 
-/// 计划编辑表单（日期 + 备注 + 动作集合）
+/// 计划编辑表单（日期 + 备注 + 动作集合 + 每动作组/次/重）
 #[derive(Deserialize)]
 pub struct PlanEditForm
 {
@@ -1391,7 +1408,9 @@ pub struct PlanEditForm
     pub note: String,
     /// ⚠️ 多选陷阱：和 TemplateCreateForm / PlanCreateForm 一样，
     /// 不能用 exercise_ids: Vec<i64>（serde_urlencoded map 语义，重复键覆盖）
-    /// 用 flatten 收集 checkbox 数字键（name = 动作 id，value = "1"）
+    /// 用 flatten 收集所有未匹配键，再按规则解析：
+    ///   - 纯数字键（"6"）值 == "1" → 勾选的动作 id
+    ///   - "{前缀}_{动作id}"（"sets_6"）→ 该动作的组/次/重
     #[serde(flatten)]
     pub rest: HashMap<String, String>,
 }
@@ -1414,5 +1433,40 @@ impl PlanEditForm
                 }
             })
             .collect()
+    }
+
+    /// 【教学：前缀键方案】
+    /// 一个动作有 4 个输入：勾选标记（name = {动作id}）+ 组/次/重（name = {字段}_{动作id}）。
+    /// serde_urlencoded 是 map 语义，同名键会覆盖——所以键必须唯一。
+    /// 做法：键 = "{前缀}_{动作id}"（sets_6 / reps_6 / weight_6），
+    /// 与 checkbox 的数字键（6）互不冲突，全部进 flatten 的 rest。
+    /// 提交形如：6=1&7=1&sets_6=4&reps_6=8&weight_6=60
+    ///
+    /// 泛型 T: FromStr —— i64（组/次）和 f64（重量）共用一套解析逻辑
+    fn plan_value<T>(&self, prefix: &str, ex_id: i64) -> Option<T>
+    where
+        T: std::str::FromStr,
+    {
+        self.rest
+            .get(&format!("{prefix}_{ex_id}"))
+            .and_then(|v| v.trim().parse::<T>().ok())
+    }
+
+    /// 组数（键 sets_{id}；空字符串 → None，即存 NULL）
+    pub fn plan_sets(&self, ex_id: i64) -> Option<i64>
+    {
+        self.plan_value("sets", ex_id)
+    }
+
+    /// 次数（键 reps_{id}；空字符串 → None）
+    pub fn plan_reps(&self, ex_id: i64) -> Option<i64>
+    {
+        self.plan_value("reps", ex_id)
+    }
+
+    /// 重量 kg（键 weight_{id}；空字符串 → None）
+    pub fn plan_weight(&self, ex_id: i64) -> Option<f64>
+    {
+        self.plan_value("weight", ex_id)
     }
 }
