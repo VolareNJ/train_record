@@ -35,6 +35,18 @@
 - **计划解决**：**M3 编辑页兜底**（编辑时按展示顺序重新分配 sort_order）；
   若需严格勾选顺序，改为 checkbox name 带序号（如 `exercise_ids_0`）或前端排序。
 
+### 1.4 未登录访问返回 401 JSON 而非重定向到 /login 🟡
+
+- **现状**：`AuthUser` 守卫失败返回 `AppError::Unauthorized` → error.rs 输出
+  **401 JSON**（`{"error": "请先登录"}`），浏览器显示 JSON 文本，
+  而不是 303 重定向到登录页。
+- **影响**：M2/M3 验收标准都写"未登录被重定向到 /login"，实际行为是"被拒绝"。
+  安全效果已达成（未登录进不来），但用户体验差（看到 JSON 而非登录页）。
+- **计划解决**：**打磨阶段**（M7），用户已确认。
+- **方案候选**：
+  - error.rs 的 `IntoResponse` 里 Unauthorized → `Redirect::to("/login")`（全局统一跳转）
+  - 或前端加 JS：fetch 收到 401 自动 `window.location = '/login'`
+
 ---
 
 ## 二、踩坑记录（已解决，供参考）
