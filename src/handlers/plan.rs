@@ -129,12 +129,7 @@ pub async fn list_templates(
     Path(phase_id): Path<i64>,
 ) -> Result<Html<String>, AppError>
 {
-    // TODO(M3 第 1 步): 学生实现（步骤见上方注释）
-    // 提示：先把"阶段属于当前用户"查出来（user 变量已解构）
-    //   阶段不属于当前用户 → Err(NotFound)
-    //   阶段已归档（archived=1）→ 列表页顶部加提示"已归档，只读"
-    //   然后查模板列表，每行：模板名 + 编辑/删除链接
-    //   最后加"新建模板"链接：/phases/{phase_id}/templates/new
+    // ① 两级验证：阶段必须属于当前用户（数据隔离底线）
     let phase_ret = sqlx::query_as::<_, Phase>("SELECT * FROM phases WHERE id = ? AND user_id = ?")
         .bind(&phase_id)
         .bind(&user.id)
@@ -143,6 +138,18 @@ pub async fn list_templates(
         .map_err(AppError::Database)?
         .ok_or_else(|| AppError::NotFound("No such phase in your profile".to_string()))?;
 
+    // ② 归档阶段显示"只读"提示（M3 指南 §2.4：归档 = 只读，不能建/改）
+    let archived_note = if phase_ret.archived
+    {
+        "<p style=\"color:red\">⚠️ 该阶段已归档，只读（不能新建/编辑/删除模板）</p>"
+    }
+    else
+    {
+        ""
+    };
+
+    // ③ 查模板列表 → 每行：名称 + 编辑/删除操作链接（M3 指南第 1 步验收要求）
+    //    操作链接用表单 POST（删除是改数据，不能用 GET 链接）
     let template_ret = sqlx::query_as::<_, Template>("SELECT * FROM templates WHERE phase_id = ?")
         .bind(&phase_ret.id)
         .fetch_all(&state.pool)
@@ -151,28 +158,33 @@ pub async fn list_templates(
         .iter()
         .map(|item| {
             format!(
-                "<tr><td>{tmp_id}</td><td>{pha_id}</td><td>{tmp_name}</td></tr>",
+                r#"<tr><td>{tmp_name}</td>
+                <td><a href="/templates/{tmp_id}/edit">编辑</a></td>
+                <td><form method="post" action="/templates/{tmp_id}/delete"
+                style="display:inline"><button type="submit">删除</button></form></td>
+                </tr>"#,
                 tmp_id = item.id,
-                pha_id = item.phase_id,
                 tmp_name = item.name
             )
         })
         .collect::<Vec<String>>()
         .join("\n");
 
+    // ④ 拼页面（注意：r#"... "# 内部不能再出现裸引号，否则会渲染到页面）
     Ok(Html(format!(
         r#"
                 <h2>训练模板</h2>
-                    <table border="1"><tr><th>ID</th><th>阶段ID</th><th>名称</th></tr>
+                {archived_note}
+                    <table border="1"><tr><th>名称</th><th>操作</th></tr>
                         {tmp_content}
                     </table>
                 <p><a href="/phases/{phase_id}/templates/new">创建训练模板</a></p>
-                <p><a href="/">返回首页</a></p>"
+                <p><a href="/">返回首页</a></p>
             "#,
+        archived_note = archived_note,
         tmp_content = template_ret,
         phase_id = phase_ret.id
     )))
-    // unimplemented!("M3 学生实现：模板列表")
 }
 
 // ============================================================
@@ -204,10 +216,7 @@ pub async fn template_create_form(
     Path(phase_id): Path<i64>,
 ) -> Result<Html<String>, AppError>
 {
-    // TODO(M3 第 1 步): 学生实现（步骤见上方注释）
-    // 提示：动作列表用 exercises 表的 map 生成 checkbox 行
-    //   <label><input type="checkbox" name="exercise_ids" value="{id}"> {name}</label>
-    // 表单 action = /phases/{phase_id}/templates
+    // ① 两级验证：阶段必须属于当前用户
     let phase_ret = sqlx::query_as::<_, Phase>("SELECT * FROM phases WHERE id = ? AND user_id = ?")
         .bind(&phase_id)
         .bind(&user.id)
@@ -216,6 +225,7 @@ pub async fn template_create_form(
         .map_err(AppError::Database)?
         .ok_or_else(|| AppError::NotFound("No such phase in your profile".to_string()))?;
 
+    // ② 查全部动作 → checkbox 行（name = 动作 id，value = 1）
     let checkbox_rows = sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE user_id = ?")
         .bind(&user.id)
         .fetch_all(&state.pool)
@@ -234,6 +244,7 @@ pub async fn template_create_form(
         .collect::<Vec<String>>()
         .join("\n");
 
+    // ③ 拼表单
     Ok(Html(format!(
         r#"
         <h2>创建训练模板</h2>
@@ -247,7 +258,6 @@ pub async fn template_create_form(
         phase_id = phase_ret.id,
         checkbox_rows = checkbox_rows,
     )))
-    // unimplemented!("M3 学生实现：新建模板表单")
 }
 
 // ============================================================
@@ -264,16 +274,13 @@ pub async fn template_create_form(
 /// 2. 验证阶段属于当前用户 + 未归档
 /// 3. begin 事务
 /// 4. INSERT INTO templates (phase_id, name, sort_order) VALUES (?, ?, ?)
-///    → query_scalar::<_, i64> 拿回模板 id（last_insert_rowid）
-/// 5. 遍历 form.exercise_ids，逐个 INSERT template_items（带 sort_order 递增）
+///    → query_scalar::<_, i64> + RETURNING id 拿回模板 id
+/// 5. 遍历 form.exercise_ids()，逐个 INSERT template_items（enumerate 生成 sort_order）
 /// 6. commit → 重定向回模板列表
 ///
 /// 【教学：表单结构体】
-/// #[derive(Deserialize)]
-/// struct TemplateCreateForm {
-///     name: String,
-///     exercise_ids: Vec<i64>,   // checkbox 同名 → Vec
-/// }
+/// checkbox name = 动作 id（唯一键）、value = "1"，#[serde(flatten)] 收 HashMap，
+/// exercise_ids() 方法按"能 parse 成 i64 的键"过滤（serde_urlencoded 多选陷阱，见 todo.md §2.1）
 pub async fn template_create(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
@@ -281,14 +288,7 @@ pub async fn template_create(
     Form(form): Form<TemplateCreateForm>,
 ) -> Result<Redirect, AppError>
 {
-    // TODO(M3 第 1 步): 学生实现（步骤见上方注释）
-    // 提示：INSERT 父表后用 query_scalar 拿新 id：
-    //   let template_id: i64 = sqlx::query_scalar("INSERT INTO templates (...) VALUES (...) RETURNING id")
-    //     .bind(...).fetch_one(&mut *tx).await.map_err(AppError::Database)?;
-    //   （SQLite 3.35+ 支持 RETURNING，sqlx 的 SQLite 驱动可用）
-    // 然后 .bind 循环插入子表。
-    // 成功 → Ok(Redirect::to(&format!("/phases/{phase_id}/templates")))
-
+    // ① 验证阶段属于当前用户 + 未归档
     let target_phase =
         sqlx::query_as::<_, Phase>("SELECT * FROM phases WHERE id = ? AND user_id = ?")
             .bind(&phase_id)
@@ -618,7 +618,7 @@ pub async fn list_plans(
     Path(phase_id): Path<i64>,
 ) -> Result<Html<String>, AppError>
 {
-    // TODO(M3 第 2 步): 学生实现（步骤见上方注释）
+    // ① 两级验证：阶段必须属于当前用户
     let phase_ret = sqlx::query_as::<_, Phase>("SELECT * FROM phases WHERE id = ? AND user_id = ?")
         .bind(&phase_id)
         .bind(&user.id)
@@ -627,6 +627,18 @@ pub async fn list_plans(
         .map_err(AppError::Database)?
         .ok_or_else(|| AppError::NotFound("No such phase in your profile".to_string()))?;
 
+    // ② 归档阶段显示"只读"提示
+    let archived_note = if phase_ret.archived
+    {
+        "<p style=\"color:red\">⚠️ 该阶段已归档，只读（不能新建/编辑/删除计划）</p>"
+    }
+    else
+    {
+        ""
+    };
+
+    // ③ 查计划列表（日期倒序，最新在前）→ 每行：日期 + 备注 + 操作
+    //    删除必须用表单 POST（路由只注册了 post，GET 链接会 405）
     let plan_ret =
         sqlx::query_as::<_, Plan>("SELECT * FROM plans WHERE phase_id = ? ORDER BY date DESC")
             .bind(&phase_ret.id)
@@ -636,10 +648,11 @@ pub async fn list_plans(
             .iter()
             .map(|item| {
                 format!(
-                    "<tr><td>{plan_id}</td><td>{plan_dt}</td><td>{plan_note}</td>\
-                    <td><a href=\"/plans/{plan_id}\">详情</a> \
-                    <a href=\"/plans/{plan_id}/edit\">编辑</a> \
-                    <a href=\"/plans/{plan_id}/delete\">删除</a></td></tr>",
+                    r#"<tr><td>{plan_dt}</td><td>{plan_note}</td>
+                    <td><a href="/plans/{plan_id}">详情</a>
+                    <a href="/plans/{plan_id}/edit">编辑</a>
+                    <form method="post" action="/plans/{plan_id}/delete"
+                    style="display:inline"><button type="submit">删除</button></form></td></tr>"#,
                     plan_id = item.id,
                     plan_dt = item.date,
                     plan_note = item.note
@@ -648,20 +661,21 @@ pub async fn list_plans(
             .collect::<Vec<String>>()
             .join("\n");
 
+    // ④ 拼页面
     Ok(Html(format!(
         r#"
         <h2>训练计划</h2>
-        <table border="1"><tr><th>ID</th><th>日期</th><th>备注</th><th>操作</th></tr>
+        {archived_note}
+        <table border="1"><tr><th>日期</th><th>备注</th><th>操作</th></tr>
             {content}
         </table>
         <p><a href="/phases/{phase_id}/plans/new">创建当日计划</a></p>
         <p><a href="/">返回首页</a></p>
         "#,
+        archived_note = archived_note,
         content = plan_ret,
         phase_id = phase_ret.id
     )))
-
-    // unimplemented!("M3 学生实现：计划列表")
 }
 
 // ============================================================
