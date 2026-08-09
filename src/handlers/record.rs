@@ -138,20 +138,120 @@ pub async fn today(
             .await
             .map_err(AppError::Database)?
             .ok_or_else(|| AppError::NotFound("No plan set for today".to_string()))?;
-    // 5. 查计划项（JOIN 动作名）：
-    //    SELECT pi.*, ex.name AS exercise_name
-    //    FROM plan_items pi
-    //    JOIN exercises ex ON pi.exercise_id = ex.id
-    //    WHERE pi.plan_id = ? ORDER BY pi.sort_order
-
+    // 5. 查计划项（不带动作名，避免 JOIN 破坏 query_as）：
+    //    SELECT * FROM plan_items WHERE plan_id = ? ORDER BY sort_order
+    //    再查全部动作 → 建 HashMap<i64, String>（id → 名字）索引：
+    //    SELECT * FROM exercises WHERE user_id = ?
+    //    （M3 同款模式：查两次 + 内存索引。为什么不用 JOIN？
+    //     query_as 按列名匹配结构体，JOIN 多出的 exercise_name 列
+    //     与 PlanItem 不匹配，无法反序列化）
+    let today_plan_items = sqlx::query_as::<_, PlanItem>(
+        "SELECT * FROM plan_items WHERE plan_id = ? ORDER BY sort_order ASC",
+    )
+    .bind(&today_plan.id)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(AppError::Database)?;
+    let id_to_name = sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE user_id = ?")
+        .bind(&user.id)
+        .fetch_all(&state.pool)
+        .await
+        .map_err(AppError::Database)?
+        .iter()
+        .map(|e| (e.id, e.name.clone()))
+        .collect::<HashMap<i64, String>>();
     // 6. 每个计划项查"最近一条记录"判断状态 + 上次策略：
     //    SELECT * FROM records WHERE plan_item_id = ?
     //    ORDER BY record_date DESC, id DESC LIMIT 1
     //    → 有记录 → ✅已训练 + 显示该条 strategy
     //    → 无记录 → ⬜未训练
+    let mut items_with_records = Vec::new();
+    for item in &today_plan_items
+    {
+        let last = sqlx::query_as::<_, Record>(
+            "SELECT * FROM records WHERE plan_item_id = ?
+         ORDER BY record_date DESC, id DESC LIMIT 1",
+        )
+        .bind(item.id)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(AppError::Database)?;
+        items_with_records.push((item, last));
+    }
+
     // 7. 拼 HTML：阶段信息 + 计划动作列表（每行：动作名/计划值/状态/策略/记录链接）
-    // TODO(M4): 学生实现（步骤见上方注释）
-    unimplemented!("M4 学生实现：今日页")
+
+    // 7a. 坚持天数（start_date 为空 → 显示"未设置开始日期"）
+    //     julianday 相减 = 自然日差（今天 8/10，开始 8/1 → 9 天）
+    let persist_days = match &current_phase.start_date
+    {
+        Some(start_date) => sqlx::query_scalar::<_, i64>(
+            "SELECT CAST(julianday('now','localtime') - julianday(?) AS INTEGER)",
+        )
+        .bind(start_date)
+        .fetch_one(&state.pool)
+        .await
+        .map_err(AppError::Database)?
+        .to_string(),
+        None => "未设置开始日期".to_string(),
+    };
+
+    // 7b. 动作列表行（items_with_records = (计划项, 最近记录) 配对）
+    let item_rows = items_with_records
+        .iter()
+        .map(|(item, last)| {
+            // 动作名：从 HashMap 索引取（查不到显示 "?"，理论不发生）
+            let ex_name = id_to_name
+                .get(&item.exercise_id)
+                .cloned()
+                .unwrap_or_else(|| "?".to_string());
+            // 计划值：组×次，重量有就带括号（None → "-"）
+            let plan_value = format!(
+                "{}组 × {}次{}",
+                item.plan_sets.map_or("-".to_string(), |v| v.to_string()),
+                item.plan_reps.map_or("-".to_string(), |v| v.to_string()),
+                item.plan_weight
+                    .map_or(String::new(), |v| format!("（{v}kg）")),
+            );
+            // 状态徽标 + 上次策略提示
+            let (badge, strategy_hint) = match last
+            {
+                Some(rec) => (
+                    "✅已训练".to_string(),
+                    format!("上次策略：{}", rec.strategy),
+                ),
+                None => ("⬜未训练".to_string(), String::new()),
+            };
+            format!(
+                "<tr><td>{ex_name}</td><td>{plan_value}</td><td>{badge}</td>\
+                 <td>{strategy_hint}</td>\
+                 <td><a href=\"/plans/{plan_id}/record/{item_id}\">记录/编辑</a></td></tr>",
+                ex_name = ex_name,
+                plan_value = plan_value,
+                badge = badge,
+                strategy_hint = strategy_hint,
+                plan_id = today_plan.id,
+                item_id = item.id,
+            )
+        })
+        .collect::<Vec<String>>()
+        .join("\n");
+
+    // 7c. 拼整页（风格与 M3 一致：h2 + 表格 + 返回链接）
+    Ok(Html(format!(
+        r#"
+        <h2>今日训练（{today_dt}）</h2>
+        <p>阶段：{phase_name} ｜ 已坚持 {persist_days} 天</p>
+        <table border="1"><tr><th>动作</th><th>计划值</th><th>状态</th><th>上次策略</th><th>操作</th></tr>
+            {item_rows}
+        </table>
+        <p><a href="/">返回首页</a></p>
+        "#,
+        today_dt = today_dt,
+        phase_name = current_phase.name,
+        persist_days = persist_days,
+        item_rows = item_rows,
+    )))
 }
 
 // ============================================================
