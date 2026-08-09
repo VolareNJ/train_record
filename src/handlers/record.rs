@@ -211,7 +211,7 @@ pub async fn today(
                 item.plan_sets.map_or("-".to_string(), |v| v.to_string()),
                 item.plan_reps.map_or("-".to_string(), |v| v.to_string()),
                 item.plan_weight
-                    .map_or(String::new(), |v| format!("（{v}kg）")),
+                    .map_or(String::new(), |v| format!("({v}kg)")),
             );
             // 状态徽标 + 上次策略提示
             let (badge, strategy_hint) = match last
@@ -240,8 +240,8 @@ pub async fn today(
     // 7c. 拼整页（风格与 M3 一致：h2 + 表格 + 返回链接）
     Ok(Html(format!(
         r#"
-        <h2>今日训练（{today_dt}）</h2>
-        <p>阶段：{phase_name} ｜ 已坚持 {persist_days} 天</p>
+        <h2>今日训练({today_dt})</h2>
+        <p>阶段：{phase_name} | 已坚持 {persist_days} 天</p>
         <table border="1"><tr><th>动作</th><th>计划值</th><th>状态</th><th>上次策略</th><th>操作</th></tr>
             {item_rows}
         </table>
@@ -306,6 +306,48 @@ pub async fn record_form(
     Path((id, item_id)): Path<(i64, i64)>,
 ) -> Result<Html<String>, AppError>
 {
+    // 1. 签名：State + AuthUser + Path((id, item_id))
+    // 2. 验证计划归属：JOIN phases 查 user_id
+    let current_plan = sqlx::query_as::<_, Plan>(
+        "SELECT p.* FROM plans p
+        INNER JOIN phases ph ON p.phase_id = ph.id
+        WHERE p.id = ? AND ph.user_id = ?",
+    )
+    .bind(&id)
+    .bind(&user.id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(AppError::Database)?
+    .ok_or_else(|| AppError::NotFound("No plan found in such user and phase".to_string()))?;
+
+    let phase = sqlx::query_as::<_, Phase>("SELECT * FROM phases WHERE id = ? AND user_id = ?")
+        .bind(&current_plan.phase_id)
+        .bind(&user.id)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(AppError::Database)?
+        .ok_or_else(|| AppError::NotFound("No phase found".to_string()))?;
+    if phase.archived
+    {
+        return Err(AppError::Forbidden(
+            "Can not edit archived phase".to_string(),
+        ));
+    }
+
+    // 3. 验证计划项属于该计划：WHERE id = ? AND plan_id = ?（双条件防越权）
+    // 3. 验证计划项属于该计划：双条件
+    let plan_item =
+        sqlx::query_as::<_, PlanItem>("SELECT * FROM plan_items WHERE id = ? AND plan_id = ?")
+            .bind(&item_id)
+            .bind(&current_plan.id)
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(AppError::Database)?
+            .ok_or_else(|| AppError::NotFound("No plan item found".to_string()))?;
+
+    // 4. 查动作信息（拿 key_points 预填 + bar_weight 给换算器）
+    // 5. 查该计划项最近一条记录（有 → 编辑模式预填；无 → 空表单）
+    // 6. 拼 HTML：计划值 + 上次参考 + 表单（含换算器挂载点）
     // TODO(M4): 学生实现（步骤见上方注释）
     unimplemented!("M4 学生实现：单动作记录/编辑页")
 }
