@@ -1,4 +1,4 @@
-﻿// ============================================================
+// ============================================================
 // handlers/record.rs —— 训练记录（Record）的 HTTP 处理器
 // ============================================================
 // 【教学说明】
@@ -19,8 +19,10 @@
 
 // 【教学：本文件用到的导入】
 // 和 M3 的 plan.rs 对比，多了 Json（其实这文件不用 Json，但保留注释说明）：
-// 主要新增：无——Path/Form/State 都是老朋友。
+// 主要新增：HashMap —— 建"动作 id → 动作名"索引（M3 同款模式，见 today 注释第 5 步）
 // 关键：Record / Plan / PlanItem / Exercise 模型 + AuthUser 守卫。
+use std::collections::HashMap;
+
 use axum::{
     extract::{Form, Path, State},
     response::{Html, Redirect},
@@ -89,11 +91,13 @@ use crate::{
 /// 4. 查今天的计划：
 ///    SELECT * FROM plans WHERE phase_id = ? AND date = ?
 ///    → 没有 → 空态提示"今天还没有计划"
-/// 5. 查计划项（JOIN 动作名）：
-///    SELECT pi.*, ex.name AS exercise_name
-///    FROM plan_items pi
-///    JOIN exercises ex ON pi.exercise_id = ex.id
-///    WHERE pi.plan_id = ? ORDER BY pi.sort_order
+/// 5. 查计划项（不带动作名，避免 JOIN 破坏 query_as）：
+///    SELECT * FROM plan_items WHERE plan_id = ? ORDER BY sort_order
+///    再查全部动作 → 建 HashMap<i64, String>（id → 名字）索引：
+///    SELECT * FROM exercises WHERE user_id = ?
+///    （M3 同款模式：查两次 + 内存索引。为什么不用 JOIN？
+///     query_as 按列名匹配结构体，JOIN 多出的 exercise_name 列
+///     与 PlanItem 不匹配，无法反序列化）
 /// 6. 每个计划项查"最近一条记录"判断状态 + 上次策略：
 ///    SELECT * FROM records WHERE plan_item_id = ?
 ///    ORDER BY record_date DESC, id DESC LIMIT 1
@@ -105,6 +109,47 @@ pub async fn today(
     AuthUser(user): AuthUser,
 ) -> Result<Html<String>, AppError>
 {
+    // 1. 签名：State + AuthUser
+    // 2. 查进行中阶段：
+    //    SELECT * FROM phases WHERE user_id = ? AND archived = 0
+    //    ORDER BY created_at DESC LIMIT 1
+    //    → 没有 → 空态提示"暂无进行中阶段，请先创建"
+    let current_phase = sqlx::query_as::<_, Phase>(
+        "SELECT * FROM phases WHERE user_id = ? AND archived = 0 ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(&user.id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(AppError::Database)?
+    .ok_or_else(|| AppError::NotFound("No phase running on your profile".to_string()))?;
+    // 3. 查今天：SELECT date('now', 'localtime')
+    let today_dt = sqlx::query_scalar::<_, String>("SELECT date('now', 'localtime')")
+        .fetch_one(&state.pool)
+        .await
+        .map_err(AppError::Database)?;
+    // 4. 查今天的计划：
+    //    SELECT * FROM plans WHERE phase_id = ? AND date = ?
+    //    → 没有 → 空态提示"今天还没有计划"
+    let today_plan =
+        sqlx::query_as::<_, Plan>("SELECT * FROM plans WHERE phase_id = ? AND date = ?")
+            .bind(&current_phase.id)
+            .bind(&today_dt)
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(AppError::Database)?
+            .ok_or_else(|| AppError::NotFound("No plan set for today".to_string()))?;
+    // 5. 查计划项（JOIN 动作名）：
+    //    SELECT pi.*, ex.name AS exercise_name
+    //    FROM plan_items pi
+    //    JOIN exercises ex ON pi.exercise_id = ex.id
+    //    WHERE pi.plan_id = ? ORDER BY pi.sort_order
+
+    // 6. 每个计划项查"最近一条记录"判断状态 + 上次策略：
+    //    SELECT * FROM records WHERE plan_item_id = ?
+    //    ORDER BY record_date DESC, id DESC LIMIT 1
+    //    → 有记录 → ✅已训练 + 显示该条 strategy
+    //    → 无记录 → ⬜未训练
+    // 7. 拼 HTML：阶段信息 + 计划动作列表（每行：动作名/计划值/状态/策略/记录链接）
     // TODO(M4): 学生实现（步骤见上方注释）
     unimplemented!("M4 学生实现：今日页")
 }
