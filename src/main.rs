@@ -352,6 +352,19 @@ async fn main()
             get(handlers::plan::plan_edit_form).post(handlers::plan::plan_update),
         )
         .route("/plans/{id}/delete", post(handlers::plan::plan_delete))
+        // ----------------------------------------------------------
+        // M4 新增：训练记录（今日页 + 单动作记录/编辑 + 保存）
+        // 教学注释见 src/handlers/record.rs 顶部
+        // ----------------------------------------------------------
+        .route("/today", get(handlers::record::today))
+        .route(
+            "/plans/{id}/record/{item_id}",
+            get(handlers::record::record_form),
+        )
+        .route(
+            "/plans/{id}/record/{item_id}/save",
+            post(handlers::record::record_save),
+        )
         .with_state(state);
 
     // --------------------------------------------------------
@@ -797,6 +810,7 @@ async fn home(State(state): State<AppState>, headers: HeaderMap) -> Result<Respo
         <p>训练计划：{plan_count} 个</p>
         <h2>训练管理</h2>
         <ul>
+            <li><a href="/today">今日训练（记录）</a></li>
             <li><a href="/phases">查看训练阶段（含模板 / 计划）</a></li>
             <li><a href="/exercises">查看训练动作</a></li>
         </ul>
