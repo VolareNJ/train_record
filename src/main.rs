@@ -732,20 +732,86 @@ async fn home(State(state): State<AppState>, headers: HeaderMap) -> Result<Respo
         Err(e) => return Err(e),
     };
 
-    let user_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users")
-        .fetch_one(&state.pool)
-        .await
-        .map_err(AppError::Database)?;
+    // 查询统计数字（页面卡片展示用）
+    // 【教学：跨表统计 —— "我的阶段下的模板/计划"怎么数？】
+    // 模板/计划表没有 user_id 列（它们挂在 phase 下），不能直接按 user 过滤。
+    // 解法是【子查询】先圈出"当前用户的阶段"，再数这些阶段下的模板/计划：
+    //   SELECT COUNT(*) FROM templates
+    //   WHERE phase_id IN (SELECT id FROM phases WHERE user_id = ?)
+    // 这就是"跨表统计"的入门形态：一层查询套一层查询。
+    let phase_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM phases WHERE user_id = ? AND archived = 0",
+    )
+    .bind(&user.id)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(AppError::Database)?;
+    let exercise_count =
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM exercises WHERE user_id = ?")
+            .bind(&user.id)
+            .fetch_one(&state.pool)
+            .await
+            .map_err(AppError::Database)?;
+    let template_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM templates
+    WHERE phase_id IN (SELECT id FROM phases WHERE user_id = ?)",
+    )
+    .bind(&user.id)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(AppError::Database)?;
+    let plan_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM plans
+    WHERE phase_id IN (SELECT id FROM phases WHERE user_id = ?)",
+    )
+    .bind(&user.id)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(AppError::Database)?;
 
-    // 返回 HTML 字符串（显示当前登录用户名，让守卫取出的 user 真正用上）
+    // 管理员专属入口（首页只对管理员显示"用户管理"链接）
+    let admin_link = if user.is_admin
+    {
+        r#"<a href="/admin/users">用户管理</a>"#
+    }
+    else
+    {
+        ""
+    };
+
+    // 返回 HTML 字符串
+    // 【教学：首页导航的"分区"设计】
+    // 首页是导航中枢，入口按"功能归属"分区展示：
+    //   训练管理：阶段（含模板/计划入口）、动作库
+    //   账户：用户管理（管理员）、登出
+    // 排版上用 <section> 分区 + <li> 列表，比平铺的一排链接清晰。
+    // 模板/计划的入口放在阶段列表每行里（见 phases.rs list 的注释）——
+    // 首页只放一级入口，二级入口放各自归属页面，避免首页无限堆链接。
     Ok(Html(format!(
-        r#"<h1>训练记录系统</h1><p>欢迎回来，{username}！</p><br>
-        <p>数据库用户数: {usercount}</p><br>
-        <a href="/phases">查看训练阶段</a>
-        <a href="/exercises">查看训练动作</a>
+        r#"<h1>训练记录系统</h1>
+        <p>欢迎回来，{username}！</p>
+        <h2>数据概览</h2>
+        <p>进行中阶段：{phase_count} 个</p>
+        <p>动作库：{exercise_count} 个</p>
+        <p>训练模板：{template_count} 个</p>
+        <p>训练计划：{plan_count} 个</p>
+        <h2>训练管理</h2>
+        <ul>
+            <li><a href="/phases">查看训练阶段（含模板 / 计划）</a></li>
+            <li><a href="/exercises">查看训练动作</a></li>
+        </ul>
+        <h2>账户</h2>
+        <ul>
+            {admin_link}
+            <li><form method="post" action="/logout" style="display:inline"><button type="submit">登出</button></form></li>
+        </ul>
         "#,
         username = user.username,
-        usercount = user_count
+        phase_count = phase_count,
+        exercise_count = exercise_count,
+        template_count = template_count,
+        plan_count = plan_count,
+        admin_link = admin_link,
     ))
     .into_response())
 }

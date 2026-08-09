@@ -269,23 +269,41 @@ pub async fn list(
     .map_err(AppError::Database)?;
 
     // Vec<Phase> → 表格行 HTML（map → collect → join，三步接力）
+    // 【教学：功能入口的"归属"设计 —— 为什么模板/计划链接不放在首页？】
+    // 模板和计划都"挂"在某个阶段下（templates.phase_id / plans.phase_id），
+    // 离开阶段谈模板/计划没有意义。所以它们的入口放在【阶段列表的每一行】：
+    //   "训练模板" → /phases/{id}/templates
+    //   "训练计划" → /phases/{id}/plans
+    // 这样用户点进一个阶段，立刻能看到这个阶段下的模板和计划。
+    // 首页只放"大入口"（阶段/动作），细粒度入口放在各自归属的页面——导航不迷路。
     let active_rows = active_phases
         .iter()
         .map(|p| {
             format!(
-                "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
-                p.id, p.name, p.note, p.archived
+                "<tr><td>{id}</td><td>{name}</td><td>{note}</td>\
+                <td><a href=\"/phases/{id}/templates\">训练模板</a> \
+                <a href=\"/phases/{id}/plans\">训练计划</a> \
+                <a href=\"/phases/{id}/edit\">编辑</a></td></tr>",
+                id = p.id,
+                name = p.name,
+                note = p.note
             )
         })
         .collect::<Vec<_>>()
         .join("\n");
 
+    // 已归档：只读，操作列只给查看入口（不能编辑——归档阶段不可修改）
     let archived_rows = archived_phases
         .iter()
         .map(|p| {
             format!(
-                "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
-                p.id, p.name, p.note, p.archived
+                "<tr><td>{id}</td><td>{name}</td><td>{note}</td>\
+                <td><a href=\"/phases/{id}/templates\">训练模板</a> \
+                <a href=\"/phases/{id}/plans\">训练计划</a> \
+                <span style=\"color:gray\">（只读）</span></td></tr>",
+                id = p.id,
+                name = p.name,
+                note = p.note
             )
         })
         .collect::<Vec<_>>()
@@ -293,11 +311,11 @@ pub async fn list(
 
     Ok(Html(format!(
         r#"<h2>进行中</h2>
-            <table border="1"><tr><th>ID</th><th>名称</th><th>备注</th><th>归档</th></tr>
+            <table border="1"><tr><th>ID</th><th>名称</th><th>备注</th><th>操作</th></tr>
                 {active_rows}
             </table>
         <h2>已归档</h2>
-            <table border="1"><tr><th>ID</th><th>名称</th><th>备注</th><th>归档</th></tr>
+            <table border="1"><tr><th>ID</th><th>名称</th><th>备注</th><th>操作</th></tr>
                 {archived_rows}
             </table>
         <p><a href="/phases/new">创建阶段</a></p>
