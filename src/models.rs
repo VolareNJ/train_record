@@ -151,6 +151,8 @@ pub struct PlanItem
     pub plan_rest: Option<i64>,
     /// 计划要领（空 = record_form 落回动作库 key_points）
     pub plan_key_points: Option<String>,
+    /// 动作级备注（空 = 无备注；区别于 plans.note 整计划备注）
+    pub plan_note: Option<String>,
 }
 
 // ============================================================

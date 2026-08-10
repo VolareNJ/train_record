@@ -1452,20 +1452,28 @@ pub async fn plan_edit_form(
             //      换算器自动算实际强度"，计划层也按这个交互来
             //   c. 字段顺序也和 record_form 对齐：
             //      实际强度(readonly) → 计重方式 → 杆重 → 体重 →
-            //      观测强度+填入按钮 → 组数 → 次数 → 休息 → 要领
+            //      观测强度 → 组数 → 次数 → 休息 → 要领
             //   d. 每行"实际强度"旁加灰字参考：该动作上次实际完成重量
             //      （last_actual_map，不入库，见 ③a）
+            //   e. 动作级备注 plan_note：如"深蹲行程深一些"、"硬拉70kg晋级赛"
+            //      （区别于整计划 plans.note，见 0004 迁移）
             //   所以这里给每行复刻 record_form 的换算器：
             //     - 观测强度(plate-{id}) 不入库（无 name），只做换算输入
-            //     - 实际强度(name=weight_{id}) readonly，JS 换算后填入
+            //     - 实际强度(name=weight_{id}) readonly，JS 实时换算自动填入
             //       （存 plan_weight，编辑计划页的"实际强度"就是计划预设值）
             //     - 杆重/体重行按 mode 显隐联动（多实例 JS，见下方脚本）
+            //     - 观测强度/杆重/体重/计重方式任一变化 → 自动重算实际强度，
+            //       不需要"填入强度"按钮（M5 打磨：按钮多余，去掉）
             //   体重输入不入库（records/plan_items 都没有体重列），
             //   仅 support 模式换算用（localStorage 记忆，和 record_form 同 key）
             //   上次实际强度参考：有记录才显示
             let last_ref = last_actual_map
                 .get(&ex.id)
                 .map(|w| format!(r#"<span style="color:#888">（上次实际：{w}kg）</span>"#, w = w))
+                .unwrap_or_default();
+            // 动作备注回显：计划项预设 → 空串
+            let note = item
+                .and_then(|i| i.plan_note.clone())
                 .unwrap_or_default();
             format!(
                 r#"<div class="ex-row" data-part="{part}">
@@ -1490,8 +1498,7 @@ pub async fn plan_edit_form(
                     <label>观测强度
                         <input id="plate-{id}" type="number" step="0.5" value="">
                     </label>
-                    <span id="result-{id}"></span>
-                    <button type="button" id="fill-btn-{id}">填入强度</button><br>
+                    <span id="result-{id}"></span><br>
                     <label>组数
                         <input name="sets_{id}" type="number" step="1" value="{sets}">
                     </label><br>
@@ -1503,6 +1510,9 @@ pub async fn plan_edit_form(
                     </label><br>
                     <label>要领
                         <input name="key_points_{id}" value="{key_points}" size="20">
+                    </label><br>
+                    <label>备注
+                        <input name="note_{id}" value="{note}" size="20">
                     </label>
                 </div>
                 </div>"#,
@@ -1519,6 +1529,7 @@ pub async fn plan_edit_form(
                 reps = reps,
                 weight = weight,
                 key_points = key_points,
+                note = note,
                 last_ref = last_ref,
             )
         })
@@ -1582,8 +1593,8 @@ pub async fn plan_edit_form(
                  *   support 总重 = 体重 − 支撑量（下限 0）
                  *   std     总重 = 片重
                  *   lb2kg   总重 = 片重 × 0.4536
-                 * 观测强度(plate) 不入库，只做换算；点"填入强度"把结果写进
-                 * 实际强度(name=weight_{exId}，readonly)，后者随表单提交。
+                 * 观测强度(plate) 不入库，只做换算；实际强度(name=weight_{exId}，
+                 * readonly) 由 JS 实时自动写入（无需"填入强度"按钮），随表单提交。
                  * 体重 input 不入库，仅 support 换算用，localStorage 记忆。 */
                 function convertWeight(mode, plate, bar, body){
                 var plateKg = Number(plate) || 0;
@@ -1612,7 +1623,15 @@ pub async fn plan_edit_form(
                 return roundToHalf(convertWeight(mode, plate, bar, body || defaultBody));
                 }
                 function updateRow(exId){
+                // 实时换算：结果显示 + 自动写入实际强度（无需按钮）
                 document.getElementById('result-' + exId).textContent = rowTotal(exId) + ' kg';
+                // 保护：只在观测强度有输入时写入实际强度
+                // —— 页面加载时 plate 为空（行里只有回显的计划实际强度），
+                //    此时写入会把回显值覆盖成"纯杆重 20"，所以不能写；
+                //    用户清空观测强度同理，保留上一次的实际强度。
+                if (document.getElementById('plate-' + exId).value !== '') {
+                document.getElementById('weight-input-' + exId).value = rowTotal(exId);
+                }
                 }
                 document.querySelectorAll('.mode-select').forEach(function(sel){
                 var exId = sel.getAttribute('data-ex');
@@ -1623,9 +1642,6 @@ pub async fn plan_edit_form(
                 document.getElementById('body-' + exId).addEventListener('input', function(){
                 localStorage.setItem('weight_converter_body', this.value);
                 updateRow(exId);
-                });
-                document.getElementById('fill-btn-' + exId).addEventListener('click', function(){
-                document.getElementById('weight-input-' + exId).value = rowTotal(exId);
                 });
                 // 已有计划实际强度回显的行，不覆盖显示（换算结果留待用户改观测强度时出现）
                 if (document.getElementById('plate-' + exId).value === '') {
@@ -1741,8 +1757,8 @@ pub async fn plan_update(
         sqlx::query(
             "INSERT INTO plan_items
             (plan_id, exercise_id, sort_order, plan_sets, plan_reps, plan_weight,
-            plan_mode, plan_bar_weight, plan_rest, plan_key_points)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            plan_mode, plan_bar_weight, plan_rest, plan_key_points, plan_note)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&plan_id)
         .bind(ex_id)
@@ -1754,6 +1770,7 @@ pub async fn plan_update(
         .bind(form.plan_bar_weight(*ex_id))
         .bind(form.plan_rest(*ex_id))
         .bind(form.plan_key_points(*ex_id))
+        .bind(form.plan_note(*ex_id))
         .execute(&mut *tx)
         .await
         .map_err(AppError::Database)?;
@@ -2038,6 +2055,22 @@ impl PlanEditForm
     pub fn plan_key_points(&self, ex_id: i64) -> Option<String>
     {
         self.rest.get(&format!("key_points_{ex_id}")).and_then(|v| {
+            let v = v.trim();
+            if v.is_empty()
+            {
+                None
+            }
+            else
+            {
+                Some(v.to_string())
+            }
+        })
+    }
+
+    /// 动作备注（键 note_{id}；空字符串 → None）
+    pub fn plan_note(&self, ex_id: i64) -> Option<String>
+    {
+        self.rest.get(&format!("note_{ex_id}")).and_then(|v| {
             let v = v.trim();
             if v.is_empty()
             {

@@ -293,7 +293,7 @@ pub async fn today(
 ///   <input id="bar-input">       杆重（bar 模式才显示）
 ///   <input id="body-input">     体重（support 模式才显示）
 ///   <span id="result">           换算结果
-///   <button id="fill-btn">        填入重量
+///   <input id="weight-input">   实际强度（readonly，JS 实时自动写入）
 ///   页面 <body data-bar-weight="动作.bar_weight"> 提供初始杆重
 /// 四种模式公式（与 JS 一致）：
 ///   bar     = 杆重 + 2×片重
@@ -529,7 +529,7 @@ pub async fn record_form(
         <html lang="zh">
         <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>记录：{ex_name}</title></head>
         <body data-bar-weight="{bar_weight}">
-        <h2>记录：{ex_name}</h2>        {plan_note_block}<p>计划值：{plan_sets}组 * {plan_reps}次{plan_weight_text}</p>
+        <h2>记录：{ex_name}</h2>        {plan_note_block}{action_note_block}<p>计划值：{plan_sets}组 * {plan_reps}次{plan_weight_text}</p>
         <p>上次参考：{last_ref}</p>
 
         <form method="post" action="/plans/{plan_id}/record/{item_id}/save">
@@ -557,8 +557,7 @@ pub async fn record_form(
             <label>观测强度
                 <input id="plate-input" type="number" step="0.5" value="">
             </label>
-            <span id="result"></span>
-            <button type="button" id="fill-btn">填入强度</button><br>
+            <span id="result"></span><br>
 
             <label>组数
                 <input name="sets" type="number" step="1" value="{prefill_sets}">
@@ -584,7 +583,7 @@ pub async fn record_form(
         <script>
             {javascript}
         </script>
-        <script src="/static/weight_converter.js"></script>
+        <script src="/static/weight_converter.js?v=2"></script>
         </body>
         </html>"#,
         ex_name = exercise_details.name,
@@ -603,6 +602,20 @@ pub async fn record_form(
                 note = current_plan.note
             )
         },
+        // 【M5 修订：动作级备注（plan_items.plan_note，0004 迁移）】
+        // 区别于 plans.note（整计划备注）：这里是该动作自己的训练提醒，
+        // 如"深蹲行程深一些"、"硬拉70kg晋级赛"。有内容才渲染，空不占位。
+        action_note_block = plan_item
+            .plan_note
+            .clone()
+            .filter(|n| !n.is_empty())
+            .map(|n| {
+                format!(
+                    r#"<p style="color:#c60;font-weight:bold">动作备注：{note}</p>"#,
+                    note = n
+                )
+            })
+            .unwrap_or_default(),
         plan_sets = plan_item
             .plan_sets
             .map_or("-".to_string(), |v| v.to_string()),

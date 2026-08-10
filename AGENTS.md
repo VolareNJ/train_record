@@ -11,9 +11,12 @@ description: Describe when these instructions should be loaded by the agent base
 
 ## 构建约定
 
-- **每次 build 前先 `cargo clean` 一遍**，再 `cargo build` / `cargo run`
+- **每次 build 前先检查编译缓存大小**：`du -sm target | cut -f1`
+  - 超过 5GB → `cargo clean` 后再 `cargo build` / `cargo run`
+  - 未超过 → 直接增量编译（省时间）
   原因：云服务器磁盘空间有限，增量编译会累积大量 target 缓存，
-  clean 后重新编译可释放磁盘空间（代价是编译时间变长）
+  clean 后重新编译可释放磁盘空间（代价是编译时间变长），
+  所以只在缓存膨胀时 clean，避免每次都全量重编
 - 验证命令顺序：`cargo +nightly fmt --check` → `cargo check` → `cargo test`
 - 格式不符合时用 `cargo +nightly fmt` 自动修正
 

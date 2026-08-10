@@ -21,10 +21,17 @@
 //   <input id="bar-input" type="number">     ← 仅 bar 模式显示
 //   <input id="body-input" type="number">    ← 仅 support 模式显示（体重，localStorage 记住）
 //   <span id="result"></span>
-//   <button id="fill-btn">填入重量</button>
+//   <input id="weight-input" type="number">  ← 实际强度（readonly，JS 实时自动写入）
 //   页面把动作 bar_weight 渲染进 <body data-bar-weight="20">，
 //   JS 从这里读初始杆重。
 // ============================================================
+
+// 【M5 修订：去掉"填入强度"按钮，改为自动更新】
+// 之前是输入观测强度后点按钮才把总重写进 weight-input。
+// 既然 JS 已实时算好，按钮纯属多余——直接随输入自动写入。
+// 但注意保护：record_form 的 weight-input 初始可能有回显值
+// （计划预设重量/上次记录重量），页面加载时 plate 为空，
+// 此时不能覆盖回显值。所以 updateResult 只在 plate 有值时写入。
 
 // 【教学：换算函数 —— 纯函数式（无副作用）】
 // 输入 (mode, plate, bar, body) → 输出总重。
@@ -86,7 +93,6 @@ function initWeightConverter()
     const bodyRow = document.getElementById('body-row');
     const bodyInput = document.getElementById('body-input');
     const result = document.getElementById('result');
-    const fillBtn = document.getElementById('fill-btn');
     const weightInput = document.getElementById('weight-input');
 
     // 从 <body data-bar-weight="20"> 读初始杆重（后端渲染进 HTML）
@@ -111,6 +117,13 @@ function initWeightConverter()
         );
         // 显示（0.5 的倍数）
         result.textContent = roundToHalf(total) + ' kg';
+        // 【M5：自动写入实际强度（去掉"填入强度"按钮）】
+        // 只在观测强度有输入时写——页面加载时 plate 为空，
+        // 不能覆盖 weight-input 已有的回显值（计划预设/上次记录）。
+        if (plateInput.value !== '')
+        {
+            weightInput.value = roundToHalf(total);
+        }
     };
 
     // 【教学：事件监听 —— input 事件（每次输入都触发）】
@@ -122,20 +135,6 @@ function initWeightConverter()
     {
         localStorage.setItem('weight_converter_body', bodyInput.value);
         updateResult();
-    });
-
-    // 【教学：填入按钮 —— 把总重写进实际重量输入框】
-    fillBtn.addEventListener('click', () =>
-    {
-        const mode = modeSelect.value;
-        const total = convertWeight(
-            mode,
-            plateInput.value,
-            barInput.value || defaultBar,
-            bodyInput.value || defaultBody,
-        );
-        // 写进记录表单的重量输入框（id=weight-input）
-        weightInput.value = roundToHalf(total);
     });
 
     // 初始计算一次（页面加载就有结果）
