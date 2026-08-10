@@ -243,7 +243,7 @@ pub async fn list(
 ///   和数据库存的中文一致（body_part TEXT）。
 ///
 /// 【教学：select 的"显示文字 / 值"分离 —— 学生设计】
-/// 学生问："bar_weight 用下拉框，但健身房杠铃就三种，基本不用填数字"。
+/// 学生问："bar_weight 用下拉框，但健身房杠铃就几种，基本不用填数字"。
 /// 这正是 <select> 的经典用法——**显示和值分离**：
 ///   <option value="20">Olympic(20kg)</option>
 ///          ↑ 传回后端        ↑ 用户看到
@@ -252,6 +252,13 @@ pub async fn list(
 ///   代价：杠铃种类被写死在代码里，以后加新杆要改这里（枚举的固有局限）。
 ///   （这就是为什么 default_sets/reps 用输入框、bar_weight 用下拉框：
 ///     组数/次数是连续值要自由填，杠铃是有限规格只能选。）
+///
+/// 【教学：双边(0kg) —— 倒蹲等"无杆"动作】
+/// 倒蹲（杠铃片挂在轴两端、人站中间下蹲）两边同样放片，
+/// 但轴本身不称重（片直接挂上，中间无标准杠），杆重记为 0：
+///   <option value="0">双边(0kg)</option>
+///   换算逻辑不变：总重 = 0 + 2 × 片重（一侧一片）。
+///   "双边"语义：说明两侧对称放片，和单边动作（单臂类）区分。
 ///
 /// 【教学：bar_weight 条件显示 —— 服务端 vs 客户端的边界】
 /// 学生问："希望 default_mode 为 bar 时 bar_weight 才显示，如何设置？"
@@ -282,7 +289,7 @@ pub async fn list(
 /// 【实现步骤】
 /// 1. 签名：State + AuthUser
 /// 2. 返回 <form method="post" action="/exercises"> 的 HTML
-///    （下拉框：body_part 6 项、default_mode 4 项、bar_weight 3 项；
+///    （下拉框：body_part 6 项、default_mode 4 项、bar_weight 4 项；
 ///     数字框：default_sets/default_reps；文本域：key_points）
 /// 3. default_mode 加 id + onchange（bar 在前 + selected，表默认 bar），
 ///    bar_weight 包进 <div id="bar_weight_row">，
@@ -325,6 +332,7 @@ pub async fn create_form(
                         <option value="20">Olympic(20kg)</option>
                         <option value="11.3">Smith(11.3kg)</option>
                         <option value="10">短杠(10kg)</option>
+                        <option value="0">双边(0kg)</option>
                     </select>
                 </label>
             </div><br>
@@ -633,7 +641,7 @@ pub async fn edit_form(
             })
             .collect::<Vec<_>>()
             .join("\n"),
-        bar_weight_options = ["20", "11.3", "10"]
+        bar_weight_options = ["20", "11.3", "10", "0"]
             .iter()
             .map(|bar_weight| {
                 format!(
@@ -651,6 +659,7 @@ pub async fn edit_form(
                         "20" => "Olympic(20kg)",
                         "11.3" => "Smith(11.3kg)",
                         "10" => "短杠(10kg)",
+                        "0" => "双边(0kg)",
                         _ => *bar_weight,
                     }
                 )

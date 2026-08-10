@@ -471,13 +471,15 @@ pub async fn record_form(
         .collect::<Vec<_>>()
         .join("\n");
 
-    // 6c-1. 杆重下拉框选项（三种杠杆枚举，与 exercises.rs 的 bar_weight 同款）
-    //     【教学：杆重不是随便填的数字，是健身房三种杠铃规格之一】
-    //     Olympic(20kg) / Smith(11.3kg) / 短杠(10kg) 三选一，
+    // 6c-1. 杆重下拉框选项（四种杠铃规格枚举，与 exercises.rs 的 bar_weight 同款）
+    //     【教学：杆重不是随便填的数字，是健身房四种杠铃规格之一】
+    //     Olympic(20kg) / Smith(11.3kg) / 短杠(10kg) / 双边(0kg) 四选一，
     //     按动作的 bar_weight（f64）匹配默认选中项。
     //     select 的 value 就是选中 option 的 value（数字字符串），
-    //     换算器 JS 里 Number(barInput.value) 照常解析。
-    let bar_weight_options = ["20", "11.3", "10"]
+    //     换算器 JS 里 Number(barInput.value) 照常解析（"0" → 0）。
+    //     双边(0kg)：倒蹲等无杆动作，两边放片但轴本身不称重，
+    //     总重 = 0 + 2 × 片重（和 Olympic 同公式，只是杆重为 0）。
+    let bar_weight_options = ["20", "11.3", "10", "0"]
         .iter()
         .map(|bar_weight| {
             format!(
@@ -495,6 +497,7 @@ pub async fn record_form(
                     "20" => "Olympic(20kg)",
                     "11.3" => "Smith(11.3kg)",
                     "10" => "短杠(10kg)",
+                    "0" => "双边(0kg)",
                     _ => *bar_weight,
                 },
             )
