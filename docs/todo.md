@@ -71,9 +71,12 @@
 
 ---
 
-## 三、测试数据（M3 阶段 curl 实测用）
+## 三、测试数据（M3/M4 阶段 curl 实测用）
 
-- 阶段：`phase id=3`（M3test，start_date=2026-08-08）
+- 阶段：`phase id=3`（备赛期，start_date=2026-08-08）
 - 动作：`exercise id=6`（bench_press）、`id=7`（squat）
+- 计划：`plan id=7`（2026-08-10），计划项 `item id=16`（bench_press 4×8 60kg）、`17`（squat 5×5）
 - 登录：`admin / admin123`；curl 需 `-c /tmp/ck.txt -b /tmp/ck.txt`
 - 服务器：端口 8080；重启后需重新登录再实测
+- 记录页：GET `/plans/7/record/16`；保存 POST `/plans/7/record/16/save`
+  （表单字段：weight/sets/reps/rest/feeling/strategy/key_points/mode，**缺字段会 422**）
