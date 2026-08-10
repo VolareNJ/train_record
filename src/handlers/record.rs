@@ -400,46 +400,54 @@ pub async fn record_form(
         })
         .unwrap_or_else(|| "还没有记录，这是第一次！".to_string());
 
-    // 6b. 表单预填（Some → 旧值；None → 动作库默认值 / 空串）
-    //     【教学：again 用 Option 链做"预填 vs 默认"】
-    //     编辑模式：weight/sets/reps/rest/feeling/strategy/key_points/mode 全取旧值
-    //     新增模式：weight/sets/reps/rest 空串（用户自己填），
-    //               key_points 预填动作库要点，mode 预填动作默认模式
-    let (
-        prefill_weight,
-        prefill_sets,
-        prefill_reps,
-        prefill_rest,
-        prefill_feeling,
-        prefill_strategy,
-        prefill_key_points,
-        prefill_mode,
-    ) = most_recent_record
+    // 6b. 表单预填 —— 预填链：计划预设 → 最近记录 → 动作库默认
+    //     【教学：预填链 = 三层 Option 优先级（M6 扩展）】
+    //     计划编辑时已能预设计重信息（plan_weight/plan_mode/plan_bar_weight/
+    //     plan_rest/plan_key_points），所以 record_form 预填不再
+    //     "有记录就全取旧值"，而是按优先级：
+    //       1. plan_item 有预设 → 用它（训练前的安排优先，用户按计划执行）
+    //       2. 没有 → 最近记录旧值（上次实际完成的参照，渐进超负荷）
+    //       3. 再没有 → 动作库默认（新动作第一条）
+    //     感受/策略只在 record_form 填（计划层没有这两列）→ 只有 2/3 两层。
+    //     or_else 链：Option 依次尝试，第一个 Some 生效，全 None 才落兜底。
+    let prefill_weight = plan_item
+        .plan_weight
+        .map(|v| v.to_string())
+        .or_else(|| most_recent_record.as_ref().map(|r| r.weight.to_string()))
+        .unwrap_or_default();
+    let prefill_sets = plan_item
+        .plan_sets
+        .map(|v| v.to_string())
+        .or_else(|| most_recent_record.as_ref().map(|r| r.sets.to_string()))
+        .unwrap_or_default();
+    let prefill_reps = plan_item
+        .plan_reps
+        .map(|v| v.to_string())
+        .or_else(|| most_recent_record.as_ref().map(|r| r.reps.to_string()))
+        .unwrap_or_default();
+    let prefill_rest = plan_item
+        .plan_rest
+        .map(|v| v.to_string())
+        .or_else(|| most_recent_record.as_ref().map(|r| r.rest.to_string()))
+        .unwrap_or_default();
+    let prefill_feeling = most_recent_record
         .as_ref()
-        .map(|r| {
-            (
-                r.weight.to_string(),
-                r.sets.to_string(),
-                r.reps.to_string(),
-                r.rest.to_string(),
-                r.feeling.clone(),
-                r.strategy.clone(),
-                r.key_points.clone(),
-                r.mode.clone(),
-            )
-        })
-        .unwrap_or_else(|| {
-            (
-                String::new(),
-                String::new(),
-                String::new(),
-                String::new(),
-                String::new(),
-                String::new(),
-                exercise_details.key_points.clone(),
-                exercise_details.default_mode.clone(),
-            )
-        });
+        .map(|r| r.feeling.clone())
+        .unwrap_or_default();
+    let prefill_strategy = most_recent_record
+        .as_ref()
+        .map(|r| r.strategy.clone())
+        .unwrap_or_default();
+    let prefill_key_points = plan_item
+        .plan_key_points
+        .clone()
+        .or_else(|| most_recent_record.as_ref().map(|r| r.key_points.clone()))
+        .unwrap_or_else(|| exercise_details.key_points.clone());
+    let prefill_mode = plan_item
+        .plan_mode
+        .clone()
+        .or_else(|| most_recent_record.as_ref().map(|r| r.mode.clone()))
+        .unwrap_or_else(|| exercise_details.default_mode.clone());
 
     // 6c. 模式下拉框选项（当前模式 selected，其余普通）
     //     【教学：select 的 selected 由后端决定】
@@ -474,17 +482,22 @@ pub async fn record_form(
     // 6c-1. 杆重下拉框选项（四种杠铃规格枚举，与 exercises.rs 的 bar_weight 同款）
     //     【教学：杆重不是随便填的数字，是健身房四种杠铃规格之一】
     //     Olympic(20kg) / Smith(11.3kg) / 短杠(10kg) / 双边(0kg) 四选一，
-    //     按动作的 bar_weight（f64）匹配默认选中项。
+    //     ⚠️ 预填链：plan_item.plan_bar_weight（计划预设）→ 动作 bar_weight（默认）。
+    //     为什么优先计划预设？用户编辑计划时可能为某动作指定"今天用 Smith 杆"，
+    //     换算器初始杆重应该跟着计划的预设走，而不是动作库的通用默认。
     //     select 的 value 就是选中 option 的 value（数字字符串），
     //     换算器 JS 里 Number(barInput.value) 照常解析（"0" → 0）。
     //     双边(0kg)：倒蹲等无杆动作，两边放片但轴本身不称重，
     //     总重 = 0 + 2 × 片重（和 Olympic 同公式，只是杆重为 0）。
+    let prefill_bar_weight = plan_item
+        .plan_bar_weight
+        .unwrap_or(exercise_details.bar_weight);
     let bar_weight_options = ["20", "11.3", "10", "0"]
         .iter()
         .map(|bar_weight| {
             format!(
                 r#"<option value="{bar_weight}"{sel}>{bar_weight_name}</option>"#,
-                sel = if *bar_weight == format!("{}", exercise_details.bar_weight)
+                sel = if *bar_weight == format!("{}", prefill_bar_weight)
                 {
                     " selected"
                 }
@@ -516,8 +529,7 @@ pub async fn record_form(
         <html lang="zh">
         <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>记录：{ex_name}</title></head>
         <body data-bar-weight="{bar_weight}">
-        <h2>记录：{ex_name}</h2>
-        <p>计划值：{plan_sets}组 * {plan_reps}次{plan_weight_text}</p>
+        <h2>记录：{ex_name}</h2>        <p>计划值：{plan_sets}组 * {plan_reps}次{plan_weight_text}</p>
         <p>上次参考：{last_ref}</p>
 
         <form method="post" action="/plans/{plan_id}/record/{item_id}/save">
@@ -576,7 +588,7 @@ pub async fn record_form(
         </body>
         </html>"#,
         ex_name = exercise_details.name,
-        bar_weight = exercise_details.bar_weight,
+        bar_weight = prefill_bar_weight,
         plan_sets = plan_item
             .plan_sets
             .map_or("-".to_string(), |v| v.to_string()),

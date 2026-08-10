@@ -143,6 +143,14 @@ pub struct PlanItem
     pub plan_reps: Option<i64>,
     /// 计划重量（总重 kg，可空）
     pub plan_weight: Option<f64>,
+    /// 计划计重方式（bar/support/std/lb2kg；空 = 未预设，record_form 落回动作默认）
+    pub plan_mode: Option<String>,
+    /// 计划杆重规格（20/11.3/10/0；空 = 用动作默认）
+    pub plan_bar_weight: Option<f64>,
+    /// 计划休息秒（空 = 未预设）
+    pub plan_rest: Option<i64>,
+    /// 计划要领（空 = record_form 落回动作库 key_points）
+    pub plan_key_points: Option<String>,
 }
 
 // ============================================================

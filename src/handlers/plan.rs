@@ -982,20 +982,29 @@ pub async fn plan_create(
         )));
     }
 
-    // ③ 兜底链：解析"组/次从哪来"
-    //    模板项有值 → 用模板项；没有 → 查动作库默认值（default_sets/default_reps）
-    //    返回 (sets, reps) 都是 Option：都没有就保持 None
+    // ③ 兜底链：解析"组/次/计重方式从哪来"
+    //    模板项有值 → 用模板项；没有 → 查动作库默认值
+    //    （default_sets/default_reps/default_mode/bar_weight/key_points）
+    //    返回的都是 Option：都没有就保持 None
+    //    ⚠️ 注意：template_items 表没有 plan_mode/plan_bar_weight/plan_key_points 列
+    //    （模板层不做计重预设），所以创建计划时这三项永远落回动作库默认。
+    //    plan_rest 同理：动作库没有默认休息 → None（record_form 让用户填）。
     async fn resolve_plan_values(
         pool: &SqlitePool,
         t_sets: Option<i64>,
         t_reps: Option<i64>,
         ex_id: i64,
-    ) -> Result<(Option<i64>, Option<i64>), AppError>
+    ) -> Result<
+        (
+            Option<i64>,
+            Option<i64>,
+            Option<String>,
+            Option<f64>,
+            Option<String>,
+        ),
+        AppError,
+    >
     {
-        if t_sets.is_some() && t_reps.is_some()
-        {
-            return Ok((t_sets, t_reps));
-        }
         let ex = sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE id = ?")
             .bind(&ex_id)
             .fetch_one(pool)
@@ -1003,7 +1012,10 @@ pub async fn plan_create(
             .map_err(AppError::Database)?;
         let sets = t_sets.or(Some(ex.default_sets));
         let reps = t_reps.or(Some(ex.default_reps));
-        Ok((sets, reps))
+        let mode = Some(ex.default_mode);
+        let bar_weight = Some(ex.bar_weight);
+        let key_points = Some(ex.key_points);
+        Ok((sets, reps, mode, bar_weight, key_points))
     }
 
     // ④ 事务：写两张表（plans 父 + plan_items 子）要么全成要么全败
@@ -1033,18 +1045,23 @@ pub async fn plan_create(
 
         for (idx, ti) in template_items.iter().enumerate()
         {
-            let (sets, reps) =
+            let (sets, reps, mode, bar_weight, key_points) =
                 resolve_plan_values(&state.pool, ti.plan_sets, ti.plan_reps, ti.exercise_id)
                     .await?;
             sqlx::query(
-                "INSERT INTO plan_items (plan_id, exercise_id, sort_order, plan_sets, plan_reps)
-            VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO plan_items
+                (plan_id, exercise_id, sort_order, plan_sets, plan_reps,
+                plan_mode, plan_bar_weight, plan_key_points)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(&plan_id)
             .bind(&ti.exercise_id)
             .bind(idx as i64)
             .bind(sets)
             .bind(reps)
+            .bind(mode)
+            .bind(bar_weight)
+            .bind(key_points)
             .execute(&mut *tx)
             .await
             .map_err(AppError::Database)?;
@@ -1052,20 +1069,26 @@ pub async fn plan_create(
     }
     else
     {
-        // ⑥ 手动选动作：每个动作从动作库拿默认组/次
+        // ⑥ 手动选动作：每个动作从动作库拿默认组/次/计重/杆重/要领
         let ex_ids: Vec<i64> = form.exercise_ids();
         for (idx, ex_id) in ex_ids.iter().enumerate()
         {
-            let (sets, reps) = resolve_plan_values(&state.pool, None, None, *ex_id).await?;
+            let (sets, reps, mode, bar_weight, key_points) =
+                resolve_plan_values(&state.pool, None, None, *ex_id).await?;
             sqlx::query(
-                "INSERT INTO plan_items (plan_id, exercise_id, sort_order, plan_sets, plan_reps)
-            VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO plan_items
+                (plan_id, exercise_id, sort_order, plan_sets, plan_reps,
+                plan_mode, plan_bar_weight, plan_key_points)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(&plan_id)
             .bind(ex_id)
             .bind(idx as i64)
             .bind(sets)
             .bind(reps)
+            .bind(mode)
+            .bind(bar_weight)
+            .bind(key_points)
             .execute(&mut *tx)
             .await
             .map_err(AppError::Database)?;
@@ -1146,12 +1169,36 @@ pub async fn plan_detail(
             let sets = item.plan_sets.map_or("-".to_string(), |v| v.to_string());
             let reps = item.plan_reps.map_or("-".to_string(), |v| v.to_string());
             let weight = item.plan_weight.map_or("-".to_string(), |v| v.to_string());
+            // 计重方式（mode 英文存库，显示中文；None → "-"）
+            let mode = item
+                .plan_mode
+                .as_deref()
+                .map(|m| match m
+                {
+                    "bar" => "杠铃",
+                    "support" => "支撑",
+                    "std" => "标准kg",
+                    "lb2kg" => "标准lb",
+                    _ => m,
+                })
+                .unwrap_or("-")
+                .to_string();
+            // 杆重（None → "-"）
+            let bar_weight = item
+                .plan_bar_weight
+                .map_or("-".to_string(), |v| v.to_string());
+            // 休息秒（None → "-"）
+            let rest = item.plan_rest.map_or("-".to_string(), |v| v.to_string());
             format!(
-                "<tr><td>{ex_name}</td><td>{sets}</td><td>{reps}</td><td>{weight}</td></tr>",
+                "<tr><td>{ex_name}</td><td>{sets}</td><td>{reps}</td><td>{weight}</td>\
+                 <td>{mode}</td><td>{bar_weight}</td><td>{rest}</td></tr>",
                 ex_name = ex_name,
                 sets = sets,
                 reps = reps,
                 weight = weight,
+                mode = mode,
+                bar_weight = bar_weight,
+                rest = rest,
             )
         })
         .collect::<Vec<String>>()
@@ -1163,7 +1210,7 @@ pub async fn plan_detail(
         <head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
         <h2>计划详情（{plan_date}）</h2>
         <p>备注：{plan_note}</p>
-        <table border="1"><tr><th>动作</th><th>组数</th><th>次数</th><th>重量</th></tr>
+        <table border="1"><tr><th>动作</th><th>组数</th><th>次数</th><th>重量</th><th>计重方式</th><th>杆重</th><th>休息</th></tr>
             {item_rows}
         </table>
         <p><a href="/plans/{plan_id}/edit">编辑</a> |
@@ -1220,15 +1267,16 @@ pub async fn plan_edit_form(
         .map(|i| (i.exercise_id, i))
         .collect();
 
-    // ③ 查全部动作 → 每行 checkbox + 组/次/重三个输入框
-    //    【教学：前缀键方案】
-    //    一个动作 4 个输入框，键必须唯一（serde_urlencoded map 语义，同名覆盖）：
+    // ③ 查全部动作 → 每行 checkbox + 计重方式/杆重/休息 + 组/次/重输入框
+    //    【教学：前缀键方案（扩展版）】
+    //    一个动作 7 个输入，键必须唯一（serde_urlencoded map 语义，同名覆盖）：
     //      checkbox：name = 动作 id（如 6），value = "1" —— 勾选标记
-    //      组数/次/重：name = "{字段}_{动作id}"（如 sets_6 / reps_6 / weight_6）
-    //    提交形如：6=1&7=1&sets_6=4&reps_6=8&weight_6=60
+    //      计重/杆重/休息/组/次/重：name = "{字段}_{动作id}"
+    //        （mode_6 / bar_weight_6 / rest_6 / sets_6 / reps_6 / weight_6）
+    //    提交形如：6=1&7=1&sets_6=4&reps_6=8&weight_6=60&mode_6=bar&...
     //    前缀键互不冲突、与数字勾选键也互不冲突，全部进 flatten 的 rest。
-    //    value 回显：已选动作显示计划当前值；未选动作预填动作库默认组/次
-    //    （勾选即用，不用二次填写）；重量默认空。
+    //    value 回显：已选动作显示计划当前值；未选动作预填动作库默认
+    //    （勾选即用，不用二次填写）；重量/休息默认空。
     let all_exercises = sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE user_id = ?")
         .bind(&user.id)
         .fetch_all(&state.pool)
@@ -1264,24 +1312,93 @@ pub async fn plan_edit_form(
             let weight = item
                 .and_then(|i| i.plan_weight)
                 .map_or(String::new(), |v| v.to_string());
+            // 计重方式回显：计划项预设 → 动作库 default_mode
+            let mode = item
+                .and_then(|i| i.plan_mode.clone())
+                .unwrap_or_else(|| ex.default_mode.clone());
+            // 杆重回显：计划项预设 → 动作库 bar_weight
+            let bar_weight = item
+                .and_then(|i| i.plan_bar_weight)
+                .unwrap_or(ex.bar_weight);
+            // 休息回显：只有计划项预设才有（动作库没有默认休息）
+            let rest = item
+                .and_then(|i| i.plan_rest)
+                .map_or(String::new(), |v| v.to_string());
+            // 要领回显：计划项预设 → 动作库 key_points
+            let key_points = item
+                .and_then(|i| i.plan_key_points.clone())
+                .unwrap_or_else(|| ex.key_points.clone());
+            // 计重方式下拉选项（当前模式 selected，与 record_form 同款）
+            let mode_options = ["bar", "support", "std", "lb2kg"]
+                .iter()
+                .map(|m| {
+                    format!(
+                        r#"<option value="{m}"{sel}>{name}</option>"#,
+                        sel = if *m == mode { " selected" } else { "" },
+                        name = match *m
+                        {
+                            "bar" => "杠铃",
+                            "support" => "支撑",
+                            "std" => "标准kg",
+                            "lb2kg" => "标准lb",
+                            _ => *m,
+                        },
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            // 杆重下拉选项（四种规格，与 record_form 同款）
+            let bar_weight_options = ["20", "11.3", "10", "0"]
+                .iter()
+                .map(|bw| {
+                    format!(
+                        r#"<option value="{bw}"{sel}>{name}</option>"#,
+                        sel = if *bw == format!("{bar_weight}")
+                        {
+                            " selected"
+                        }
+                        else
+                        {
+                            ""
+                        },
+                        name = match *bw
+                        {
+                            "20" => "Olympic(20kg)",
+                            "11.3" => "Smith(11.3kg)",
+                            "10" => "短杠(10kg)",
+                            "0" => "双边(0kg)",
+                            _ => *bw,
+                        },
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
             format!(
-                r#"<label data-part="{part}"><input type="checkbox" name="{id}" value="1"{checked}> {name}</label>
+                r#"<label data-part="{part}"><input type="checkbox" name="{id}" value="1"{checked}> {name}<br>
+                计重方式<select name="mode_{id}">{mode_options}</select>
+                杆重<select name="bar_weight_{id}">{bar_weight_options}</select>
+                休息<input name="rest_{id}" value="{rest}" size="3">
                 组数<input name="sets_{id}" value="{sets}" size="3">
                 次数<input name="reps_{id}" value="{reps}" size="3">
-                重量<input name="weight_{id}" value="{weight}" size="3"><br>"#,
+                重量<input name="weight_{id}" value="{weight}" size="3">
+                要领<input name="key_points_{id}" value="{key_points}" size="20"></label><br>"#,
                 part = ex.body_part,
                 id = ex.id,
                 checked = checked,
                 name = ex.name,
+                mode_options = mode_options,
+                bar_weight_options = bar_weight_options,
+                rest = rest,
                 sets = sets,
                 reps = reps,
                 weight = weight,
+                key_points = key_points,
             )
         })
         .collect::<Vec<String>>()
         .join("\n");
 
-    // ④ 拼表单（date + note + 动作多选 + 每动作组/次/重）
+    // ④ 拼表单（date + note + 动作多选 + 每动作计重/杆重/休息/组/次/重）
     Ok(Html(format!(
         r#"
         <head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
@@ -1289,7 +1406,7 @@ pub async fn plan_edit_form(
         <form method="post" action="/plans/{plan_id}/edit">
             日期：<input type="date" name="date" value="{plan_date}"><br>
             备注：<input name="note" value="{plan_note}"><br>
-            动作（组/次/重可直接修改）：<br>
+            动作（计重/杆重/休息/组/次/重可直接修改）：<br>
             部位筛选：
             <select id="part_filter" onchange="filterByPart()">
                 <option value="">全部</option>
@@ -1405,14 +1522,17 @@ pub async fn plan_update(
         .map_err(AppError::Database)?;
 
     // 4.3 重新插入勾选的动作
-    //    组/次/重直接来自表单（编辑页已回显当前值，未选动作预填默认值），
+    //    组/次/重/计重方式/杆重/休息/要领直接来自表单
+    //    （编辑页已回显当前值，未选动作预填默认值），
     //    空字符串 → None → 存 NULL（plan_detail 显示 "-"）
     let ex_ids: Vec<i64> = form.exercise_ids();
     for (idx, ex_id) in ex_ids.iter().enumerate()
     {
         sqlx::query(
-            "INSERT INTO plan_items (plan_id, exercise_id, sort_order, plan_sets, plan_reps, plan_weight)
-            VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO plan_items
+            (plan_id, exercise_id, sort_order, plan_sets, plan_reps, plan_weight,
+            plan_mode, plan_bar_weight, plan_rest, plan_key_points)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&plan_id)
         .bind(ex_id)
@@ -1420,6 +1540,10 @@ pub async fn plan_update(
         .bind(form.plan_sets(*ex_id))
         .bind(form.plan_reps(*ex_id))
         .bind(form.plan_weight(*ex_id))
+        .bind(form.plan_mode(*ex_id))
+        .bind(form.plan_bar_weight(*ex_id))
+        .bind(form.plan_rest(*ex_id))
+        .bind(form.plan_key_points(*ex_id))
         .execute(&mut *tx)
         .await
         .map_err(AppError::Database)?;
@@ -1646,5 +1770,52 @@ impl PlanEditForm
     pub fn plan_weight(&self, ex_id: i64) -> Option<f64>
     {
         self.plan_value("weight", ex_id)
+    }
+
+    /// 计重方式（键 mode_{id}；空字符串 → None）
+    /// 【教学：下拉框必须显式提交一个值】
+    /// <select> 没有"空"概念：要么选了 option，要么第一个 option 被选中。
+    /// 编辑页第一个 option 是 ""（未预设），所以用户不改时提交的就是 "" → None。
+    pub fn plan_mode(&self, ex_id: i64) -> Option<String>
+    {
+        self.rest.get(&format!("mode_{ex_id}")).and_then(|v| {
+            let v = v.trim();
+            if v.is_empty()
+            {
+                None
+            }
+            else
+            {
+                Some(v.to_string())
+            }
+        })
+    }
+
+    /// 杆重规格（键 bar_weight_{id}；空字符串 → None）
+    pub fn plan_bar_weight(&self, ex_id: i64) -> Option<f64>
+    {
+        self.plan_value("bar_weight", ex_id)
+    }
+
+    /// 休息秒（键 rest_{id}；空字符串 → None）
+    pub fn plan_rest(&self, ex_id: i64) -> Option<i64>
+    {
+        self.plan_value("rest", ex_id)
+    }
+
+    /// 要领（键 key_points_{id}；空字符串 → None）
+    pub fn plan_key_points(&self, ex_id: i64) -> Option<String>
+    {
+        self.rest.get(&format!("key_points_{ex_id}")).and_then(|v| {
+            let v = v.trim();
+            if v.is_empty()
+            {
+                None
+            }
+            else
+            {
+                Some(v.to_string())
+            }
+        })
     }
 }
