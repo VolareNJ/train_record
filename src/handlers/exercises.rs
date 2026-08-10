@@ -168,17 +168,49 @@ pub async fn list(
 ) -> Result<Html<String>, AppError>
 {
     // TODO(M2 第 3 步): 学生实现（步骤见上方注释）
+    // 部位筛选下拉框选项：DISTINCT 查询数据库实际部位（动态，含"全部"）
+    let part_options = sqlx::query_scalar::<_, String>(
+        "SELECT DISTINCT body_part FROM exercises WHERE user_id = ? ORDER BY body_part",
+    )
+    .bind(&user.id)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(AppError::Database)?
+    .iter()
+    .map(|p| {
+        // 当前筛选的部位 → 加 selected（刷新后下拉框保持选中）
+        let sel = if query.body_part.as_deref() == Some(p.as_str())
+        {
+            " selected"
+        }
+        else
+        {
+            ""
+        };
+        format!(r#"<option value="{p}"{sel}>{p}</option>"#, p = p, sel = sel)
+    })
+    .collect::<Vec<String>>()
+    .join("\n");
+
     Ok(Html(format!(
         r#"
         <head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
         <h1>动作库</h1>
+        <form method="get" action="/exercises">
+            部位筛选：
+            <select name="body_part" onchange="this.form.submit()">
+                <option value="">全部</option>
+                {part_options}
+            </select>
+        </form>
         <table border="1">
             <tr><th>名称</th><th>部位</th><th>模式</th><th>组数</th><th>次数</th><th>操作</th></tr>
             {query_ret_rows}
         </table>
         <p><a href="/exercises/new">创建动作</a></p>
         <p><a href="/">返回首页</a></p>
-        "#, 
+        "#,
+        part_options = part_options,
         query_ret_rows = match &query.body_part
     {
         None => sqlx::query_as::<_, Exercise>(

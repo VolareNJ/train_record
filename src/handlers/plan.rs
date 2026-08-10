@@ -227,17 +227,35 @@ pub async fn template_create_form(
         .ok_or_else(|| AppError::NotFound("No such phase in your profile".to_string()))?;
 
     // ② 查全部动作 → checkbox 行（name = 动作 id，value = 1）
-    let checkbox_rows = sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE user_id = ?")
+    let all_exercises = sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE user_id = ?")
         .bind(&user.id)
         .fetch_all(&state.pool)
         .await
-        .map_err(AppError::Database)?
+        .map_err(AppError::Database)?;
+
+    // ②b 部位筛选下拉框选项：从动作列表去重生成（"全部"用空串表示）
+    let mut part_list: Vec<String> = all_exercises
+        .iter()
+        .map(|ex| ex.body_part.clone())
+        .collect::<HashSet<String>>()
+        .into_iter()
+        .collect();
+    part_list.sort();
+    let part_options = part_list
+        .iter()
+        .map(|p| format!(r#"<option value="{p}">{p}</option>"#, p = p))
+        .collect::<Vec<String>>()
+        .join("\n");
+
+    let checkbox_rows = all_exercises
         .iter()
         .map(|ex| {
             format!(
                 // checkbox 的 name 用动作 id（唯一键），value=1（勾选标记）
                 // 不能用 name="exercise_ids" 重复键——serde_urlencoded 会覆盖
-                r#"<label><input type="checkbox" name="{id}" value="1"> {name}</label><br>"#,
+                // data-part 属性：供前端 JS 按部位显隐过滤
+                r#"<label data-part="{part}"><input type="checkbox" name="{id}" value="1"> {name}</label><br>"#,
+                part = ex.body_part,
                 id = ex.id,
                 name = ex.name
             )
@@ -252,13 +270,31 @@ pub async fn template_create_form(
         <h2>创建训练模板</h2>
         <form method="post" action="/phases/{phase_id}/templates">
             模板名：<input name="name"><br>
-            {checkbox_rows}
+            部位筛选：
+            <select id="part_filter" onchange="filterByPart()">
+                <option value="">全部</option>
+                {part_options}
+            </select><br>
+            <div id="exercise_list">
+                {checkbox_rows}
+            </div>
             <button type="submit">创建</button>
         </form>
         <p><a href="/phases/{phase_id}/templates">返回模板列表</a></p>
+        <script>
+            {javascript}
+        </script>
         "#,
         phase_id = phase_ret.id,
+        part_options = part_options,
         checkbox_rows = checkbox_rows,
+        javascript = r#"function filterByPart(){
+                var part = document.getElementById('part_filter').value;
+                document.querySelectorAll('#exercise_list label').forEach(function(lb){
+                    lb.style.display = (part === '' || lb.getAttribute('data-part') === part) ? '' : 'none';
+                });
+                }
+                filterByPart();"#
     )))
 }
 
@@ -392,11 +428,27 @@ pub async fn template_edit_form(
 
     // ③ 查【全部】动作（和 create_form 一样）→ 生成所有 checkbox 行
     //    编辑页必须显示全部动作，否则用户没法新增没勾过的动作
-    let checkbox_rows = sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE user_id = ?")
+    let all_exercises = sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE user_id = ?")
         .bind(&user.id)
         .fetch_all(&state.pool)
         .await
-        .map_err(AppError::Database)?
+        .map_err(AppError::Database)?;
+
+    // ③b 部位筛选下拉框选项（从动作列表去重，动态生成）
+    let mut part_list: Vec<String> = all_exercises
+        .iter()
+        .map(|ex| ex.body_part.clone())
+        .collect::<HashSet<String>>()
+        .into_iter()
+        .collect();
+    part_list.sort();
+    let part_options = part_list
+        .iter()
+        .map(|p| format!(r#"<option value="{p}">{p}</option>"#, p = p))
+        .collect::<Vec<String>>()
+        .join("\n");
+
+    let checkbox_rows = all_exercises
         .iter()
         .map(|ex| {
             // checked 是条件字符串：选中的输出 " checked"，没选中的输出 ""
@@ -412,7 +464,9 @@ pub async fn template_edit_form(
             format!(
                 // checkbox 的 name 用动作 id（唯一键）、value=1 —— 和 create_form 同一套约定
                 // 这样 POST 提交后 #[serde(flatten)] 能收集到所有勾选
-                r#"<label><input type="checkbox" name="{id}" value="1"{checked}> {name}</label><br>"#,
+                // data-part 属性：供前端 JS 按部位显隐过滤
+                r#"<label data-part="{part}"><input type="checkbox" name="{id}" value="1"{checked}> {name}</label><br>"#,
+                part = ex.body_part,
                 id = ex.id,
                 checked = checked,
                 name = ex.name
@@ -431,15 +485,33 @@ pub async fn template_edit_form(
         <h2>编辑训练模板</h2>
         <form method="post" action="/templates/{template_id}/edit">
             模板名：<input name="name" value="{name}"><br>
-            {checkbox_rows}
+            部位筛选：
+            <select id="part_filter" onchange="filterByPart()">
+                <option value="">全部</option>
+                {part_options}
+            </select><br>
+            <div id="exercise_list">
+                {checkbox_rows}
+            </div>
             <button type="submit">保存</button>
         </form>
         <p><a href="/phases/{phase_id}/templates">返回模板列表</a></p>
+        <script>
+            {javascript}
+        </script>
         "#,
         template_id = template_id,
         name = current_template.name,
         phase_id = current_template.phase_id,
+        part_options = part_options,
         checkbox_rows = checkbox_rows,
+        javascript = r#"function filterByPart(){
+                var part = document.getElementById('part_filter').value;
+                document.querySelectorAll('#exercise_list label').forEach(function(lb){
+                    lb.style.display = (part === '' || lb.getAttribute('data-part') === part) ? '' : 'none';
+                });
+                }
+                filterByPart();"#
     )))
 }
 
@@ -750,15 +822,32 @@ pub async fn plan_create_form(
     // ③ 查全部动作（checkbox 列表）
     //    ⚠️ checkbox name 用动作 id（唯一键）！不能都叫 exercise_ids
     //    （serde_urlencoded map 语义会覆盖，见 PlanCreateForm 注释）
-    let checkbox_rows = sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE user_id = ?")
+    let all_exercises = sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE user_id = ?")
         .bind(&user.id)
         .fetch_all(&state.pool)
         .await
-        .map_err(AppError::Database)?
+        .map_err(AppError::Database)?;
+
+    // ③b 部位筛选下拉框选项（从动作列表去重，动态生成）
+    let mut part_list: Vec<String> = all_exercises
+        .iter()
+        .map(|ex| ex.body_part.clone())
+        .collect::<HashSet<String>>()
+        .into_iter()
+        .collect();
+    part_list.sort();
+    let part_options = part_list
+        .iter()
+        .map(|p| format!(r#"<option value="{p}">{p}</option>"#, p = p))
+        .collect::<Vec<String>>()
+        .join("\n");
+
+    let checkbox_rows = all_exercises
         .iter()
         .map(|ex| {
             format!(
-                r#"<label><input type="checkbox" name="{id}" value="1"> {name}</label><br>"#,
+                r#"<label data-part="{part}"><input type="checkbox" name="{id}" value="1"> {name}</label><br>"#,
+                part = ex.body_part,
                 id = ex.id,
                 name = ex.name
             )
@@ -794,6 +883,11 @@ pub async fn plan_create_form(
             </select><br>
             <div id="manual_exercises">
                 动作（不选模板时手动勾选）：<br>
+                部位筛选：
+                <select id="part_filter" onchange="filterByPart()">
+                    <option value="">全部</option>
+                    {part_options}
+                </select><br>
                 {checkbox_rows}
             </div>
             <button type="submit">创建计划</button>
@@ -806,13 +900,21 @@ pub async fn plan_create_form(
         phase_id = phase_id,
         today = today,
         template_rows = template_rows,
+        part_options = part_options,
         checkbox_rows = checkbox_rows,
         javascript = "function toggleManualExercises(){
                 var select = document.getElementById('template_id');
                 var box = document.getElementById('manual_exercises');
                 box.style.display = (select.value === '') ? '' : 'none';
                 }
-                toggleManualExercises();"
+                function filterByPart(){
+                var part = document.getElementById('part_filter').value;
+                document.querySelectorAll('#manual_exercises label').forEach(function(lb){
+                lb.style.display = (part === '' || lb.getAttribute('data-part') === part) ? '' : 'none';
+                });
+                }
+                toggleManualExercises();
+                filterByPart();"
     )))
 }
 
@@ -1127,11 +1229,27 @@ pub async fn plan_edit_form(
     //    前缀键互不冲突、与数字勾选键也互不冲突，全部进 flatten 的 rest。
     //    value 回显：已选动作显示计划当前值；未选动作预填动作库默认组/次
     //    （勾选即用，不用二次填写）；重量默认空。
-    let checkbox_rows = sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE user_id = ?")
+    let all_exercises = sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE user_id = ?")
         .bind(&user.id)
         .fetch_all(&state.pool)
         .await
-        .map_err(AppError::Database)?
+        .map_err(AppError::Database)?;
+
+    // ③b 部位筛选下拉框选项（从动作列表去重，动态生成）
+    let mut part_list: Vec<String> = all_exercises
+        .iter()
+        .map(|ex| ex.body_part.clone())
+        .collect::<HashSet<String>>()
+        .into_iter()
+        .collect();
+    part_list.sort();
+    let part_options = part_list
+        .iter()
+        .map(|p| format!(r#"<option value="{p}">{p}</option>"#, p = p))
+        .collect::<Vec<String>>()
+        .join("\n");
+
+    let checkbox_rows = all_exercises
         .iter()
         .map(|ex| {
             let item = item_map.get(&ex.id);
@@ -1147,10 +1265,11 @@ pub async fn plan_edit_form(
                 .and_then(|i| i.plan_weight)
                 .map_or(String::new(), |v| v.to_string());
             format!(
-                r#"<label><input type="checkbox" name="{id}" value="1"{checked}> {name}</label>
+                r#"<label data-part="{part}"><input type="checkbox" name="{id}" value="1"{checked}> {name}</label>
                 组数<input name="sets_{id}" value="{sets}" size="3">
                 次数<input name="reps_{id}" value="{reps}" size="3">
                 重量<input name="weight_{id}" value="{weight}" size="3"><br>"#,
+                part = ex.body_part,
                 id = ex.id,
                 checked = checked,
                 name = ex.name,
@@ -1171,16 +1290,34 @@ pub async fn plan_edit_form(
             日期：<input type="date" name="date" value="{plan_date}"><br>
             备注：<input name="note" value="{plan_note}"><br>
             动作（组/次/重可直接修改）：<br>
-            {checkbox_rows}
+            部位筛选：
+            <select id="part_filter" onchange="filterByPart()">
+                <option value="">全部</option>
+                {part_options}
+            </select><br>
+            <div id="exercise_list">
+                {checkbox_rows}
+            </div>
             <button type="submit">保存</button>
         </form>
         <p><a href="/phases/{phase_id}/plans">返回计划列表</a></p>
+        <script>
+            {javascript}
+        </script>
         "#,
         plan_id = current_plan.id,
         plan_date = current_plan.date,
         plan_note = current_plan.note,
+        part_options = part_options,
         checkbox_rows = checkbox_rows,
         phase_id = current_plan.phase_id,
+        javascript = r#"function filterByPart(){
+                var part = document.getElementById('part_filter').value;
+                document.querySelectorAll('#exercise_list label').forEach(function(lb){
+                    lb.style.display = (part === '' || lb.getAttribute('data-part') === part) ? '' : 'none';
+                });
+                }
+                filterByPart();"#
     )))
 }
 
