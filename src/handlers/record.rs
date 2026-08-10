@@ -529,7 +529,7 @@ pub async fn record_form(
         <html lang="zh">
         <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>记录：{ex_name}</title></head>
         <body data-bar-weight="{bar_weight}">
-        <h2>记录：{ex_name}</h2>        <p>计划值：{plan_sets}组 * {plan_reps}次{plan_weight_text}</p>
+        <h2>记录：{ex_name}</h2>        {plan_note_block}<p>计划值：{plan_sets}组 * {plan_reps}次{plan_weight_text}</p>
         <p>上次参考：{last_ref}</p>
 
         <form method="post" action="/plans/{plan_id}/record/{item_id}/save">
@@ -589,6 +589,20 @@ pub async fn record_form(
         </html>"#,
         ex_name = exercise_details.name,
         bar_weight = prefill_bar_weight,
+        // 【M5 修订：展示计划备注（plans.note）作为训练提醒】
+        // 用户建计划时可以写"xxkg晋级赛"、"加深动作行程"这类提醒，
+        // 训练时应在记录页看到。有内容才渲染该行，空备注不占位。
+        plan_note_block = if current_plan.note.is_empty()
+        {
+            String::new()
+        }
+        else
+        {
+            format!(
+                r#"<p style="color:#c00;font-weight:bold">计划备注：{note}</p>"#,
+                note = current_plan.note
+            )
+        },
         plan_sets = plan_item
             .plan_sets
             .map_or("-".to_string(), |v| v.to_string()),

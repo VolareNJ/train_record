@@ -909,6 +909,7 @@ pub async fn plan_create_form(
         <h2>新建当日计划</h2>
         <form method="post" action="/phases/{phase_id}/plans">
             日期：<input type="date" name="date" value="{today}"><br>
+            备注：<input name="note" value=""><br>
             模板：<select name="template_id" id="template_id" onchange="toggleManualExercises()">
                 <option value="">（不选模板，手动选动作）</option>
                 {template_rows}
@@ -1054,11 +1055,13 @@ pub async fn plan_create(
     let mut tx = state.pool.begin().await.map_err(AppError::Database)?;
 
     // 4.1 插入计划（父表），拿回 plan_id
+    //     【M5 修订：备注随表单保存（之前硬编码 ''）】
     let plan_id = sqlx::query_scalar::<_, i64>(
-        "INSERT INTO plans (phase_id, date, note) VALUES (?, ?, '') RETURNING id",
+        "INSERT INTO plans (phase_id, date, note) VALUES (?, ?, ?) RETURNING id",
     )
     .bind(&phase_id)
     .bind(&form.date)
+    .bind(&form.note)
     .fetch_one(&mut *tx)
     .await
     .map_err(AppError::Database)?;
@@ -1315,6 +1318,30 @@ pub async fn plan_edit_form(
         .await
         .map_err(AppError::Database)?;
 
+    // ③a 【M5 修订：最近实际强度参考（不入库）】
+    //    表结构里没有"实际强度"字段（plan_items 只有 plan_weight 计划值），
+    //    用户要求不加字段，但编辑计划时能参考"上次实际完成重量"很有用
+    //    （渐进超负荷：本次计划重量应比上次实际强度略高）。
+    //    实现：按 exercise_id 取最近一条记录的 weight（同 record_form 的
+    //    ORDER BY record_date DESC, id DESC LIMIT 1 语义，聚合到每个动作），
+    //    渲染在每行作为灰字参考。纯展示、不入库，JS 零改动。
+    //    ⚠️ 数据隔离：JOIN exercises 过滤 user_id，只统计当前用户的记录。
+    let last_actual_map: HashMap<i64, f64> = sqlx::query_as::<_, (i64, f64)>(
+        "SELECT r.exercise_id AS \"_1\", r.weight AS \"_2\" FROM records r
+         JOIN exercises e ON r.exercise_id = e.id AND e.user_id = ?
+         JOIN (
+             SELECT exercise_id, MAX(record_date || '#' || printf('%010d', id)) AS k
+             FROM records GROUP BY exercise_id
+         ) latest ON r.exercise_id = latest.exercise_id
+         WHERE (r.record_date || '#' || printf('%010d', r.id)) = latest.k",
+    )
+    .bind(&user.id)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(AppError::Database)?
+    .into_iter()
+    .collect();
+
     // ③b 部位筛选下拉框选项（从动作列表去重，动态生成）
     let mut part_list: Vec<String> = all_exercises
         .iter()
@@ -1415,17 +1442,68 @@ pub async fn plan_edit_form(
             //   （注意：JS 隐藏的输入框仍会提交！所以提交键只在"已勾选且
             //     可见"时有效——后端 plan_update 只认 exercise_ids 里的动作，
             //     隐藏行提交的键会被忽略，无副作用）
+            //
+            // 【M5 修订：与 record_form 保持一致】
+            // 之前这 7 个输入框是裸排的，和 record_form 有这些不一致：
+            //   a. 计重方式选 std/lb2kg 时杆重不隐藏；选 support 时显示的
+            //      还是杆重而不是体重 —— record_form 有 mode 联动
+            //      （bar→杆重行、support→体重行、std/lb2kg→都隐藏）
+            //   b. "重量"直填总重 —— record_form 是"观测强度(片重) +
+            //      换算器自动算实际强度"，计划层也按这个交互来
+            //   c. 字段顺序也和 record_form 对齐：
+            //      实际强度(readonly) → 计重方式 → 杆重 → 体重 →
+            //      观测强度+填入按钮 → 组数 → 次数 → 休息 → 要领
+            //   d. 每行"实际强度"旁加灰字参考：该动作上次实际完成重量
+            //      （last_actual_map，不入库，见 ③a）
+            //   所以这里给每行复刻 record_form 的换算器：
+            //     - 观测强度(plate-{id}) 不入库（无 name），只做换算输入
+            //     - 实际强度(name=weight_{id}) readonly，JS 换算后填入
+            //       （存 plan_weight，编辑计划页的"实际强度"就是计划预设值）
+            //     - 杆重/体重行按 mode 显隐联动（多实例 JS，见下方脚本）
+            //   体重输入不入库（records/plan_items 都没有体重列），
+            //   仅 support 模式换算用（localStorage 记忆，和 record_form 同 key）
+            //   上次实际强度参考：有记录才显示
+            let last_ref = last_actual_map
+                .get(&ex.id)
+                .map(|w| format!(r#"<span style="color:#888">（上次实际：{w}kg）</span>"#, w = w))
+                .unwrap_or_default();
             format!(
                 r#"<div class="ex-row" data-part="{part}">
                 <label><input type="checkbox" name="{id}" value="1"{checked} onchange="toggleDetail({id})"> {name}</label>
                 <div id="detail-{id}" class="ex-detail"{detail_style}>
-                    计重方式<select name="mode_{id}">{mode_options}</select><br>
-                    杆重<select name="bar_weight_{id}">{bar_weight_options}</select><br>
-                    休息<input name="rest_{id}" value="{rest}" size="3"><br>
-                    组数<input name="sets_{id}" value="{sets}" size="3"><br>
-                    次数<input name="reps_{id}" value="{reps}" size="3"><br>
-                    重量<input name="weight_{id}" value="{weight}" size="3"><br>
-                    要领<input name="key_points_{id}" value="{key_points}" size="20">
+                    <label>实际强度
+                        <input name="weight_{id}" id="weight-input-{id}" type="number" step="0.5" value="{weight}" readonly style="background:#eee; color:#888; cursor:not-allowed;">
+                    </label>{last_ref}<br>
+                    <label>计重方式
+                        <select name="mode_{id}" id="mode-{id}" class="mode-select" data-ex="{id}">{mode_options}</select>
+                    </label><br>
+                    <div id="bar-row-{id}">
+                        <label>杆重
+                            <select name="bar_weight_{id}" id="bar-{id}">{bar_weight_options}</select>
+                        </label>
+                    </div>
+                    <div id="body-row-{id}" style="display:none">
+                        <label>体重
+                            <input id="body-{id}" type="number" step="0.5" value="">
+                        </label>
+                    </div>
+                    <label>观测强度
+                        <input id="plate-{id}" type="number" step="0.5" value="">
+                    </label>
+                    <span id="result-{id}"></span>
+                    <button type="button" id="fill-btn-{id}">填入强度</button><br>
+                    <label>组数
+                        <input name="sets_{id}" type="number" step="1" value="{sets}">
+                    </label><br>
+                    <label>次数
+                        <input name="reps_{id}" type="number" step="1" value="{reps}">
+                    </label><br>
+                    <label>休息（秒）
+                        <input name="rest_{id}" type="number" step="1" value="{rest}">
+                    </label><br>
+                    <label>要领
+                        <input name="key_points_{id}" value="{key_points}" size="20">
+                    </label>
                 </div>
                 </div>"#,
                 part = ex.body_part,
@@ -1441,6 +1519,7 @@ pub async fn plan_edit_form(
                 reps = reps,
                 weight = weight,
                 key_points = key_points,
+                last_ref = last_ref,
             )
         })
         .collect::<Vec<String>>()
@@ -1496,6 +1575,63 @@ pub async fn plan_edit_form(
                 }
                 });
                 }
+                /* ---- 行级重量换算器（与 record_form 的 weight_converter.js 同逻辑，多实例版）----
+                 * record_form 是单实例（id 不带后缀），编辑计划页每行一个动作，
+                 * 所以全部 id 用 -{exId} 后缀区分。换算规则完全一致：
+                 *   bar     总重 = 杆重 + 2×片重
+                 *   support 总重 = 体重 − 支撑量（下限 0）
+                 *   std     总重 = 片重
+                 *   lb2kg   总重 = 片重 × 0.4536
+                 * 观测强度(plate) 不入库，只做换算；点"填入强度"把结果写进
+                 * 实际强度(name=weight_{exId}，readonly)，后者随表单提交。
+                 * 体重 input 不入库，仅 support 换算用，localStorage 记忆。 */
+                function convertWeight(mode, plate, bar, body){
+                var plateKg = Number(plate) || 0;
+                var barKg = Number(bar) || 0;
+                var bodyKg = Number(body) || 0;
+                switch (mode) {
+                case 'bar': return barKg + 2 * plateKg;
+                case 'support': return Math.max(0, bodyKg - plateKg);
+                case 'std': return plateKg;
+                case 'lb2kg': return plateKg * 0.4536;
+                default: return 0;
+                }
+                }
+                function roundToHalf(x){ return Math.round(x * 2) / 2; }
+                function syncModeRow(exId){
+                var mode = document.getElementById('mode-' + exId).value;
+                document.getElementById('bar-row-' + exId).style.display = (mode === 'bar') ? '' : 'none';
+                document.getElementById('body-row-' + exId).style.display = (mode === 'support') ? '' : 'none';
+                }
+                function rowTotal(exId){
+                var mode = document.getElementById('mode-' + exId).value;
+                var plate = document.getElementById('plate-' + exId).value;
+                var bar = document.getElementById('bar-' + exId).value;
+                var body = document.getElementById('body-' + exId).value;
+                var defaultBody = Number(localStorage.getItem('weight_converter_body')) || 70;
+                return roundToHalf(convertWeight(mode, plate, bar, body || defaultBody));
+                }
+                function updateRow(exId){
+                document.getElementById('result-' + exId).textContent = rowTotal(exId) + ' kg';
+                }
+                document.querySelectorAll('.mode-select').forEach(function(sel){
+                var exId = sel.getAttribute('data-ex');
+                syncModeRow(exId);
+                sel.addEventListener('input', function(){ syncModeRow(exId); updateRow(exId); });
+                document.getElementById('plate-' + exId).addEventListener('input', function(){ updateRow(exId); });
+                document.getElementById('bar-' + exId).addEventListener('input', function(){ updateRow(exId); });
+                document.getElementById('body-' + exId).addEventListener('input', function(){
+                localStorage.setItem('weight_converter_body', this.value);
+                updateRow(exId);
+                });
+                document.getElementById('fill-btn-' + exId).addEventListener('click', function(){
+                document.getElementById('weight-input-' + exId).value = rowTotal(exId);
+                });
+                // 已有计划实际强度回显的行，不覆盖显示（换算结果留待用户改观测强度时出现）
+                if (document.getElementById('plate-' + exId).value === '') {
+                document.getElementById('result-' + exId).textContent = '';
+                }
+                });
                 filterByPart('exercise_list');"#
     )))
 }
@@ -1751,6 +1887,8 @@ impl TemplateCreateForm
 pub struct PlanCreateForm
 {
     pub date: String,
+    /// 备注（plans.note，训练提醒，如"xxkg晋级赛"）
+    pub note: String,
     /// Option = 可空：没选模板就是 None（下拉框没选 → 不提交 template_id 键）
     pub template_id: Option<i64>,
     /// 手动选的动作集合：checkbox 的 name 直接用动作 id，值是 "1"
