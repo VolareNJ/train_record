@@ -78,5 +78,16 @@
 - 计划：`plan id=7`（2026-08-10），计划项 `item id=16`（bench_press 4×8 60kg）、`17`（squat 5×5）
 - 登录：`admin / admin123`；curl 需 `-c /tmp/ck.txt -b /tmp/ck.txt`
 - 服务器：端口 8080；重启后需重新登录再实测
+
+### 3.1 计划预设计重信息（已实现 ✅，commit b79b66d）
+
+- **需求**：编辑计划时规定计重方式等信息（同 record_form），record_form 按 plan_item 预填；
+  "感受/策略"仍只能在 record_form 填。解决"改 record_form 就标已训练"的矛盾。
+- **实现**：
+  - `plan_items` 新列：`plan_mode`/`plan_bar_weight`/`plan_rest`/`plan_key_points`（迁移 0003）
+  - 编辑计划页每动作行：计重方式下拉 + 杆重下拉 + 休息 + 要领（前缀键 `mode_{id}`/`bar_weight_{id}`/`rest_{id}`/`key_points_{id}`）
+  - record_form 预填链：**计划预设 → 最近记录 → 动作库默认**
+  - 预设不产生 records 记录 → 不误标"已训练"
+- **注意**：`plan_update` 是"先删后插"，编辑计划会重建 plan_item id（record_form URL 里的 item_id 会变）——目前编辑仅限当天未训练，符合 M3 限制。
 - 记录页：GET `/plans/7/record/16`；保存 POST `/plans/7/record/16/save`
   （表单字段：weight/sets/reps/rest/feeling/strategy/key_points/mode，**缺字段会 422**）
