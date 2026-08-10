@@ -1205,7 +1205,7 @@ pub async fn plan_detail(
             let reps = item.plan_reps.map_or("-".to_string(), |v| v.to_string());
             let weight = item.plan_weight.map_or("-".to_string(), |v| v.to_string());
             // 计重方式（mode 英文存库，显示中文；None → "-"）
-            // 【M6 修订：lb2kg 移除，老数据归一化成"标准"显示】
+            // 【M4 修订：lb2kg 移除，老数据归一化成"标准"显示】
             let mode = item
                 .plan_mode
                 .as_deref()
@@ -1389,7 +1389,7 @@ pub async fn plan_edit_form(
                 .and_then(|i| i.plan_key_points.clone())
                 .unwrap_or_else(|| ex.key_points.clone());
             // 计重方式下拉选项（当前模式 selected，与 record_form 同款）
-            // 【M6 修订：lb2kg 模式移除；老数据 lb2kg → std 归一化】
+            // 【M4 修订：lb2kg 模式移除；老数据 lb2kg → std 归一化】
             let mode = if mode == "lb2kg" { "std".to_string() } else { mode };
             let mode_options = ["bar", "support", "std"]
                 .iter()
@@ -1601,7 +1601,7 @@ pub async fn plan_edit_form(
                  * 观测强度(plate) 不入库，只做换算；实际强度(name=weight_{exId}，
                  * readonly) 由 JS 实时自动写入（无需"填入强度"按钮），随表单提交。
                  * 体重 input 不入库，仅 support 换算用，localStorage 记忆。
-                 * 【M6：单位选择在观测强度旁（unit-{exId}，kg/lb，不入库）】
+                 * 【M4 修订：单位选择在观测强度旁（unit-{exId}，kg/lb，不入库）】
                  *   lb → 先 ×0.4536 归一化成 kg 再套公式；杆重/体重固定 kg。 */
                 function convertWeight(mode, plate, bar, body, unit){
                 var raw = Number(plate) || 0;
@@ -1644,7 +1644,7 @@ pub async fn plan_edit_form(
                 document.querySelectorAll('.mode-select').forEach(function(sel){
                 var exId = sel.getAttribute('data-ex');
                 syncModeRow(exId);
-                // 【M6：单位偏好从 localStorage 带出（与 record_form 同 key）】
+                // 【M4 修订：单位偏好从 localStorage 带出（与 record_form 同 key）】
                 var savedUnit = localStorage.getItem('weight_converter_unit');
                 if (savedUnit === 'kg' || savedUnit === 'lb') {
                 document.getElementById('unit-' + exId).value = savedUnit;

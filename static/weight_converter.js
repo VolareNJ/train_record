@@ -14,7 +14,7 @@
 //             用 30kg 支撑做引体 → 实际负重 = 90 − 30 = 60kg）
 //   std    标准：总重 = 片重（器械/哑铃/片直接读数）
 //
-// 【M6 修订：单位选择（kg/lb）在观测强度上】
+// 【M4 修订：单位选择（kg/lb）在观测强度上】
 // 计重方式精简为 bar/support/std 三种，原"标准lb"模式移除——
 // lb 不再是模式，而是观测强度的【单位】：
 //   观测强度旁的单位下拉选 kg 或 lb：
@@ -60,7 +60,7 @@ function convertWeight(mode, plate, bar, body, unit)
     const raw = Number(plate) || 0;
     const barKg = Number(bar) || 0;
     const bodyKg = Number(body) || 0;
-    // 【M6：观测强度按单位归一化成 kg】
+    // 【M4：观测强度按单位归一化成 kg】
     // 单位是 lb → ×0.4536；kg → 原样。杆重/体重不受影响（固定 kg）。
     const plateKg = unit === 'lb' ? raw * 0.4536 : raw;
     switch (mode)
@@ -117,7 +117,7 @@ function initWeightConverter()
     const defaultBar = Number(document.body.dataset.barWeight) || 20;
     // 体重从 localStorage 读（记过一次后下次自动带出，不用每次填）
     const defaultBody = Number(localStorage.getItem('weight_converter_body')) || 70;
-    // 【M6：观测强度单位偏好从 localStorage 读】
+    // 【M4：观测强度单位偏好从 localStorage 读】
     // 单位不入库（观测强度本身也不入库），只做前端换算辅助。
     // 记过一次后下次自动带出，不用每次重选（和体重同款机制）。
     const savedUnit = localStorage.getItem('weight_converter_unit');
@@ -158,7 +158,7 @@ function initWeightConverter()
     modeSelect.addEventListener('input', updateResult);
     plateInput.addEventListener('input', updateResult);
     barInput.addEventListener('input', updateResult);
-    // 【M6：切换单位 → 立即重算 + 记住偏好】
+    // 【M4：切换单位 → 立即重算 + 记住偏好】
     // 单位影响换算结果，切换时 updateResult 会重算。
     unitSelect.addEventListener('input', () =>
     {

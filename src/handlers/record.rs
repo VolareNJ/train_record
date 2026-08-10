@@ -289,7 +289,7 @@ pub async fn today(
 /// record_form 页面要引入换算器脚本 + 提供挂载元素：
 ///   <script src="/static/weight_converter.js"></script>
 ///   <select id="mode-select">（bar/support/std，默认动作的 default_mode）
-///   <select id="unit-select">（kg/lb，观测强度单位，M6 新增）
+///   <select id="unit-select">（kg/lb，观测强度单位，M4 新增）
 ///   <input id="plate-input">     片重/支撑量
 ///   <input id="bar-input">       杆重（bar 模式才显示）
 ///   <input id="body-input">     体重（support 模式才显示）
@@ -301,7 +301,7 @@ pub async fn today(
 ///   support = 体重 − 支撑量（支撑器械标的是"抵消多少体重"，
 ///             如 90kg 体重 + 30kg 支撑做引体 → 实际负重 60kg）
 ///   std     = 片重
-/// 观测强度带单位：选 lb 时先 ×0.4536 归一化成 kg 再套公式（M6 修订）
+/// 观测强度带单位：选 lb 时先 ×0.4536 归一化成 kg 再套公式（M4 修订）
 pub async fn record_form(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
@@ -402,7 +402,7 @@ pub async fn record_form(
         .unwrap_or_else(|| "还没有记录，这是第一次！".to_string());
 
     // 6b. 表单预填 —— 预填链：计划预设 → 最近记录 → 动作库默认
-    //     【教学：预填链 = 三层 Option 优先级（M6 扩展）】
+    //     【教学：预填链 = 三层 Option 优先级（M4 扩展）】
     //     计划编辑时已能预设计重信息（plan_weight/plan_mode/plan_bar_weight/
     //     plan_rest/plan_key_points），所以 record_form 预填不再
     //     "有记录就全取旧值"，而是按优先级：
@@ -454,7 +454,7 @@ pub async fn record_form(
     //     【教学：select 的 selected 由后端决定】
     //     和 M3 exercises.rs 的 mode_options 完全同款：
     //     遍历 3 种模式，当前模式加 " selected"，其余空串。
-    //     【M6 修订："标准lb"(lb2kg) 模式移除，lb 单位移到观测强度旁】
+    //     【M4 修订："标准lb"(lb2kg) 模式移除，lb 单位移到观测强度旁】
     //     老数据兜底：库里已有 lb2kg 值（default_mode/plan_mode/records.mode）
     //     → 归一化成 std 显示（lb 的换算交给观测强度单位选择）。
     let prefill_mode = if prefill_mode == "lb2kg"
