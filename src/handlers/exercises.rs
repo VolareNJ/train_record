@@ -192,6 +192,12 @@ pub async fn list(
     .collect::<Vec<String>>()
     .join("\n");
 
+    // 【踩坑：空串筛选 = "全部"】
+    // "全部"选项的 value 是 ""，提交后 serde 解析 body_part= → Some("")
+    // （不是 None！）。如果直接 match Some("") 走 WHERE body_part = ''，
+    // 查不到任何动作 → 表格消失。必须把空串过滤成"不筛选"。
+    let part_filter = query.body_part.as_deref().filter(|p| !p.is_empty());
+
     Ok(Html(format!(
         r#"
         <head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
@@ -211,7 +217,7 @@ pub async fn list(
         <p><a href="/">返回首页</a></p>
         "#,
         part_options = part_options,
-        query_ret_rows = match &query.body_part
+        query_ret_rows = match part_filter
     {
         None => sqlx::query_as::<_, Exercise>(
             "SELECT * FROM exercises WHERE user_id = ? ORDER BY body_part, name",

@@ -63,6 +63,35 @@ use crate::{
 // 这两个铁律会反复出现在本文件的每个函数里，先记住它们。
 
 // ============================================================
+// 【教学：部位筛选 JS —— 4 个表单页共用（模板/计划 × 创建/编辑）】
+// ============================================================
+// 需求：表单页的"部位筛选"下拉框选中某部位后，只显示该部位的动作行。
+//
+// ⚠️【踩坑：筛选后"表格不连续"（空白行）】
+// 早期版本每行是 <label>...</label><br>：JS 把 label 设 display:none，
+// 但 <br> 是 label 的**兄弟节点**（在 label 外面），隐藏 label 后 <br> 仍占位，
+// 于是中间出现一排排空行，筛选结果看起来"断断续续"。
+// ✅ 修复：每行用块级 <div class="ex-row"> 包裹（div 自身换行），
+// JS 隐藏整个 div → 不留任何残留空白，列表连续。
+//
+// ⚠️【踩坑：筛选后隐藏行里的输入框仍会提交】
+// display:none 的元素依然在 form 里，其 name/value 照常提交。
+// 对模板/计划创建页没问题（未勾选动作本来就不提交勾选标记）。
+// 但**编辑计划页**的详情编辑框（mode_{id}/rest_{id}/...）是每行都渲染的，
+// 如果隐藏行也提交这些键，后端 plan_update 会因为 exercise_ids 不含
+// 该动作而忽略这些键——无副作用，但为保险，编辑页只对**已勾选**动作
+// 显示编辑框（见 plan_edit_form 的 JS）。
+//
+// 【教学：一个 JS 两个职责 —— 传 id 参数复用】
+// 模板页筛选范围是 #exercise_list，计划创建页是 #manual_exercises。
+// 同一个函数用参数指定容器 id，避免复制粘贴两份几乎一样的 JS：
+//   function filterByPart(listId) {
+//       var part = document.getElementById('part_filter').value;
+//       document.querySelectorAll('#' + listId + ' .ex-row').forEach(...)
+//   }
+// 所有页面统一 .ex-row 类名 → 一套 JS 全适用。
+
+// ============================================================
 // 【教学：事务（Transaction）—— 多步操作要么全成、要么全败】
 // ============================================================
 // M3 有两个场景必须用事务（否则会留"半截数据"）：
@@ -253,8 +282,9 @@ pub async fn template_create_form(
             format!(
                 // checkbox 的 name 用动作 id（唯一键），value=1（勾选标记）
                 // 不能用 name="exercise_ids" 重复键——serde_urlencoded 会覆盖
+                // class="ex-row"：块级 div 整行，JS 按部位隐藏时不残留空行
                 // data-part 属性：供前端 JS 按部位显隐过滤
-                r#"<label data-part="{part}"><input type="checkbox" name="{id}" value="1"> {name}</label><br>"#,
+                r#"<div class="ex-row" data-part="{part}"><label><input type="checkbox" name="{id}" value="1"> {name}</label></div>"#,
                 part = ex.body_part,
                 id = ex.id,
                 name = ex.name
@@ -271,7 +301,7 @@ pub async fn template_create_form(
         <form method="post" action="/phases/{phase_id}/templates">
             模板名：<input name="name"><br>
             部位筛选：
-            <select id="part_filter" onchange="filterByPart()">
+            <select id="part_filter" onchange="filterByPart('exercise_list')">
                 <option value="">全部</option>
                 {part_options}
             </select><br>
@@ -288,13 +318,13 @@ pub async fn template_create_form(
         phase_id = phase_ret.id,
         part_options = part_options,
         checkbox_rows = checkbox_rows,
-        javascript = r#"function filterByPart(){
+        javascript = r#"function filterByPart(listId){
                 var part = document.getElementById('part_filter').value;
-                document.querySelectorAll('#exercise_list label').forEach(function(lb){
-                    lb.style.display = (part === '' || lb.getAttribute('data-part') === part) ? '' : 'none';
+                document.querySelectorAll('#' + listId + ' .ex-row').forEach(function(row){
+                    row.style.display = (part === '' || row.getAttribute('data-part') === part) ? '' : 'none';
                 });
                 }
-                filterByPart();"#
+                filterByPart('exercise_list');"#
     )))
 }
 
@@ -464,8 +494,9 @@ pub async fn template_edit_form(
             format!(
                 // checkbox 的 name 用动作 id（唯一键）、value=1 —— 和 create_form 同一套约定
                 // 这样 POST 提交后 #[serde(flatten)] 能收集到所有勾选
+                // class="ex-row"：块级 div 整行，JS 按部位隐藏时不残留空行
                 // data-part 属性：供前端 JS 按部位显隐过滤
-                r#"<label data-part="{part}"><input type="checkbox" name="{id}" value="1"{checked}> {name}</label><br>"#,
+                r#"<div class="ex-row" data-part="{part}"><label><input type="checkbox" name="{id}" value="1"{checked}> {name}</label></div>"#,
                 part = ex.body_part,
                 id = ex.id,
                 checked = checked,
@@ -486,7 +517,7 @@ pub async fn template_edit_form(
         <form method="post" action="/templates/{template_id}/edit">
             模板名：<input name="name" value="{name}"><br>
             部位筛选：
-            <select id="part_filter" onchange="filterByPart()">
+            <select id="part_filter" onchange="filterByPart('exercise_list')">
                 <option value="">全部</option>
                 {part_options}
             </select><br>
@@ -505,13 +536,13 @@ pub async fn template_edit_form(
         phase_id = current_template.phase_id,
         part_options = part_options,
         checkbox_rows = checkbox_rows,
-        javascript = r#"function filterByPart(){
+        javascript = r#"function filterByPart(listId){
                 var part = document.getElementById('part_filter').value;
-                document.querySelectorAll('#exercise_list label').forEach(function(lb){
-                    lb.style.display = (part === '' || lb.getAttribute('data-part') === part) ? '' : 'none';
+                document.querySelectorAll('#' + listId + ' .ex-row').forEach(function(row){
+                    row.style.display = (part === '' || row.getAttribute('data-part') === part) ? '' : 'none';
                 });
                 }
-                filterByPart();"#
+                filterByPart('exercise_list');"#
     )))
 }
 
@@ -846,7 +877,8 @@ pub async fn plan_create_form(
         .iter()
         .map(|ex| {
             format!(
-                r#"<label data-part="{part}"><input type="checkbox" name="{id}" value="1"> {name}</label><br>"#,
+                // class="ex-row"：块级 div 整行，JS 按部位隐藏时不残留空行
+                r#"<div class="ex-row" data-part="{part}"><label><input type="checkbox" name="{id}" value="1"> {name}</label></div>"#,
                 part = ex.body_part,
                 id = ex.id,
                 name = ex.name
@@ -884,7 +916,7 @@ pub async fn plan_create_form(
             <div id="manual_exercises">
                 动作（不选模板时手动勾选）：<br>
                 部位筛选：
-                <select id="part_filter" onchange="filterByPart()">
+                <select id="part_filter" onchange="filterByPart('manual_exercises')">
                     <option value="">全部</option>
                     {part_options}
                 </select><br>
@@ -907,14 +939,14 @@ pub async fn plan_create_form(
                 var box = document.getElementById('manual_exercises');
                 box.style.display = (select.value === '') ? '' : 'none';
                 }
-                function filterByPart(){
+                function filterByPart(listId){
                 var part = document.getElementById('part_filter').value;
-                document.querySelectorAll('#manual_exercises label').forEach(function(lb){
-                lb.style.display = (part === '' || lb.getAttribute('data-part') === part) ? '' : 'none';
+                document.querySelectorAll('#' + listId + ' .ex-row').forEach(function(row){
+                row.style.display = (part === '' || row.getAttribute('data-part') === part) ? '' : 'none';
                 });
                 }
                 toggleManualExercises();
-                filterByPart();"
+                filterByPart('manual_exercises');"
     )))
 }
 
@@ -1373,18 +1405,34 @@ pub async fn plan_edit_form(
                 })
                 .collect::<Vec<_>>()
                 .join("\n");
+            // 【方案 b：编辑框只在勾选时显示 + 换行】
+            // 之前编辑框直接排勾选框后面（一行塞满 7 个输入框），
+            // 手机上根本没法看。优化：
+            //   1. 整行动态切换：勾选 → 显示该行的编辑详情块；
+            //      取消勾选 → 隐藏（勾选状态变化由 JS 处理，见下方脚本）
+            //   2. 编辑详情块内每个字段单独一行，手机友好
+            //   3. 未勾选动作不渲染可见编辑框 → 页面干净、提交数据少
+            //   （注意：JS 隐藏的输入框仍会提交！所以提交键只在"已勾选且
+            //     可见"时有效——后端 plan_update 只认 exercise_ids 里的动作，
+            //     隐藏行提交的键会被忽略，无副作用）
             format!(
-                r#"<label data-part="{part}"><input type="checkbox" name="{id}" value="1"{checked}> {name}<br>
-                计重方式<select name="mode_{id}">{mode_options}</select>
-                杆重<select name="bar_weight_{id}">{bar_weight_options}</select>
-                休息<input name="rest_{id}" value="{rest}" size="3">
-                组数<input name="sets_{id}" value="{sets}" size="3">
-                次数<input name="reps_{id}" value="{reps}" size="3">
-                重量<input name="weight_{id}" value="{weight}" size="3">
-                要领<input name="key_points_{id}" value="{key_points}" size="20"></label><br>"#,
+                r#"<div class="ex-row" data-part="{part}">
+                <label><input type="checkbox" name="{id}" value="1"{checked} onchange="toggleDetail({id})"> {name}</label>
+                <div id="detail-{id}" class="ex-detail"{detail_style}>
+                    计重方式<select name="mode_{id}">{mode_options}</select><br>
+                    杆重<select name="bar_weight_{id}">{bar_weight_options}</select><br>
+                    休息<input name="rest_{id}" value="{rest}" size="3"><br>
+                    组数<input name="sets_{id}" value="{sets}" size="3"><br>
+                    次数<input name="reps_{id}" value="{reps}" size="3"><br>
+                    重量<input name="weight_{id}" value="{weight}" size="3"><br>
+                    要领<input name="key_points_{id}" value="{key_points}" size="20">
+                </div>
+                </div>"#,
                 part = ex.body_part,
                 id = ex.id,
                 checked = checked,
+                // 已勾选动作的详情块默认可见；未勾选默认隐藏
+                detail_style = if item.is_some() { "" } else { " style=\"display:none\"" },
                 name = ex.name,
                 mode_options = mode_options,
                 bar_weight_options = bar_weight_options,
@@ -1408,7 +1456,7 @@ pub async fn plan_edit_form(
             备注：<input name="note" value="{plan_note}"><br>
             动作（计重/杆重/休息/组/次/重可直接修改）：<br>
             部位筛选：
-            <select id="part_filter" onchange="filterByPart()">
+            <select id="part_filter" onchange="filterByPart('exercise_list')">
                 <option value="">全部</option>
                 {part_options}
             </select><br>
@@ -1428,13 +1476,27 @@ pub async fn plan_edit_form(
         part_options = part_options,
         checkbox_rows = checkbox_rows,
         phase_id = current_plan.phase_id,
-        javascript = r#"function filterByPart(){
+        javascript = r#"function toggleDetail(exId){
+                // 勾选 → 显示该动作的编辑详情块；取消勾选 → 隐藏
+                var box = document.getElementById('detail-' + exId);
+                var cb = document.querySelector('input[name="' + exId + '"]');
+                box.style.display = cb.checked ? '' : 'none';
+                }
+                function filterByPart(listId){
                 var part = document.getElementById('part_filter').value;
-                document.querySelectorAll('#exercise_list label').forEach(function(lb){
-                    lb.style.display = (part === '' || lb.getAttribute('data-part') === part) ? '' : 'none';
+                document.querySelectorAll('#' + listId + ' .ex-row').forEach(function(row){
+                var show = (part === '' || row.getAttribute('data-part') === part);
+                row.style.display = show ? '' : 'none';
+                // 详情块跟随行的可见性 + 勾选态：
+                //   行隐藏 → 详情隐藏；行可见 → 详情按 checkbox 状态显示
+                var d = row.querySelector('.ex-detail');
+                if (d) {
+                var cb = row.querySelector('input[type="checkbox"]');
+                d.style.display = (show && cb.checked) ? '' : 'none';
+                }
                 });
                 }
-                filterByPart();"#
+                filterByPart('exercise_list');"#
     )))
 }
 
