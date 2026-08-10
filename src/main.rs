@@ -792,14 +792,35 @@ async fn home(State(state): State<AppState>, headers: HeaderMap) -> Result<Respo
         ""
     };
 
+    // 【教学：首页的"进行中阶段"直达入口】
+    // 模板/计划都挂在阶段下，列表页路由是 /phases/{phase_id}/templates 和 /phases/{phase_id}/plans。
+    // 用户最常操作的阶段是"进行中"的那个（未归档、最新创建），
+    // 首页直接把它找出来，给出模板/计划的直达链接，少点一层。
+    // 没有进行中阶段 → 显示"先去创建阶段"的引导链接。
+    let current_phase = sqlx::query_as::<_, crate::models::Phase>(
+        "SELECT * FROM phases WHERE user_id = ? AND archived = 0 ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(&user.id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(AppError::Database)?;
+    let phase_links = match &current_phase
+    {
+        Some(phase) => format!(
+            r#"<li>当前阶段：<a href="/phases/{phase_id}/templates">训练模板</a> | <a href="/phases/{phase_id}/plans">训练计划</a></li>"#,
+            phase_id = phase.id,
+        ),
+        None => r#"<li><a href="/phases/new">先去创建训练阶段</a></li>"#.to_string(),
+    };
+
     // 返回 HTML 字符串
     // 【教学：首页导航的"分区"设计】
     // 首页是导航中枢，入口按"功能归属"分区展示：
-    //   训练管理：阶段（含模板/计划入口）、动作库
+    //   训练管理：今日训练（记录）、当前阶段的模板/计划直达、阶段、动作库
     //   账户：用户管理（管理员）、登出
     // 排版上用 <section> 分区 + <li> 列表，比平铺的一排链接清晰。
-    // 模板/计划的入口放在阶段列表每行里（见 phases.rs list 的注释）——
-    // 首页只放一级入口，二级入口放各自归属页面，避免首页无限堆链接。
+    // 模板/计划同时保留在阶段列表每行里（见 phases.rs list 的注释）——
+    // 首页只放"当前进行中阶段"的直达入口，其余阶段仍从阶段列表进入，避免首页堆满链接。
     Ok(Html(format!(
         r#"<h1>训练记录系统</h1>
         <p>欢迎回来，{username}！</p>
@@ -811,6 +832,7 @@ async fn home(State(state): State<AppState>, headers: HeaderMap) -> Result<Respo
         <h2>训练管理</h2>
         <ul>
             <li><a href="/today">今日训练（记录）</a></li>
+            {phase_links}
             <li><a href="/phases">查看训练阶段（含模板 / 计划）</a></li>
             <li><a href="/exercises">查看训练动作</a></li>
         </ul>
@@ -825,6 +847,7 @@ async fn home(State(state): State<AppState>, headers: HeaderMap) -> Result<Respo
         exercise_count = exercise_count,
         template_count = template_count,
         plan_count = plan_count,
+        phase_links = phase_links,
         admin_link = admin_link,
     ))
     .into_response())
