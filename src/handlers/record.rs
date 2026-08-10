@@ -240,6 +240,7 @@ pub async fn today(
     // 7c. 拼整页（风格与 M3 一致：h2 + 表格 + 返回链接）
     Ok(Html(format!(
         r#"
+        <head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
         <h2>今日训练({today_dt})</h2>
         <p>阶段：{phase_name} | 已坚持 {persist_days} 天</p>
         <table border="1"><tr><th>动作</th><th>计划值</th><th>状态</th><th>上次策略</th><th>操作</th></tr>
@@ -510,7 +511,7 @@ pub async fn record_form(
     Ok(Html(format!(
         r#"<!DOCTYPE html>
         <html lang="zh">
-        <head><meta charset="UTF-8"><title>记录：{ex_name}</title></head>
+        <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>记录：{ex_name}</title></head>
         <body data-bar-weight="{bar_weight}">
         <h2>记录：{ex_name}</h2>
         <p>计划值：{plan_sets}组 * {plan_reps}次{plan_weight_text}</p>

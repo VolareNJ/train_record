@@ -310,7 +310,8 @@ pub async fn list(
         .join("\n");
 
     Ok(Html(format!(
-        r#"<h2>进行中</h2>
+        r#"<head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+        <h2>进行中</h2>
             <table border="1"><tr><th>ID</th><th>名称</th><th>备注</th><th>操作</th></tr>
                 {active_rows}
             </table>
@@ -413,6 +414,7 @@ pub async fn create_form(
 {
     Ok(Html(
         r#"
+        <head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
         <h1>开启新征程</h1>
         <form method="post" action="/phases">
             <label>名称 <input name="name" required></label><br>
@@ -649,6 +651,7 @@ pub async fn edit_form(
 
     Ok(Html(format!(
         r#"
+        <head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
         <h1>编辑训练阶段</h1>
         <p>欢迎，{username} —— 正在编辑：{phase_name}</p>
         <form method="post" action="/phases/{phase_id}/edit">

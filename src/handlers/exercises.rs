@@ -170,6 +170,7 @@ pub async fn list(
     // TODO(M2 第 3 步): 学生实现（步骤见上方注释）
     Ok(Html(format!(
         r#"
+        <head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
         <h1>动作库</h1>
         <table border="1">
             <tr><th>名称</th><th>部位</th><th>模式</th><th>组数</th><th>次数</th><th>操作</th></tr>
@@ -294,6 +295,7 @@ pub async fn create_form(
 {
     Ok(Html(
         r#"
+        <head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
         <h1>创建训练动作</h1>
         <form method="post" action="/exercises">
             <label>动作名称
@@ -546,6 +548,7 @@ pub async fn edit_form(
 
     Ok(Html(format!(
         r#"
+        <head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
         <h1>编辑训练动作</h1>
         <form method="post" action="/exercises/{exercise_id}/edit">
             <label>动作名称
@@ -839,6 +842,7 @@ pub async fn detail(
 
     Ok(Html(format!(
         r#"
+        <head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
         <h1>动作详情</h1>
         <p>名称：{name}</p>
         <p>部位：{body_part}</p>

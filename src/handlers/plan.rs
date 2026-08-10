@@ -173,6 +173,7 @@ pub async fn list_templates(
     // ④ 拼页面（注意：r#"... "# 内部不能再出现裸引号，否则会渲染到页面）
     Ok(Html(format!(
         r#"
+                <head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
                 <h2>训练模板</h2>
                 {archived_note}
                     <table border="1"><tr><th>名称</th><th>操作</th></tr>
@@ -247,6 +248,7 @@ pub async fn template_create_form(
     // ③ 拼表单
     Ok(Html(format!(
         r#"
+        <head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
         <h2>创建训练模板</h2>
         <form method="post" action="/phases/{phase_id}/templates">
             模板名：<input name="name"><br>
@@ -425,6 +427,7 @@ pub async fn template_edit_form(
     //    - 按钮文字改成"保存"
     Ok(Html(format!(
         r#"
+        <head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
         <h2>编辑训练模板</h2>
         <form method="post" action="/templates/{template_id}/edit">
             模板名：<input name="name" value="{name}"><br>
@@ -664,6 +667,7 @@ pub async fn list_plans(
     // ④ 拼页面
     Ok(Html(format!(
         r#"
+        <head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
         <h2>训练计划</h2>
         {archived_note}
         <table border="1"><tr><th>日期</th><th>备注</th><th>操作</th></tr>
@@ -780,6 +784,7 @@ pub async fn plan_create_form(
     //    与 exercises.rs 的 toggleBarWeight 同款写法）。
     Ok(Html(format!(
         r#"
+        <head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
         <h2>新建当日计划</h2>
         <form method="post" action="/phases/{phase_id}/plans">
             日期：<input type="date" name="date" value="{today}"><br>
@@ -1053,6 +1058,7 @@ pub async fn plan_detail(
     // ⑤ 拼页面
     Ok(Html(format!(
         r#"
+        <head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
         <h2>计划详情（{plan_date}）</h2>
         <p>备注：{plan_note}</p>
         <table border="1"><tr><th>动作</th><th>组数</th><th>次数</th><th>重量</th></tr>
@@ -1159,6 +1165,7 @@ pub async fn plan_edit_form(
     // ④ 拼表单（date + note + 动作多选 + 每动作组/次/重）
     Ok(Html(format!(
         r#"
+        <head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
         <h2>编辑计划</h2>
         <form method="post" action="/plans/{plan_id}/edit">
             日期：<input type="date" name="date" value="{plan_date}"><br>

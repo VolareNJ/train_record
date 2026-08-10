@@ -822,7 +822,8 @@ async fn home(State(state): State<AppState>, headers: HeaderMap) -> Result<Respo
     // 模板/计划同时保留在阶段列表每行里（见 phases.rs list 的注释）——
     // 首页只放"当前进行中阶段"的直达入口，其余阶段仍从阶段列表进入，避免首页堆满链接。
     Ok(Html(format!(
-        r#"<h1>训练记录系统</h1>
+        r#"<head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+        <h1>训练记录系统</h1>
         <p>欢迎回来，{username}！</p>
         <h2>数据概览</h2>
         <p>进行中阶段：{phase_count} 个</p>

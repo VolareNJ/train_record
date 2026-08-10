@@ -123,6 +123,7 @@ pub async fn login_page() -> Html<String>
 {
     Html(
         r#"
+        <head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
         <form method="post" action="/login">
           <label>用户名 <input name="username" required></label><br>
           <label>密码 <input name="password" type="password" required></label><br>
@@ -710,7 +711,7 @@ pub async fn admin_users(
     Ok(Html(format!(
         r#"<!DOCTYPE html>
                 <html lang="zh">
-                <head><meta charset="UTF-8"><title>用户管理</title></head>
+                <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>用户管理</title></head>
                 <body>
                 <h1>用户管理</h1>
                 <table border="1">
