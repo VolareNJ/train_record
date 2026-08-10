@@ -415,15 +415,42 @@ flowchart LR
     C --> E[/static PWA资源/]
 ```
 
-### 部署步骤
-1. `cargo build --release` → 产出单二进制
-2. 拷贝二进制到服务器（如 `/opt/train_record/`）
-3. 配置环境变量：`PORT`（如 8080）、`DATABASE_PATH`、`SECRET_KEY`
-4. 用 systemd 服务托管（开机自启、崩溃重启）
-5. 公网 IP + 端口直接访问（如 `http://1.2.3.4:8080`）
-6. 首次启动创建管理员账号（启动参数/环境变量指定）
+### 部署步骤（已实测，Ubuntu 24.04）
+1. `cargo clean && cargo build --release` → 产出**单二进制**（约 8M，迁移已编译嵌入，自带建表）
+2. 拷贝二进制 + `static/` 目录到服务器 `/opt/train_record/`（注意：static 是相对路径，必须与程序同目录）
+3. 配置环境变量：`PORT`（如 80）、`DATABASE_PATH`（如 `/var/lib/train_record/train_record.db`）、`SESSION_SECRET`
+4. 首次启动用 `ADMIN_USERNAME` / `ADMIN_PASSWORD` 自动创建管理员
+5. 后台运行：`nohup ./train_record > app.log 2>&1 &`（完整命令见 README「部署」章节）
+6. 公网 IP + 端口直接访问（如 `http://1.2.3.4:80`）
+7. 部署版（80）与开发版（8080）可同时运行：端口不同 + 数据库路径不同 → 数据天然隔离
+
+### systemd 托管（可选，长期运行推荐）
+```ini
+# /etc/systemd/system/train_record.service
+[Unit]
+Description=Train Record Server
+After=network.target
+
+[Service]
+WorkingDirectory=/opt/train_record
+Environment=PORT=80
+Environment=DATABASE_PATH=/var/lib/train_record/train_record.db
+Environment=ADMIN_USERNAME=admin
+Environment=ADMIN_PASSWORD=admin123
+ExecStart=/opt/train_record/train_record
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+```
+```bash
+sudo systemctl enable --now train_record   # 开机自启 + 启动
+sudo systemctl status train_record         # 查看状态
+sudo journalctl -u train_record -f         # 查看日志
+```
 
 > 安全提示：公网直连时建议设置强密码；如长期使用可后续加 Nginx 反代 + HTTPS（本期不包含）。
+> 完整部署实操（target 清理、文件位置、后台命令）见 `README.md`「部署（生产环境）」章节。
 
 ---
 

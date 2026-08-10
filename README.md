@@ -81,6 +81,71 @@ cargo run
 PORT=3000 DATABASE_PATH=/data/train.db SESSION_SECRET=your-secret cargo run
 ```
 
+### 部署（生产环境）
+
+> 本节是**实测过的部署流程**（Linux，Ubuntu 24.04）。部署与开发可**同时进行、互不干扰**：80 供实际使用，8080 供开发调试。
+
+#### 编译后：拿什么、清什么
+
+Rust 的 `target/` 目录是编译缓存，体积巨大（可达 1.5GB+），分为三块：
+
+| 内容 | 大小 | 说明 |
+|------|------|------|
+| `target/release/train_record` | ~8M | ✅ **唯一要部署的产物**（单文件，迁移已编译进二进制，自带建表） |
+| `target/release/` 其余（.rlib/.d 等） | ~540M | ✅ 可删（依赖的中间产物，重编会再生成） |
+| `target/debug/` | ~900M | ✅ 可删（开发调试版） |
+
+```bash
+cargo clean        # 删除整个 target/，释放全部空间（下次 build 重新编译）
+cargo build --release   # 只编译优化版，不碰 debug
+```
+
+> 实际部署只需要**两个东西**：`target/release/train_record` + `static/` 目录（CSS/JS）。
+> 数据库文件由程序启动时自动创建，无需手动建。
+
+#### 部署位置（Linux 惯例）
+
+| 项目 | 路径 | 说明 |
+|------|------|------|
+| 程序 | `/opt/train_record/train_record` | `/opt` = 第三方软件目录 |
+| 静态文件 | `/opt/train_record/static/` | 与程序同目录（代码里是相对路径 `static/`，必须在该目录启动） |
+| 数据库 | `/var/lib/train_record/train_record.db` | `/var/lib` = 应用数据目录 |
+| 运行日志 | `/opt/train_record/app.log` | 启动输出 |
+
+#### 后台拉起程序
+
+```bash
+# 1. 编译 release 版
+cargo clean && cargo build --release
+
+# 2. 部署
+mkdir -p /opt/train_record/static /var/lib/train_record
+cp target/release/train_record /opt/train_record/
+cp static/* /opt/train_record/static/
+
+# 3. 后台启动（nohup = 关终端不杀进程；& = 放后台）
+cd /opt/train_record
+PORT=80 DATABASE_PATH=/var/lib/train_record/train_record.db \
+ADMIN_USERNAME=admin ADMIN_PASSWORD=admin123 \
+nohup ./train_record > app.log 2>&1 &
+
+# 4. 验证
+curl -s http://127.0.0.1:80/login   # 200 = 成功
+tail -f /opt/train_record/app.log   # 查看启动日志
+```
+
+> ⚠️ 80 端口需要 root 权限。生产环境建议后续改用 systemd 托管（开机自启 + 崩溃重启），模板见 `docs/structure.md` §7。
+
+#### 部署与开发同时运行（不冲突）
+
+| 端口 | 模式 | 数据库 | 用途 |
+|------|------|--------|------|
+| 80 | release 部署版 | `/var/lib/train_record/train_record.db`（空库） | 实际使用 |
+| 8080 | debug 开发版 | `./train_record.db`（测试数据） | 开发调试 |
+
+两者**完全独立**：端口不同（出入口不同）、数据库不同（数据隔离）、静态文件各归各。
+以后更新部署版：`cargo build --release` → 复制新二进制到 `/opt/train_record/` → 杀掉旧进程重启，开发版 8080 可一直开着。
+
 ### 代码格式化（大括号换行）
 
 项目使用 nightly rustfmt 实现 **Allman 风格**（大括号换行）：
@@ -146,12 +211,14 @@ train_record/
 ## 📚 文档导航
 
 - [`docs/proposal.md`](docs/proposal.md) —— 项目背景：为什么重写
-- [`docs/structure.md`](docs/structure.md) —— **设计地基**：完整需求结论、数据库 DDL、页面规格、开发计划
+- [`docs/structure.md`](docs/structure.md) —— **设计地基**：完整需求结论、数据库 DDL、页面规格、开发计划（§7 含 systemd 部署模板）
 - [`docs/learning_path/M0.md`](docs/learning_path/M0.md) —— **开发路径图**：文件依赖顺序、M0 里程碑、常见坑
 - [`docs/learning_path/M1.md`](docs/learning_path/M1.md) —— **M1 认证路径图**：已完成（参考实现在 [`M1_ref/`](docs/learning_path/M1_ref/)，完成后对照）
 - [`docs/learning_path/M2.md`](docs/learning_path/M2.md) —— **M2 基础数据路径图**：已完成（阶段 + 动作库 CRUD，含理解验证）
 - [`docs/learning_path/M3.md`](docs/learning_path/M3.md) —— **M3 计划路径图**：已完成（模板 + 当日计划，含理解验证）
 - [`docs/learning_path/M4.md`](docs/learning_path/M4.md) —— **M4 训练记录路径图**：已完成（今日页 + 记录/编辑 + 换算器，参考实现在 [`M4_ref/`](docs/learning_path/M4_ref/))
+
+> 💡 部署相关（编译产物取舍、目录位置、后台运行、80/8080 共存）见上方「🚀 快速开始 → 部署（生产环境）」。
 
 ---
 
