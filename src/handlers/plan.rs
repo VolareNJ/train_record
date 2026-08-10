@@ -1577,6 +1577,18 @@ pub async fn plan_update(
         .map_err(AppError::Database)?;
 
     // 4.2 删掉所有旧计划项
+    //     ⚠️【外键陷阱：同 plan_delete】已训练过的计划项有 records 引用，
+    //     直接删会报 FOREIGN KEY constraint failed。
+    //     先解除关联（保留训练历史），再删。
+    sqlx::query(
+        "UPDATE records SET plan_item_id = NULL
+        WHERE plan_item_id IN (SELECT id FROM plan_items WHERE plan_id = ?)",
+    )
+    .bind(&plan_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(AppError::Database)?;
+
     sqlx::query("DELETE FROM plan_items WHERE plan_id = ?")
         .bind(&plan_id)
         .execute(&mut *tx)
@@ -1628,8 +1640,15 @@ pub async fn plan_update(
 /// 实现步骤：
 /// 1. 签名：State + AuthUser + Path(plan_id)
 /// 2. 验证归属
-/// 3. 事务：DELETE FROM plan_items WHERE plan_id = ? → DELETE FROM plans WHERE id = ?
+/// 3. 事务：UPDATE records 解除关联 → DELETE FROM plan_items → DELETE FROM plans
 /// 4. commit → 重定向回计划列表
+///
+/// ⚠️【踩坑记录：外键约束失败（787）】
+/// records.plan_item_id 外键引用 plan_items(id)。
+/// 直接删 plan_items 时，若该计划项已被训练过（有 records 引用），
+/// SQLite 会报 FOREIGN KEY constraint failed，删除失败。
+/// 修复：先 UPDATE records SET plan_item_id = NULL（保留训练历史，解除关联），
+/// 再删 plan_items。
 pub async fn plan_delete(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
@@ -1648,8 +1667,20 @@ pub async fn plan_delete(
     .map_err(AppError::Database)?
     .ok_or_else(|| AppError::NotFound("No plan found in such user and phase".to_string()))?;
 
-    // ② 事务：先删子（plan_items）后删父（plans）
+    // ② 事务：解除 records 外键关联 → 删子（plan_items）→ 删父（plans）
     let mut tx = state.pool.begin().await.map_err(AppError::Database)?;
+
+    // 2.1 该计划下的所有计划项 id → 对应 records 的 plan_item_id 置 NULL
+    //     训练记录是用户的历史数据，删除计划不该连记录一起删，
+    //     只解除关联（records 变成"非计划录入"，plan_item_id 列本来就是可空的）
+    sqlx::query(
+        "UPDATE records SET plan_item_id = NULL
+        WHERE plan_item_id IN (SELECT id FROM plan_items WHERE plan_id = ?)",
+    )
+    .bind(&plan_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(AppError::Database)?;
 
     sqlx::query("DELETE FROM plan_items WHERE plan_id = ?")
         .bind(&plan_id)
