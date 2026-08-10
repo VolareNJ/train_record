@@ -470,6 +470,37 @@ pub async fn record_form(
         .collect::<Vec<_>>()
         .join("\n");
 
+    // 6c-1. 杆重下拉框选项（三种杠杆枚举，与 exercises.rs 的 bar_weight 同款）
+    //     【教学：杆重不是随便填的数字，是健身房三种杠铃规格之一】
+    //     Olympic(20kg) / Smith(11.3kg) / 短杠(10kg) 三选一，
+    //     按动作的 bar_weight（f64）匹配默认选中项。
+    //     select 的 value 就是选中 option 的 value（数字字符串），
+    //     换算器 JS 里 Number(barInput.value) 照常解析。
+    let bar_weight_options = ["20", "11.3", "10"]
+        .iter()
+        .map(|bar_weight| {
+            format!(
+                r#"<option value="{bar_weight}"{sel}>{bar_weight_name}</option>"#,
+                sel = if *bar_weight == format!("{}", exercise_details.bar_weight)
+                {
+                    " selected"
+                }
+                else
+                {
+                    ""
+                },
+                bar_weight_name = match *bar_weight
+                {
+                    "20" => "Olympic(20kg)",
+                    "11.3" => "Smith(11.3kg)",
+                    "10" => "短杠(10kg)",
+                    _ => *bar_weight,
+                },
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
     // 6d. 拼页面
     //     【教学：r#"..."# 里不能有裸 { } —— format! 只认命名参数】
     //     页面底部有 JS（换算器脚本 + 显隐切换），JS 里全是 {}，
@@ -486,8 +517,8 @@ pub async fn record_form(
         <p>上次参考：{last_ref}</p>
 
         <form method="post" action="/plans/{plan_id}/record/{item_id}/save">
-            <label>实际总重(kg)
-                <input name="weight" id="weight-input" type="number" step="0.5" value="{prefill_weight}">
+            <label>实际强度
+                <input name="weight" id="weight-input" type="number" step="0.5" value="{prefill_weight}" readonly style="background:#eee; color:#888; cursor:not-allowed;">
             </label><br>
 
             <label>计重方式
@@ -497,7 +528,9 @@ pub async fn record_form(
             </label><br>
             <div id="bar-row">
                 <label>杆重
-                    <input id="bar-input" type="number" step="0.5" value="{bar_weight}">
+                    <select id="bar-input">
+                        {bar_weight_options}
+                    </select>
                 </label>
             </div>
             <div id="body-row" style="display:none">
@@ -505,11 +538,11 @@ pub async fn record_form(
                     <input id="body-input" type="number" step="0.5" value="">
                 </label>
             </div>
-            <label>片重/支撑量
+            <label>观测强度
                 <input id="plate-input" type="number" step="0.5" value="">
             </label>
             <span id="result"></span>
-            <button type="button" id="fill-btn">填入重量</button><br>
+            <button type="button" id="fill-btn">填入强度</button><br>
 
             <label>组数
                 <input name="sets" type="number" step="1" value="{prefill_sets}">
@@ -523,7 +556,7 @@ pub async fn record_form(
             <label>感受
                 <input name="feeling" value="{prefill_feeling}">
             </label><br>
-            <label>策略
+            <label>下次训练策略
                 <input name="strategy" value="{prefill_strategy}">
             </label><br>
             <label>要领
@@ -554,6 +587,7 @@ pub async fn record_form(
         item_id = plan_item.id,
         prefill_weight = prefill_weight,
         mode_options = mode_options,
+        bar_weight_options = bar_weight_options,
         prefill_sets = prefill_sets,
         prefill_reps = prefill_reps,
         prefill_rest = prefill_rest,
