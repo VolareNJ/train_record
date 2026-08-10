@@ -288,19 +288,20 @@ pub async fn today(
 /// 【教学：换算器挂载点（配合 static/weight_converter.js）】
 /// record_form 页面要引入换算器脚本 + 提供挂载元素：
 ///   <script src="/static/weight_converter.js"></script>
-///   <select id="mode-select">（bar/support/std/lb2kg，默认动作的 default_mode）
+///   <select id="mode-select">（bar/support/std，默认动作的 default_mode）
+///   <select id="unit-select">（kg/lb，观测强度单位，M6 新增）
 ///   <input id="plate-input">     片重/支撑量
 ///   <input id="bar-input">       杆重（bar 模式才显示）
 ///   <input id="body-input">     体重（support 模式才显示）
 ///   <span id="result">           换算结果
 ///   <input id="weight-input">   实际强度（readonly，JS 实时自动写入）
 ///   页面 <body data-bar-weight="动作.bar_weight"> 提供初始杆重
-/// 四种模式公式（与 JS 一致）：
+/// 三种模式公式（与 JS 一致）：
 ///   bar     = 杆重 + 2×片重
 ///   support = 体重 − 支撑量（支撑器械标的是"抵消多少体重"，
 ///             如 90kg 体重 + 30kg 支撑做引体 → 实际负重 60kg）
 ///   std     = 片重
-///   lb2kg   = 片重 × 0.4536
+/// 观测强度带单位：选 lb 时先 ×0.4536 归一化成 kg 再套公式（M6 修订）
 pub async fn record_form(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
@@ -452,8 +453,19 @@ pub async fn record_form(
     // 6c. 模式下拉框选项（当前模式 selected，其余普通）
     //     【教学：select 的 selected 由后端决定】
     //     和 M3 exercises.rs 的 mode_options 完全同款：
-    //     遍历 4 种模式，当前模式加 " selected"，其余空串。
-    let mode_options = ["bar", "support", "std", "lb2kg"]
+    //     遍历 3 种模式，当前模式加 " selected"，其余空串。
+    //     【M6 修订："标准lb"(lb2kg) 模式移除，lb 单位移到观测强度旁】
+    //     老数据兜底：库里已有 lb2kg 值（default_mode/plan_mode/records.mode）
+    //     → 归一化成 std 显示（lb 的换算交给观测强度单位选择）。
+    let prefill_mode = if prefill_mode == "lb2kg"
+    {
+        "std".to_string()
+    }
+    else
+    {
+        prefill_mode
+    };
+    let mode_options = ["bar", "support", "std"]
         .iter()
         .map(|mode| {
             format!(
@@ -470,8 +482,7 @@ pub async fn record_form(
                 {
                     "bar" => "杠铃",
                     "support" => "支撑",
-                    "std" => "标准kg",
-                    "lb2kg" => "标准lb",
+                    "std" => "标准",
                     _ => *mode,
                 },
             )
@@ -556,6 +567,10 @@ pub async fn record_form(
             </div>
             <label>观测强度
                 <input id="plate-input" type="number" step="0.5" value="">
+                <select id="unit-select">
+                    <option value="kg" selected>kg</option>
+                    <option value="lb">lb</option>
+                </select>
             </label>
             <span id="result"></span><br>
 
@@ -583,7 +598,7 @@ pub async fn record_form(
         <script>
             {javascript}
         </script>
-        <script src="/static/weight_converter.js?v=2"></script>
+        <script src="/static/weight_converter.js?v=3"></script>
         </body>
         </html>"#,
         ex_name = exercise_details.name,
@@ -866,7 +881,7 @@ pub struct RecordForm
     pub strategy: String,
     /// 当次要领（预填动作库，可改）
     pub key_points: String,
-    /// 录入时模式（bar/support/std/lb2kg）
+    /// 录入时模式（bar/support/std）
     pub mode: String,
 }
 

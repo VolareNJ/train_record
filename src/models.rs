@@ -72,7 +72,7 @@ pub struct Exercise
     pub name: String,
     /// 部位分组：胸/背/腿/肩/臂/核心
     pub body_part: String,
-    /// 默认模式：bar/support/std/lb
+    /// 默认模式：bar/support/std（M6：lb2kg 移除，老数据归一到 std）
     pub default_mode: String,
     /// 默认杆重（bar 模式用）
     pub bar_weight: f64,
@@ -143,7 +143,8 @@ pub struct PlanItem
     pub plan_reps: Option<i64>,
     /// 计划重量（总重 kg，可空）
     pub plan_weight: Option<f64>,
-    /// 计划计重方式（bar/support/std/lb2kg；空 = 未预设，record_form 落回动作默认）
+    /// 计划计重方式（bar/support/std；空 = 未预设，record_form 落回动作默认）
+    /// 历史值 lb2kg（标准lb）已并入 std：lb 单位移到观测强度旁选择（M6）
     pub plan_mode: Option<String>,
     /// 计划杆重规格（20/11.3/10/0；空 = 用动作默认）
     pub plan_bar_weight: Option<f64>,

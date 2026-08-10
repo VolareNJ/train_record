@@ -6,18 +6,28 @@
 //   不碰后端、不查数据库，输入片重实时显示总重。
 // 换算只是输入辅助，不是业务逻辑，所以不用 Rust 实现。
 //
-// 四种模式（与 exercises 表的 default_mode 一致）：
+// 三种模式（与 exercises 表的 default_mode 一致）：
 //   bar    杠铃：总重 = 杆重 + 2 × 片重（一侧一片）
 //           杆重可选 0（倒蹲等无杆动作：片挂轴上，轴不称重）
 //   support 自重：总重 = 体重 − 支撑量
 //           （支撑器械标的是"帮你抵消多少体重"，如 90kg 体重
 //             用 30kg 支撑做引体 → 实际负重 = 90 − 30 = 60kg）
-//   std    器械：总重 = 片重（机器配重直接读数）
-//   lb2kg  磅制：总重 = 片重 × 0.4536（1 磅 = 0.4536 kg）
+//   std    标准：总重 = 片重（器械/哑铃/片直接读数）
+//
+// 【M6 修订：单位选择（kg/lb）在观测强度上】
+// 计重方式精简为 bar/support/std 三种，原"标准lb"模式移除——
+// lb 不再是模式，而是观测强度的【单位】：
+//   观测强度旁的单位下拉选 kg 或 lb：
+//     kg → 片重直接按 kg 参与公式
+//     lb → 先 × 0.4536 归一化成 kg，再套模式公式
+//   （1 磅 = 0.4536 kg；45 磅片 → 20.412kg）
+// 计重方式里涉及的其他重量（杆重、体重）统一用 kg，不受单位影响。
+// 单位选择不入库（观测强度本身也不入库），localStorage 记住偏好。
 //
 // 用法（HTML 里）：
 //   <select id="mode-select">…</select>
-//   <input id="plate-input" type="number">   ← bar/std/lb2kg 是片重；support 是支撑量
+//   <select id="unit-select">kg/lb</select>   ← 观测强度单位
+//   <input id="plate-input" type="number">   ← bar/std 是片重；support 是支撑量
 //   <input id="bar-input" type="number">     ← 仅 bar 模式显示
 //   <input id="body-input" type="number">    ← 仅 support 模式显示（体重，localStorage 记住）
 //   <span id="result"></span>
@@ -34,15 +44,25 @@
 // 此时不能覆盖回显值。所以 updateResult 只在 plate 有值时写入。
 
 // 【教学：换算函数 —— 纯函数式（无副作用）】
-// 输入 (mode, plate, bar, body) → 输出总重。
+// 输入 (mode, plate, bar, body, unit) → 输出总重。
 // 纯函数 = 同样的输入永远同样的输出，不读外部状态。
-// 这样方便单测、好推理。四个分支用 switch（JS 版 match）。
-function convertWeight(mode, plate, bar, body)
+// 这样方便单测、好推理。五个参数中：
+//   mode   计重方式（bar/support/std）
+//   plate  观测强度原始输入（单位是 unit，可能是 lb）
+//   bar    杆重 kg（仅 bar 模式用，固定 kg）
+//   body   体重 kg（仅 support 模式用，固定 kg）
+//   unit   观测强度的单位（'kg' 或 'lb'）
+// 内部先按 unit 把 plate 归一化成 kg，再套 mode 公式。
+// 单位归一化是纯函数的第一步：lb → ×0.4536，kg → 原样。
+function convertWeight(mode, plate, bar, body, unit)
 {
     // 非数字输入 → 0（输入框清空时不算错）
-    const plateKg = Number(plate) || 0;
+    const raw = Number(plate) || 0;
     const barKg = Number(bar) || 0;
     const bodyKg = Number(body) || 0;
+    // 【M6：观测强度按单位归一化成 kg】
+    // 单位是 lb → ×0.4536；kg → 原样。杆重/体重不受影响（固定 kg）。
+    const plateKg = unit === 'lb' ? raw * 0.4536 : raw;
     switch (mode)
     {
         case 'bar':
@@ -55,11 +75,8 @@ function convertWeight(mode, plate, bar, body)
             // 体重小于支撑量时 clamp 到 0（不可能负负重）
             return Math.max(0, bodyKg - plateKg);
         case 'std':
-            // 器械：配重读数就是总重
+            // 标准：观测强度就是总重（已归一化成 kg）
             return plateKg;
-        case 'lb2kg':
-            // 磅制：× 0.4536
-            return plateKg * 0.4536;
         default:
             return 0;
     }
@@ -88,6 +105,7 @@ function initWeightConverter()
     }
 
     const plateInput = document.getElementById('plate-input');
+    const unitSelect = document.getElementById('unit-select');
     const barRow = document.getElementById('bar-row');
     const barInput = document.getElementById('bar-input');
     const bodyRow = document.getElementById('body-row');
@@ -99,6 +117,15 @@ function initWeightConverter()
     const defaultBar = Number(document.body.dataset.barWeight) || 20;
     // 体重从 localStorage 读（记过一次后下次自动带出，不用每次填）
     const defaultBody = Number(localStorage.getItem('weight_converter_body')) || 70;
+    // 【M6：观测强度单位偏好从 localStorage 读】
+    // 单位不入库（观测强度本身也不入库），只做前端换算辅助。
+    // 记过一次后下次自动带出，不用每次重选（和体重同款机制）。
+    const savedUnit = localStorage.getItem('weight_converter_unit');
+    // 有历史偏好 → 覆盖 HTML 里的默认 selected（kg）
+    if (savedUnit && (savedUnit === 'kg' || savedUnit === 'lb'))
+    {
+        unitSelect.value = savedUnit;
+    }
 
     // 【教学：updateResult —— 读输入 → 换算 → 写显示】
     const updateResult = () =>
@@ -108,12 +135,13 @@ function initWeightConverter()
         // bar 模式显示杆重行；support 模式显示体重行；其他模式都隐藏
         barRow.style.display = mode === 'bar' ? '' : 'none';
         bodyRow.style.display = mode === 'support' ? '' : 'none';
-        // 换算（片重/支撑量 + 杆重 + 体重）→ 总重
+        // 换算（片重/支撑量 + 杆重 + 体重 + 单位）→ 总重
         const total = convertWeight(
             mode,
             plateInput.value,
             barInput.value || defaultBar,
             bodyInput.value || defaultBody,
+            unitSelect.value || 'kg',
         );
         // 显示（0.5 的倍数）
         result.textContent = roundToHalf(total) + ' kg';
@@ -130,6 +158,13 @@ function initWeightConverter()
     modeSelect.addEventListener('input', updateResult);
     plateInput.addEventListener('input', updateResult);
     barInput.addEventListener('input', updateResult);
+    // 【M6：切换单位 → 立即重算 + 记住偏好】
+    // 单位影响换算结果，切换时 updateResult 会重算。
+    unitSelect.addEventListener('input', () =>
+    {
+        localStorage.setItem('weight_converter_unit', unitSelect.value);
+        updateResult();
+    });
     // 体重输入：记住到 localStorage（下次打开页面自动带出）
     bodyInput.addEventListener('input', () =>
     {

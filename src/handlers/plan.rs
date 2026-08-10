@@ -1205,6 +1205,7 @@ pub async fn plan_detail(
             let reps = item.plan_reps.map_or("-".to_string(), |v| v.to_string());
             let weight = item.plan_weight.map_or("-".to_string(), |v| v.to_string());
             // 计重方式（mode 英文存库，显示中文；None → "-"）
+            // 【M6 修订：lb2kg 移除，老数据归一化成"标准"显示】
             let mode = item
                 .plan_mode
                 .as_deref()
@@ -1212,8 +1213,8 @@ pub async fn plan_detail(
                 {
                     "bar" => "杠铃",
                     "support" => "支撑",
-                    "std" => "标准kg",
-                    "lb2kg" => "标准lb",
+                    "std" => "标准",
+                    "lb2kg" => "标准",
                     _ => m,
                 })
                 .unwrap_or("-")
@@ -1388,7 +1389,9 @@ pub async fn plan_edit_form(
                 .and_then(|i| i.plan_key_points.clone())
                 .unwrap_or_else(|| ex.key_points.clone());
             // 计重方式下拉选项（当前模式 selected，与 record_form 同款）
-            let mode_options = ["bar", "support", "std", "lb2kg"]
+            // 【M6 修订：lb2kg 模式移除；老数据 lb2kg → std 归一化】
+            let mode = if mode == "lb2kg" { "std".to_string() } else { mode };
+            let mode_options = ["bar", "support", "std"]
                 .iter()
                 .map(|m| {
                     format!(
@@ -1398,8 +1401,7 @@ pub async fn plan_edit_form(
                         {
                             "bar" => "杠铃",
                             "support" => "支撑",
-                            "std" => "标准kg",
-                            "lb2kg" => "标准lb",
+                            "std" => "标准",
                             _ => *m,
                         },
                     )
@@ -1445,9 +1447,9 @@ pub async fn plan_edit_form(
             //
             // 【M5 修订：与 record_form 保持一致】
             // 之前这 7 个输入框是裸排的，和 record_form 有这些不一致：
-            //   a. 计重方式选 std/lb2kg 时杆重不隐藏；选 support 时显示的
+            //   a. 计重方式选 std 时杆重不隐藏；选 support 时显示的
             //      还是杆重而不是体重 —— record_form 有 mode 联动
-            //      （bar→杆重行、support→体重行、std/lb2kg→都隐藏）
+            //      （bar→杆重行、support→体重行、std→都隐藏）
             //   b. "重量"直填总重 —— record_form 是"观测强度(片重) +
             //      换算器自动算实际强度"，计划层也按这个交互来
             //   c. 字段顺序也和 record_form 对齐：
@@ -1497,6 +1499,10 @@ pub async fn plan_edit_form(
                     </div>
                     <label>观测强度
                         <input id="plate-{id}" type="number" step="0.5" value="">
+                        <select id="unit-{id}">
+                            <option value="kg" selected>kg</option>
+                            <option value="lb">lb</option>
+                        </select>
                     </label>
                     <span id="result-{id}"></span><br>
                     <label>组数
@@ -1592,19 +1598,20 @@ pub async fn plan_edit_form(
                  *   bar     总重 = 杆重 + 2×片重
                  *   support 总重 = 体重 − 支撑量（下限 0）
                  *   std     总重 = 片重
-                 *   lb2kg   总重 = 片重 × 0.4536
                  * 观测强度(plate) 不入库，只做换算；实际强度(name=weight_{exId}，
                  * readonly) 由 JS 实时自动写入（无需"填入强度"按钮），随表单提交。
-                 * 体重 input 不入库，仅 support 换算用，localStorage 记忆。 */
-                function convertWeight(mode, plate, bar, body){
-                var plateKg = Number(plate) || 0;
+                 * 体重 input 不入库，仅 support 换算用，localStorage 记忆。
+                 * 【M6：单位选择在观测强度旁（unit-{exId}，kg/lb，不入库）】
+                 *   lb → 先 ×0.4536 归一化成 kg 再套公式；杆重/体重固定 kg。 */
+                function convertWeight(mode, plate, bar, body, unit){
+                var raw = Number(plate) || 0;
                 var barKg = Number(bar) || 0;
                 var bodyKg = Number(body) || 0;
+                var plateKg = (unit === 'lb') ? raw * 0.4536 : raw;
                 switch (mode) {
                 case 'bar': return barKg + 2 * plateKg;
                 case 'support': return Math.max(0, bodyKg - plateKg);
                 case 'std': return plateKg;
-                case 'lb2kg': return plateKg * 0.4536;
                 default: return 0;
                 }
                 }
@@ -1619,8 +1626,9 @@ pub async fn plan_edit_form(
                 var plate = document.getElementById('plate-' + exId).value;
                 var bar = document.getElementById('bar-' + exId).value;
                 var body = document.getElementById('body-' + exId).value;
+                var unit = document.getElementById('unit-' + exId).value;
                 var defaultBody = Number(localStorage.getItem('weight_converter_body')) || 70;
-                return roundToHalf(convertWeight(mode, plate, bar, body || defaultBody));
+                return roundToHalf(convertWeight(mode, plate, bar, body || defaultBody, unit));
                 }
                 function updateRow(exId){
                 // 实时换算：结果显示 + 自动写入实际强度（无需按钮）
@@ -1636,8 +1644,17 @@ pub async fn plan_edit_form(
                 document.querySelectorAll('.mode-select').forEach(function(sel){
                 var exId = sel.getAttribute('data-ex');
                 syncModeRow(exId);
+                // 【M6：单位偏好从 localStorage 带出（与 record_form 同 key）】
+                var savedUnit = localStorage.getItem('weight_converter_unit');
+                if (savedUnit === 'kg' || savedUnit === 'lb') {
+                document.getElementById('unit-' + exId).value = savedUnit;
+                }
                 sel.addEventListener('input', function(){ syncModeRow(exId); updateRow(exId); });
                 document.getElementById('plate-' + exId).addEventListener('input', function(){ updateRow(exId); });
+                document.getElementById('unit-' + exId).addEventListener('input', function(){
+                localStorage.setItem('weight_converter_unit', this.value);
+                updateRow(exId);
+                });
                 document.getElementById('bar-' + exId).addEventListener('input', function(){ updateRow(exId); });
                 document.getElementById('body-' + exId).addEventListener('input', function(){
                 localStorage.setItem('weight_converter_body', this.value);

@@ -97,7 +97,7 @@ pub struct ListQuery
 //   ③ 后端 parse 失败 = 拒绝（绕过前端直接 POST 空串 → 422）
 //
 // 【教学：下拉选择（<select>）】
-// body_part（胸/背/腿/肩/臂/核心）和 default_mode（bar/support/std/lb2kg）
+// body_part（胸/背/腿/肩/臂/核心）和 default_mode（bar/support/std）
 // 是"有限取值"，用下拉框让用户选，而不是自由输入：
 //   <select name="body_part">
 //     <option value="胸">胸</option>
@@ -242,7 +242,15 @@ pub async fn list(
              <button type=\"submit\">删除</button></form></td></tr>",
             e.name,
             e.body_part,
-            e.default_mode,
+            // 【M6：显示中文；lb2kg 老数据归一化成"标准"】
+            match e.default_mode.as_str()
+            {
+                "bar" => "杠铃",
+                "support" => "支撑",
+                "std" => "标准",
+                "lb2kg" => "标准",
+                other => other,
+            },
             e.default_sets,
             e.default_reps,
             e.id,
@@ -327,7 +335,7 @@ pub async fn list(
 /// 【实现步骤】
 /// 1. 签名：State + AuthUser
 /// 2. 返回 <form method="post" action="/exercises"> 的 HTML
-///    （下拉框：body_part 6 项、default_mode 4 项、bar_weight 4 项；
+///    （下拉框：body_part 6 项、default_mode 3 项、bar_weight 4 项；
 ///     数字框：default_sets/default_reps；文本域：key_points）
 /// 3. default_mode 加 id + onchange（bar 在前 + selected，表默认 bar），
 ///    bar_weight 包进 <div id="bar_weight_row">，
@@ -360,8 +368,7 @@ pub async fn create_form(
                 <select name="default_mode" id="default_mode" onchange="toggleBarWeight()">
                     <option value="bar" selected>杠铃</option>
                     <option value="support">支撑</option>
-                    <option value="std">标准kg</option>
-                    <option value="lb2kg">标准lb</option>
+                    <option value="std">标准</option>
                 </select>
             </label><br>
             <div id="bar_weight_row">
@@ -528,12 +535,12 @@ pub async fn create(
 /// 【教学：match &str 必加 _ 通配 —— non-exhaustive 错误】
 /// 学生问："match *mode 报 non-exhaustive patterns，为什么？"
 /// 看类型链条：
-///   ["bar", "support", "std", "lb2kg"]   → [&str; 4]（字符串引用数组）
+///   ["bar", "support", "std"]           → [&str; 3]（字符串引用数组）
 ///     .iter()                            → 元素是 &str（对数组元素的引用）
 ///     .map(|mode| ...)                   → mode: &&str（闭包参数是引用）
 ///       match *mode                       → *mode: &str（解一层引用）
 /// match 的对象是 &str——字符串切片是**无界类型**（可以指向任意字符串），
-/// 编译器无法枚举它的所有可能值，所以即使列全了 4 个已知值，
+/// 编译器无法枚举它的所有可能值，所以即使列全了 3 个已知值，
 /// 也必须加 _ 通配分支，否则报 non-exhaustive patterns。
 /// 修复：最后加 `_ => *mode`（未知值原样显示，比写死"未知"更诚实）。
 ///
@@ -654,12 +661,21 @@ pub async fn edit_form(
             })
             .collect::<Vec<_>>()
             .join("\n"),
-        mode_options = ["bar", "support", "std", "lb2kg"]
+        mode_options = ["bar", "support", "std"]
             .iter()
             .map(|mode| {
                 format!(
                     r#"<option value="{mode}"{sel}>{mode_name}</option>"#,
-                    sel = if *mode == record_to_edit.default_mode
+                    // 【M6：老数据 default_mode=lb2kg → 归一化成 std 选中】
+                    sel = if *mode
+                        == if record_to_edit.default_mode == "lb2kg"
+                        {
+                            "std"
+                        }
+                        else
+                        {
+                            record_to_edit.default_mode.as_str()
+                        }
                     {
                         " selected"
                     }
@@ -671,8 +687,7 @@ pub async fn edit_form(
                     {
                         "bar" => "杠铃",
                         "support" => "支撑",
-                        "std" => "标准kg",
-                        "lb2kg" => "标准lb",
+                        "std" => "标准",
                         _ => *mode,
                     }
                 )
@@ -902,7 +917,15 @@ pub async fn detail(
         "#,
         name = exercise.name,
         body_part = exercise.body_part,
-        default_mode = exercise.default_mode,
+        // 【M6：显示中文；lb2kg 老数据归一化成"标准"】
+        default_mode = match exercise.default_mode.as_str()
+        {
+            "bar" => "杠铃",
+            "support" => "支撑",
+            "std" => "标准",
+            "lb2kg" => "标准",
+            other => other,
+        },
         bar_weight = exercise.bar_weight,
         default_sets = exercise.default_sets,
         default_reps = exercise.default_reps,
