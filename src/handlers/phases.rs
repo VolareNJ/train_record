@@ -625,19 +625,19 @@ pub async fn create(
 ///    用 format! 把 id 拼进去——每个阶段编辑自己的那条记录。
 ///
 /// 【实现步骤】
-/// 1. 签名：State + AuthUser + Path(id)
+/// 1. 签名：State + AuthUser + Path(phase_id)
 /// 2. 查这一行（带 user_id 数据隔离）：
 ///    SELECT * FROM phases WHERE id = ? AND user_id = ?
 ///    → fetch_optional → None 则 Err(NotFound)
-/// 3. 拼表单：value="{phase.name}" 等预填旧值，action="/phases/{id}/edit"
+/// 3. 拼表单：value="{phase.name}" 等预填旧值，action="/phases/{phase_id}/edit"
 pub async fn edit_form(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
-    Path(id): Path<i64>,
+    Path(phase_id): Path<i64>,
 ) -> Result<Html<String>, AppError>
 {
     let phase = sqlx::query_as::<_, Phase>("SELECT * FROM phases WHERE id = ? AND user_id = ?")
-        .bind(&id)
+        .bind(&phase_id)
         .bind(&user.id)
         .fetch_optional(&state.pool)
         .await
@@ -651,7 +651,7 @@ pub async fn edit_form(
         r#"
         <h1>编辑训练阶段</h1>
         <p>欢迎，{username} —— 正在编辑：{phase_name}</p>
-        <form method="post" action="/phases/{id}/edit">
+        <form method="post" action="/phases/{phase_id}/edit">
             <label>名称 <input name="name" value="{phase_name}" required></label><br>
             <label>备注 <textarea name="note">{phase_note}</textarea></label><br>
             <label>开始日期 <input type="date" name="start_date" value="{start_date}"></label><br>
@@ -663,7 +663,7 @@ pub async fn edit_form(
         phase_name = phase.name,
         phase_note = phase.note,
         start_date = start_date,
-        id = id,
+        phase_id = phase_id,
     )))
 }
 
@@ -687,7 +687,7 @@ pub async fn edit_form(
 /// （这比"改前查一次"更省：一次 SQL 搞定"存在性 + 更新"。）
 ///
 /// 【实现步骤】
-/// 1. 签名：State + AuthUser + Path(id) + Form<PhaseForm>
+/// 1. 签名：State + AuthUser + Path(phase_id) + Form<PhaseForm>
 /// 2. 校验 name 非空
 /// 3. 先查归档状态：
 ///    SELECT archived FROM phases WHERE id = ? AND user_id = ?
@@ -698,7 +698,7 @@ pub async fn edit_form(
 pub async fn update(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
-    Path(id): Path<i64>,
+    Path(phase_id): Path<i64>,
     Form(form): Form<PhaseForm>,
 ) -> Result<Redirect, AppError>
 {
@@ -723,7 +723,7 @@ pub async fn update(
     //   但这是运气代码：T 的真实类型和你的意图不一致。
     //   教训：泛型查询永远显式写 ::<_, 类型>，别让编译器猜。
     if sqlx::query_scalar::<_, bool>("SELECT archived FROM phases WHERE id = ? AND user_id = ?")
-        .bind(id)
+        .bind(phase_id)
         .bind(user.id)
         .fetch_optional(&state.pool)
         .await
@@ -767,7 +767,7 @@ pub async fn update(
     .bind(&form.name)
     .bind(&form.note)
     .bind(&start_dt)
-    .bind(id)
+    .bind(phase_id)
     .bind(user.id)
     .execute(&state.pool)
     .await
@@ -817,7 +817,7 @@ enum ActionType
 async fn set_archived(
     pool: &SqlitePool,
     user_id: i64,
-    id: i64,
+    phase_id: i64,
     action: ActionType,
 ) -> Result<(), AppError>
 {
@@ -828,7 +828,7 @@ async fn set_archived(
     };
     let result = sqlx::query("UPDATE phases SET archived = ? WHERE id = ? AND user_id = ?")
         .bind(archived) // bool → SQLite 自动映射 1/0
-        .bind(id)
+        .bind(phase_id)
         .bind(user_id)
         .execute(pool)
         .await
@@ -864,16 +864,16 @@ async fn set_archived(
 /// 这种"重复操作结果一样"的性质叫**幂等**，是良好 API 设计的一部分。
 ///
 /// 【实现步骤】（archive 与 unarchive 相同，仅数字不同）
-/// 1. 签名：State + AuthUser + Path(id)
+/// 1. 签名：State + AuthUser + Path(phase_id)
 /// 2. 调 set_archived(..., ActionType::Archive)
 /// 3. Ok(Redirect::to("/phases"))
 pub async fn archive(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
-    Path(id): Path<i64>,
+    Path(phase_id): Path<i64>,
 ) -> Result<Redirect, AppError>
 {
-    set_archived(&state.pool, user.id, id, ActionType::Archive).await?;
+    set_archived(&state.pool, user.id, phase_id, ActionType::Archive).await?;
     Ok(Redirect::to("/phases"))
 }
 
@@ -886,9 +886,9 @@ pub async fn archive(
 pub async fn unarchive(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
-    Path(id): Path<i64>,
+    Path(phase_id): Path<i64>,
 ) -> Result<Redirect, AppError>
 {
-    set_archived(&state.pool, user.id, id, ActionType::Unarchive).await?;
+    set_archived(&state.pool, user.id, phase_id, ActionType::Unarchive).await?;
     Ok(Redirect::to("/phases"))
 }

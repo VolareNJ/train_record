@@ -207,7 +207,7 @@ pub async fn today(
                 .unwrap_or_else(|| "?".to_string());
             // 计划值：组×次，重量有就带括号（None → "-"）
             let plan_value = format!(
-                "{}组 × {}次{}",
+                "{}组 * {}次{}",
                 item.plan_sets.map_or("-".to_string(), |v| v.to_string()),
                 item.plan_reps.map_or("-".to_string(), |v| v.to_string()),
                 item.plan_weight
@@ -303,17 +303,17 @@ pub async fn today(
 pub async fn record_form(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
-    Path((id, item_id)): Path<(i64, i64)>,
+    Path((plan_id, item_id)): Path<(i64, i64)>,
 ) -> Result<Html<String>, AppError>
 {
-    // 1. 签名：State + AuthUser + Path((id, item_id))
+    // 1. 签名：State + AuthUser + Path((plan_id, item_id))
     // 2. 验证计划归属：JOIN phases 查 user_id
     let current_plan = sqlx::query_as::<_, Plan>(
         "SELECT p.* FROM plans p
         INNER JOIN phases ph ON p.phase_id = ph.id
         WHERE p.id = ? AND ph.user_id = ?",
     )
-    .bind(&id)
+    .bind(&plan_id)
     .bind(&user.id)
     .fetch_optional(&state.pool)
     .await
@@ -346,10 +346,229 @@ pub async fn record_form(
             .ok_or_else(|| AppError::NotFound("No plan item found".to_string()))?;
 
     // 4. 查动作信息（拿 key_points 预填 + bar_weight 给换算器）
+    let exercise_details =
+        sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE id = ? AND user_id = ?")
+            .bind(&plan_item.exercise_id)
+            .bind(&user.id)
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(AppError::Database)?
+            .ok_or_else(|| AppError::NotFound("No such exercise".to_string()))?;
     // 5. 查该计划项最近一条记录（有 → 编辑模式预填；无 → 空表单）
+    let most_recent_record = sqlx::query_as::<_, Record>(
+        "SELECT * FROM records WHERE plan_item_id = ?
+        ORDER BY record_date DESC, id DESC LIMIT 1",
+    )
+    .bind(&item_id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(AppError::Database)?;
     // 6. 拼 HTML：计划值 + 上次参考 + 表单（含换算器挂载点）
-    // TODO(M4): 学生实现（步骤见上方注释）
-    unimplemented!("M4 学生实现：单动作记录/编辑页")
+
+    // 6a. 上次记录参考（Option → HTML 行，None → 提示"还没有记录"）
+    //     【教学：map + unwrap_or_default 链——处理 Option 不用 if】
+    //     Some → 拼一行"上次 {日期}：{重量}kg × {组}组 × {次}次，感受：…，策略：…"
+    //     None → "还没有记录，这是第一次！"
+    let last_ref = most_recent_record
+        .as_ref()
+        .map(|r| {
+            format!(
+                "上次 {date}: {weight}kg * {sets}组 * {reps}次<br>\
+                 感受：{feeling}<br>策略：{strategy}",
+                date = r.record_date,
+                weight = r.weight,
+                sets = r.sets,
+                reps = r.reps,
+                feeling = if r.feeling.is_empty()
+                {
+                    "-".to_string()
+                }
+                else
+                {
+                    r.feeling.clone()
+                },
+                strategy = if r.strategy.is_empty()
+                {
+                    "-".to_string()
+                }
+                else
+                {
+                    r.strategy.clone()
+                },
+            )
+        })
+        .unwrap_or_else(|| "还没有记录，这是第一次！".to_string());
+
+    // 6b. 表单预填（Some → 旧值；None → 动作库默认值 / 空串）
+    //     【教学：again 用 Option 链做"预填 vs 默认"】
+    //     编辑模式：weight/sets/reps/rest/feeling/strategy/key_points/mode 全取旧值
+    //     新增模式：weight/sets/reps/rest 空串（用户自己填），
+    //               key_points 预填动作库要点，mode 预填动作默认模式
+    let (
+        prefill_weight,
+        prefill_sets,
+        prefill_reps,
+        prefill_rest,
+        prefill_feeling,
+        prefill_strategy,
+        prefill_key_points,
+        prefill_mode,
+    ) = most_recent_record
+        .as_ref()
+        .map(|r| {
+            (
+                r.weight.to_string(),
+                r.sets.to_string(),
+                r.reps.to_string(),
+                r.rest.to_string(),
+                r.feeling.clone(),
+                r.strategy.clone(),
+                r.key_points.clone(),
+                r.mode.clone(),
+            )
+        })
+        .unwrap_or_else(|| {
+            (
+                String::new(),
+                String::new(),
+                String::new(),
+                String::new(),
+                String::new(),
+                String::new(),
+                exercise_details.key_points.clone(),
+                exercise_details.default_mode.clone(),
+            )
+        });
+
+    // 6c. 模式下拉框选项（当前模式 selected，其余普通）
+    //     【教学：select 的 selected 由后端决定】
+    //     和 M3 exercises.rs 的 mode_options 完全同款：
+    //     遍历 4 种模式，当前模式加 " selected"，其余空串。
+    let mode_options = ["bar", "support", "std", "lb2kg"]
+        .iter()
+        .map(|mode| {
+            format!(
+                r#"<option value="{mode}"{sel}>{mode_name}</option>"#,
+                sel = if *mode == prefill_mode
+                {
+                    " selected"
+                }
+                else
+                {
+                    ""
+                },
+                mode_name = match *mode
+                {
+                    "bar" => "杠铃",
+                    "support" => "支撑",
+                    "std" => "标准kg",
+                    "lb2kg" => "标准lb",
+                    _ => *mode,
+                },
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    // 6d. 拼页面
+    //     【教学：r#"..."# 里不能有裸 { } —— format! 只认命名参数】
+    //     页面底部有 JS（换算器脚本 + 显隐切换），JS 里全是 {}，
+    //     所以 JS 字符串用命名参数 {javascript} 单独传入，
+    //     避免 format! 把 JS 的 {} 当占位符。
+    //     body 挂 data-bar-weight（换算器读初始杆重）。
+    Ok(Html(format!(
+        r#"<!DOCTYPE html>
+        <html lang="zh">
+        <head><meta charset="UTF-8"><title>记录：{ex_name}</title></head>
+        <body data-bar-weight="{bar_weight}">
+        <h2>记录：{ex_name}</h2>
+        <p>计划值：{plan_sets}组 * {plan_reps}次{plan_weight_text}</p>
+        <p>上次参考：{last_ref}</p>
+
+        <form method="post" action="/plans/{plan_id}/record/{item_id}/save">
+            <label>实际总重(kg)
+                <input name="weight" id="weight-input" type="number" step="0.5" value="{prefill_weight}">
+            </label><br>
+
+            <label>计重方式
+                <select name="mode" id="mode-select">
+                    {mode_options}
+                </select>
+            </label><br>
+            <div id="bar-row">
+                <label>杆重
+                    <input id="bar-input" type="number" step="0.5" value="{bar_weight}">
+                </label>
+            </div>
+            <div id="body-row" style="display:none">
+                <label>体重
+                    <input id="body-input" type="number" step="0.5" value="">
+                </label>
+            </div>
+            <label>片重/支撑量
+                <input id="plate-input" type="number" step="0.5" value="">
+            </label>
+            <span id="result"></span>
+            <button type="button" id="fill-btn">填入重量</button><br>
+
+            <label>组数
+                <input name="sets" type="number" step="1" value="{prefill_sets}">
+            </label><br>
+            <label>次数
+                <input name="reps" type="number" step="1" value="{prefill_reps}">
+            </label><br>
+            <label>休息（秒）
+                <input name="rest" type="number" step="1" value="{prefill_rest}">
+            </label><br>
+            <label>感受
+                <input name="feeling" value="{prefill_feeling}">
+            </label><br>
+            <label>策略
+                <input name="strategy" value="{prefill_strategy}">
+            </label><br>
+            <label>要领
+                <textarea name="key_points">{prefill_key_points}</textarea>
+            </label><br>
+            <button type="submit">保存</button>
+        </form>
+        <p><a href="/today">返回今日</a></p>
+        <script>
+            {javascript}
+        </script>
+        <script src="/static/weight_converter.js"></script>
+        </body>
+        </html>"#,
+        ex_name = exercise_details.name,
+        bar_weight = exercise_details.bar_weight,
+        plan_sets = plan_item
+            .plan_sets
+            .map_or("-".to_string(), |v| v.to_string()),
+        plan_reps = plan_item
+            .plan_reps
+            .map_or("-".to_string(), |v| v.to_string()),
+        plan_weight_text = plan_item
+            .plan_weight
+            .map_or(String::new(), |v| format!("（{v}kg）"),),
+        last_ref = last_ref,
+        plan_id = current_plan.id,
+        item_id = plan_item.id,
+        prefill_weight = prefill_weight,
+        mode_options = mode_options,
+        prefill_sets = prefill_sets,
+        prefill_reps = prefill_reps,
+        prefill_rest = prefill_rest,
+        prefill_feeling = prefill_feeling,
+        prefill_strategy = prefill_strategy,
+        prefill_key_points = prefill_key_points,
+        javascript = "function toggleBarWeight() {
+            var mode = document.getElementById('mode-select').value;
+            document.getElementById('bar-row').style.display =
+                (mode === 'bar') ? '' : 'none';
+            document.getElementById('body-row').style.display =
+                (mode === 'support') ? '' : 'none';
+        }
+        toggleBarWeight();",
+    )))
 }
 
 // ============================================================
@@ -393,12 +612,154 @@ pub async fn record_form(
 pub async fn record_save(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
-    Path((id, item_id)): Path<(i64, i64)>,
+    Path((plan_id, item_id)): Path<(i64, i64)>,
     Form(form): Form<RecordForm>,
 ) -> Result<Redirect, AppError>
 {
-    // TODO(M4): 学生实现（步骤见上方注释）
-    unimplemented!("M4 学生实现：保存记录")
+    // 1. 签名：State + AuthUser + Path((plan_id, item_id)) + Form(form)
+    // 2. 验证归属（同 record_form）
+    let current_plan = sqlx::query_as::<_, Plan>(
+        "SELECT p.* FROM plans p
+        INNER JOIN phases ph ON p.phase_id = ph.id
+        WHERE p.id = ? AND ph.user_id = ?",
+    )
+    .bind(&plan_id)
+    .bind(&user.id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(AppError::Database)?
+    .ok_or_else(|| AppError::NotFound("No plan found in such user and phase".to_string()))?;
+
+    let phase = sqlx::query_as::<_, Phase>("SELECT * FROM phases WHERE id = ? AND user_id = ?")
+        .bind(&current_plan.phase_id)
+        .bind(&user.id)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(AppError::Database)?
+        .ok_or_else(|| AppError::NotFound("No phase found".to_string()))?;
+    if phase.archived
+    {
+        return Err(AppError::Forbidden(
+            "Can not edit archived phase".to_string(),
+        ));
+    }
+    // 2.5 验证计划项属于该计划（双条件防越权）+ 拿 exercise_id
+    //     【教学：record_save 和 record_form 必须做同样的归属验证】
+    //     不只是"重复代码"问题：POST 可以被绕过前端直接发请求，
+    //     不验证 plan_item 属于该 plan，就能拿别人的计划项 id 往自己库里插。
+    //     顺便拿到 exercise_id（INSERT 要用）。
+    let plan_item =
+        sqlx::query_as::<_, PlanItem>("SELECT * FROM plan_items WHERE id = ? AND plan_id = ?")
+            .bind(&item_id)
+            .bind(&current_plan.id)
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(AppError::Database)?
+            .ok_or_else(|| AppError::NotFound("No plan item found".to_string()))?;
+    // 3. parse 数字字段：weight → f64，sets/reps/rest → i64
+    //    （parse 失败 → Validation；负数 → Validation）
+    let weight = form
+        .weight
+        .parse::<f64>()
+        .map_err(|_| AppError::Validation("重量必须是数字".to_string()))?;
+    let sets = form
+        .sets
+        .parse::<i64>()
+        .map_err(|_| AppError::Validation("组数必须是数字".to_string()))?;
+    let reps = form
+        .reps
+        .parse::<i64>()
+        .map_err(|_| AppError::Validation("次数必须是数字".to_string()))?;
+    let rest = form
+        .rest
+        .parse::<i64>()
+        .map_err(|_| AppError::Validation("休息时间必须是数字".to_string()))?;
+    // 3.5 负数校验（训练数据不可能是负数）
+    if weight < 0.0 || sets < 0 || reps < 0 || rest < 0
+    {
+        return Err(AppError::Validation(
+            "重量/组数/次数/休息不能为负数".to_string(),
+        ));
+    }
+    // 4. 查该计划项最近一条记录（决定 INSERT 还是 UPDATE）
+    let most_recent_record = sqlx::query_as::<_, Record>(
+        "SELECT * FROM records WHERE plan_item_id = ?
+        ORDER BY record_date DESC, id DESC LIMIT 1",
+    )
+    .bind(&item_id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(AppError::Database)?;
+    // 5. 有记录 → UPDATE：
+    //    UPDATE records SET weight=?, sets=?, reps=?, rest=?,
+    //      feeling=?, strategy=?, key_points=?, mode=?
+    //    WHERE id = ?（按查到的记录 id）
+    // 6. 无记录 → INSERT：
+    //    INSERT INTO records
+    //      (plan_item_id, phase_id, exercise_id, record_date,
+    //       weight, sets, reps, rest, feeling, strategy, key_points, mode)
+    //    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    //    （phase_id/exercise_id 从计划项 JOIN 取；record_date = 今天）
+    match most_recent_record
+    {
+        Some(record) =>
+        {
+            sqlx::query(
+                "UPDATE records
+                SET weight = ?,
+                sets = ?,
+                reps = ?,
+                rest = ?,
+                feeling = ?,
+                strategy = ?,
+                key_points = ?,
+                mode = ?
+                WHERE id = ?",
+            )
+            .bind(&weight)
+            .bind(&sets)
+            .bind(&reps)
+            .bind(&rest)
+            .bind(&form.feeling)
+            .bind(&form.strategy)
+            .bind(&form.key_points)
+            .bind(&form.mode)
+            .bind(&record.id)
+            .execute(&state.pool)
+            .await
+            .map_err(AppError::Database)?;
+        },
+        None =>
+        {
+            let today_dt = sqlx::query_scalar::<_, String>("SELECT date('now', 'localtime')")
+                .fetch_one(&state.pool)
+                .await
+                .map_err(AppError::Database)?;
+            sqlx::query(
+                "INSERT INTO records
+                (plan_item_id, phase_id, exercise_id, record_date,
+                weight, sets, reps, rest, feeling, strategy, key_points, mode)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(&plan_item.id)
+            .bind(&phase.id)
+            .bind(&plan_item.exercise_id)
+            .bind(&today_dt)
+            .bind(&weight)
+            .bind(&sets)
+            .bind(&reps)
+            .bind(&rest)
+            .bind(&form.feeling)
+            .bind(&form.strategy)
+            .bind(&form.key_points)
+            .bind(&form.mode)
+            .execute(&state.pool)
+            .await
+            .map_err(AppError::Database)?;
+        },
+    }
+    // 7. 重定向回 /today（今日页刷新后显示 ✅ 已训练）
+    Ok(Redirect::to("/today"))
 }
 
 // ============================================================

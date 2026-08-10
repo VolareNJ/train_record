@@ -347,7 +347,7 @@ pub async fn template_create(
 /// 显示编辑模板的表单（模板名 + 动作多选，已选的勾上）
 ///
 /// 实现步骤：
-/// 1. 签名：State + AuthUser + Path(id)
+/// 1. 签名：State + AuthUser + Path(template_id)
 /// 2. 查模板 + 验证归属（JOIN phases 或先查 phase 再验 user_id）
 ///    SELECT t.*, p.user_id FROM templates t JOIN phases p ON t.phase_id = p.id
 ///    WHERE t.id = ? → 检查 p.user_id == user.id
@@ -358,7 +358,7 @@ pub async fn template_create(
 pub async fn template_edit_form(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
-    Path(id): Path<i64>,
+    Path(template_id): Path<i64>,
 ) -> Result<Html<String>, AppError>
 {
     // ① 查模板 + 验证归属：JOIN phases 一次性把 user_id 也取出来
@@ -367,7 +367,7 @@ pub async fn template_edit_form(
         "SELECT t.* FROM templates t INNER JOIN phases p ON t.phase_id = p.id
     WHERE t.id = ? AND p.user_id = ?",
     )
-    .bind(&id)
+    .bind(&template_id)
     .bind(&user.id)
     .fetch_optional(&state.pool)
     .await
@@ -379,7 +379,7 @@ pub async fn template_edit_form(
     let current_template_item_ids = sqlx::query_scalar::<_, i64>(
         "SELECT exercise_id FROM template_items WHERE template_id = ?",
     )
-    .bind(&id)
+    .bind(&template_id)
     .fetch_all(&state.pool)
     .await
     .map_err(AppError::Database)?;
@@ -420,20 +420,20 @@ pub async fn template_edit_form(
         .join("\n");
 
     // ④ 拼表单：
-    //    - action 指向编辑提交地址 /templates/{id}/edit（不是创建页！）
+    //    - action 指向编辑提交地址 /templates/{template_id}/edit（不是创建页！）
     //    - 模板名输入框预填当前名字 value="{name}"
     //    - 按钮文字改成"保存"
     Ok(Html(format!(
         r#"
         <h2>编辑训练模板</h2>
-        <form method="post" action="/templates/{id}/edit">
+        <form method="post" action="/templates/{template_id}/edit">
             模板名：<input name="name" value="{name}"><br>
             {checkbox_rows}
             <button type="submit">保存</button>
         </form>
         <p><a href="/phases/{phase_id}/templates">返回模板列表</a></p>
         "#,
-        id = id,
+        template_id = template_id,
         name = current_template.name,
         phase_id = current_template.phase_id,
         checkbox_rows = checkbox_rows,
@@ -453,14 +453,14 @@ pub async fn template_edit_form(
 /// 三步在一个事务里 → 不会出现"删了没插上"的半截状态。
 ///
 /// 实现步骤：
-/// 1. 签名：State + AuthUser + Path(id) + Form(form)
+/// 1. 签名：State + AuthUser + Path(template_id) + Form(form)
 /// 2. 验证模板归属当前用户（同 edit_form 的 JOIN 验证）
 /// 3. begin 事务 → UPDATE 父表 → DELETE 子表 → 循环 INSERT
 /// 4. commit → 重定向回模板列表
 pub async fn template_update(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
-    Path(id): Path<i64>,
+    Path(template_id): Path<i64>,
     Form(form): Form<TemplateCreateForm>,
 ) -> Result<Redirect, AppError>
 {
@@ -471,7 +471,7 @@ pub async fn template_update(
         "SELECT t.* FROM templates t INNER JOIN phases p ON t.phase_id = p.id
     WHERE t.id = ? AND p.user_id = ?",
     )
-    .bind(&id)
+    .bind(&template_id)
     .bind(&user.id)
     .fetch_optional(&state.pool)
     .await
@@ -501,14 +501,14 @@ pub async fn template_update(
     // 3.1 更新父表（改名）——只改这一行，不会插入新记录
     sqlx::query("UPDATE templates SET name = ? WHERE id = ?")
         .bind(&form.name)
-        .bind(&id)
+        .bind(&template_id)
         .execute(&mut *tx)
         .await
         .map_err(AppError::Database)?;
 
     // 3.2 删掉所有旧子表行（先删后插：清空重来，避免"残留旧动作"）
     sqlx::query("DELETE FROM template_items WHERE template_id = ?")
-        .bind(&id)
+        .bind(&template_id)
         .execute(&mut *tx)
         .await
         .map_err(AppError::Database)?;
@@ -520,7 +520,7 @@ pub async fn template_update(
         sqlx::query(
             "INSERT INTO template_items (template_id, exercise_id, sort_order) VALUES (?, ?, ?)",
         )
-        .bind(&id)
+        .bind(&template_id)
         .bind(ex_id) // ex_id 已经是 &i64，不用再 &
         .bind(idx as i64) // ← usize 必须转 i64
         .execute(&mut *tx) // ← 事务要 &mut *tx（Transaction 可变解引用）
@@ -547,7 +547,7 @@ pub async fn template_update(
 /// 必须这个顺序，否则删父后子表留孤儿数据。
 ///
 /// 实现步骤：
-/// 1. 签名：State + AuthUser + Path(id)
+/// 1. 签名：State + AuthUser + Path(template_id)
 /// 2. 验证归属（JOIN phases 查 user_id）
 /// 3. 事务：DELETE FROM template_items WHERE template_id = ?
 ///        → DELETE FROM templates WHERE id = ?
@@ -555,7 +555,7 @@ pub async fn template_update(
 pub async fn template_delete(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
-    Path(id): Path<i64>,
+    Path(template_id): Path<i64>,
 ) -> Result<Redirect, AppError>
 {
     // ① 先查后改：验证模板归属当前用户（JOIN phases 拿 user_id）
@@ -564,7 +564,7 @@ pub async fn template_delete(
         "SELECT t.* FROM templates t INNER JOIN phases p ON t.phase_id = p.id
     WHERE t.id = ? AND p.user_id = ?",
     )
-    .bind(&id)
+    .bind(&template_id)
     .bind(&user.id)
     .fetch_optional(&state.pool)
     .await
@@ -577,14 +577,14 @@ pub async fn template_delete(
 
     // 2.1 删孩子：模板的所有动作项
     sqlx::query("DELETE FROM template_items WHERE template_id = ?")
-        .bind(&id)
+        .bind(&template_id)
         .execute(&mut *tx)
         .await
         .map_err(AppError::Database)?;
 
     // 2.2 删父亲：模板本身
     sqlx::query("DELETE FROM templates WHERE id = ?")
-        .bind(&id)
+        .bind(&template_id)
         .execute(&mut *tx)
         .await
         .map_err(AppError::Database)?;
@@ -964,7 +964,7 @@ pub async fn plan_create(
 ///   拼行时 ex_map.get(&item.exercise_id) —— 一次查询换 N 次查询，快
 ///
 /// 实现步骤：
-/// 1. 签名：State + AuthUser + Path(id)
+/// 1. 签名：State + AuthUser + Path(plan_id)
 /// 2. 查计划 + 验证归属（JOIN phases）
 /// 3. 查计划项：SELECT * FROM plan_items WHERE plan_id = ? ORDER BY sort_order
 /// 4. 查动作库全部动作 → HashMap 索引 id → name
@@ -972,7 +972,7 @@ pub async fn plan_create(
 pub async fn plan_detail(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
-    Path(id): Path<i64>,
+    Path(plan_id): Path<i64>,
 ) -> Result<Html<String>, AppError>
 {
     // ① 查计划 + 验证归属（JOIN phases 拿 user_id）
@@ -980,7 +980,7 @@ pub async fn plan_detail(
         "SELECT p.* FROM plans p INNER JOIN phases ph ON p.phase_id = ph.id
     WHERE p.id = ? AND ph.user_id = ?",
     )
-    .bind(&id)
+    .bind(&plan_id)
     .bind(&user.id)
     .fetch_optional(&state.pool)
     .await
@@ -991,7 +991,7 @@ pub async fn plan_detail(
     let plan_items = sqlx::query_as::<_, PlanItem>(
         "SELECT * FROM plan_items WHERE plan_id = ? ORDER BY sort_order",
     )
-    .bind(&id)
+    .bind(&plan_id)
     .fetch_all(&state.pool)
     .await
     .map_err(AppError::Database)?;
@@ -1065,7 +1065,7 @@ pub async fn plan_detail(
 pub async fn plan_edit_form(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
-    Path(id): Path<i64>,
+    Path(plan_id): Path<i64>,
 ) -> Result<Html<String>, AppError>
 {
     // ① 查计划 + 验证归属（JOIN phases）
@@ -1073,7 +1073,7 @@ pub async fn plan_edit_form(
         "SELECT p.* FROM plans p INNER JOIN phases ph ON p.phase_id = ph.id
     WHERE p.id = ? AND ph.user_id = ?",
     )
-    .bind(&id)
+    .bind(&plan_id)
     .bind(&user.id)
     .fetch_optional(&state.pool)
     .await
@@ -1083,7 +1083,7 @@ pub async fn plan_edit_form(
     // ② 查计划已有的计划项 → 建 exercise_id → PlanItem 索引（回显组/次/重）
     //    不能只查 exercise_id 列表了：编辑页要给每行回显 sets/reps/weight
     let current_items = sqlx::query_as::<_, PlanItem>("SELECT * FROM plan_items WHERE plan_id = ?")
-        .bind(&id)
+        .bind(&plan_id)
         .fetch_all(&state.pool)
         .await
         .map_err(AppError::Database)?;
@@ -1163,14 +1163,14 @@ pub async fn plan_edit_form(
 /// 处理编辑计划表单提交
 ///
 /// 实现步骤：
-/// 1. 签名：State + AuthUser + Path(id) + Form(form)
+/// 1. 签名：State + AuthUser + Path(plan_id) + Form(form)
 /// 2. 验证归属 + 未归档
 /// 3. 事务：UPDATE plans SET date/note → DELETE plan_items → 循环 INSERT
 /// 4. commit → 重定向回计划详情
 pub async fn plan_update(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
-    Path(id): Path<i64>,
+    Path(plan_id): Path<i64>,
     Form(form): Form<PlanEditForm>,
 ) -> Result<Redirect, AppError>
 {
@@ -1179,7 +1179,7 @@ pub async fn plan_update(
         "SELECT p.* FROM plans p INNER JOIN phases ph ON p.phase_id = ph.id
     WHERE p.id = ? AND ph.user_id = ?",
     )
-    .bind(&id)
+    .bind(&plan_id)
     .bind(&user.id)
     .fetch_optional(&state.pool)
     .await
@@ -1209,7 +1209,7 @@ pub async fn plan_update(
     )
     .bind(&current_plan.phase_id)
     .bind(&form.date)
-    .bind(&id)
+    .bind(&plan_id)
     .fetch_optional(&state.pool)
     .await
     .map_err(AppError::Database)?;
@@ -1228,14 +1228,14 @@ pub async fn plan_update(
     sqlx::query("UPDATE plans SET date = ?, note = ? WHERE id = ?")
         .bind(&form.date)
         .bind(&form.note)
-        .bind(&id)
+        .bind(&plan_id)
         .execute(&mut *tx)
         .await
         .map_err(AppError::Database)?;
 
     // 4.2 删掉所有旧计划项
     sqlx::query("DELETE FROM plan_items WHERE plan_id = ?")
-        .bind(&id)
+        .bind(&plan_id)
         .execute(&mut *tx)
         .await
         .map_err(AppError::Database)?;
@@ -1250,7 +1250,7 @@ pub async fn plan_update(
             "INSERT INTO plan_items (plan_id, exercise_id, sort_order, plan_sets, plan_reps, plan_weight)
             VALUES (?, ?, ?, ?, ?, ?)",
         )
-        .bind(&id)
+        .bind(&plan_id)
         .bind(ex_id)
         .bind(idx as i64)
         .bind(form.plan_sets(*ex_id))
@@ -1276,14 +1276,14 @@ pub async fn plan_update(
 /// 删除计划（连同计划项）
 ///
 /// 实现步骤：
-/// 1. 签名：State + AuthUser + Path(id)
+/// 1. 签名：State + AuthUser + Path(plan_id)
 /// 2. 验证归属
 /// 3. 事务：DELETE FROM plan_items WHERE plan_id = ? → DELETE FROM plans WHERE id = ?
 /// 4. commit → 重定向回计划列表
 pub async fn plan_delete(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
-    Path(id): Path<i64>,
+    Path(plan_id): Path<i64>,
 ) -> Result<Redirect, AppError>
 {
     // ① 先查后改：验证归属（JOIN phases）→ 拿 phase_id 供重定向
@@ -1291,7 +1291,7 @@ pub async fn plan_delete(
         "SELECT p.* FROM plans p INNER JOIN phases ph ON p.phase_id = ph.id
     WHERE p.id = ? AND ph.user_id = ?",
     )
-    .bind(&id)
+    .bind(&plan_id)
     .bind(&user.id)
     .fetch_optional(&state.pool)
     .await
@@ -1302,13 +1302,13 @@ pub async fn plan_delete(
     let mut tx = state.pool.begin().await.map_err(AppError::Database)?;
 
     sqlx::query("DELETE FROM plan_items WHERE plan_id = ?")
-        .bind(&id)
+        .bind(&plan_id)
         .execute(&mut *tx)
         .await
         .map_err(AppError::Database)?;
 
     sqlx::query("DELETE FROM plans WHERE id = ?")
-        .bind(&id)
+        .bind(&plan_id)
         .execute(&mut *tx)
         .await
         .map_err(AppError::Database)?;

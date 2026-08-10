@@ -523,21 +523,21 @@ pub async fn create(
 ///   JS 内容是参数值，不再经过 format! 的 {} 解析。
 ///
 /// 【实现步骤】
-/// 1. 签名：State + AuthUser + Path(id)
+/// 1. 签名：State + AuthUser + Path(exercise_id)
 /// 2. 查这一行：SELECT * FROM exercises WHERE id = ? AND user_id = ?
 ///    → fetch_optional → None 则 Err(NotFound)
 /// 3. 拼表单：input 的 value 填旧值，select 的 option 加 selected，
-///    textarea 旧值放标签间，action 带 {id}
+///    textarea 旧值放标签间，action 带 {exercise_id}
 /// 4. JS 用命名参数（javascript = "..."）传给 format!，避开 {} 冲突
 pub async fn edit_form(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
-    Path(id): Path<i64>,
+    Path(exercise_id): Path<i64>,
 ) -> Result<Html<String>, AppError>
 {
     let record_to_edit =
         sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE id = ? AND user_id = ?")
-            .bind(&id)
+            .bind(&exercise_id)
             .bind(&user.id)
             .fetch_optional(&state.pool)
             .await
@@ -547,7 +547,7 @@ pub async fn edit_form(
     Ok(Html(format!(
         r#"
         <h1>编辑训练动作</h1>
-        <form method="post" action="/exercises/{id}/edit">
+        <form method="post" action="/exercises/{exercise_id}/edit">
             <label>动作名称
                 <input name="name" required value="{current_name}">
             </label><br>
@@ -583,7 +583,7 @@ pub async fn edit_form(
             {javascript}
         </script>
         "#,
-        id = id,
+        exercise_id = exercise_id,
         current_name = record_to_edit.name,
         current_sets = record_to_edit.default_sets,
         current_reps = record_to_edit.default_reps,
@@ -682,7 +682,7 @@ pub async fn edit_form(
 /// 这是"用数据库约束兜底，用业务查询优化体验"的取舍，可接受。
 ///
 /// 【实现步骤】
-/// 1. 签名：State + AuthUser + Path(id) + Form<ExerciseForm>
+/// 1. 签名：State + AuthUser + Path(exercise_id) + Form<ExerciseForm>
 /// 2. 校验 name 非空
 /// 3. 转换数字字段（同 create）
 /// 4. UPDATE exercises SET name=?, body_part=?, default_mode=?,
@@ -692,7 +692,7 @@ pub async fn edit_form(
 pub async fn update(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
-    Path(id): Path<i64>,
+    Path(exercise_id): Path<i64>,
     Form(form): Form<ExerciseForm>,
 ) -> Result<Redirect, AppError>
 {
@@ -742,7 +742,7 @@ pub async fn update(
             .map_err(|_| AppError::Validation("次数必须输入整数".to_string()))?,
     )
     .bind(form.key_points)
-    .bind(id)
+    .bind(exercise_id)
     .bind(user.id)
     .execute(&state.pool)
     .await
@@ -782,17 +782,17 @@ pub async fn update(
 /// 删除成功 → 重定向回列表（PRG 模式）。
 ///
 /// 【实现步骤】
-/// 1. 签名：State + AuthUser + Path(id)
+/// 1. 签名：State + AuthUser + Path(exercise_id)
 /// 2. DELETE FROM exercises WHERE id = ? AND user_id = ?
 /// 3. rows_affected() == 0 → Err(NotFound)；否则 Ok(Redirect::to("/exercises"))
 pub async fn delete(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
-    Path(id): Path<i64>,
+    Path(exercise_id): Path<i64>,
 ) -> Result<Redirect, AppError>
 {
     let ext_ret = sqlx::query("DELETE FROM exercises WHERE id = ? AND user_id = ?")
-        .bind(id)
+        .bind(exercise_id)
         .bind(user.id)
         .execute(&state.pool)
         .await
@@ -818,19 +818,19 @@ pub async fn delete(
 /// 内容后续填充，避免以后改接口。
 ///
 /// 【实现步骤】（老师实现）
-/// 1. 签名：State + AuthUser + Path(id)
+/// 1. 签名：State + AuthUser + Path(exercise_id)
 /// 2. 查这一行：SELECT * FROM exercises WHERE id = ? AND user_id = ?
 ///    → fetch_optional → None 则 Err(NotFound)
 /// 3. 返回信息页：动作名 + 全部字段
 pub async fn detail(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
-    Path(id): Path<i64>,
+    Path(exercise_id): Path<i64>,
 ) -> Result<Html<String>, AppError>
 {
     let exercise =
         sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE id = ? AND user_id = ?")
-            .bind(id)
+            .bind(exercise_id)
             .bind(user.id)
             .fetch_optional(&state.pool)
             .await
