@@ -769,25 +769,45 @@ pub async fn plan_create_form(
         .map_err(AppError::Database)?;
 
     // ⑤ 拼表单
+    //    【教学：JS 控制"动作勾选区"显隐】
+    //    需求：选了模板 → 动作由模板决定，手动勾选没意义，隐藏；
+    //          "不选模板，手动选动作" → 显示勾选区。
+    //    做法（纯前端，零后端改动）：
+    //      1. 模板下拉 <select id="template_id" onchange="toggleManualExercises()">
+    //      2. 勾选区包 <div id="manual_exercises">（默认显示）
+    //      3. JS：select.value 为空串（"不选模板"）→ 显示，否则隐藏
+    //    ⚠️ JS 内容用命名参数 {javascript} 传入 format!（避开 {} 冲突，
+    //    与 exercises.rs 的 toggleBarWeight 同款写法）。
     Ok(Html(format!(
         r#"
         <h2>新建当日计划</h2>
         <form method="post" action="/phases/{phase_id}/plans">
             日期：<input type="date" name="date" value="{today}"><br>
-            模板：<select name="template_id">
+            模板：<select name="template_id" id="template_id" onchange="toggleManualExercises()">
                 <option value="">（不选模板，手动选动作）</option>
                 {template_rows}
             </select><br>
-            动作（不选模板时手动勾选）：<br>
-            {checkbox_rows}
+            <div id="manual_exercises">
+                动作（不选模板时手动勾选）：<br>
+                {checkbox_rows}
+            </div>
             <button type="submit">创建计划</button>
         </form>
         <p><a href="/phases/{phase_id}/plans">返回计划列表</a></p>
+        <script>
+            {javascript}
+        </script>
         "#,
         phase_id = phase_id,
         today = today,
         template_rows = template_rows,
         checkbox_rows = checkbox_rows,
+        javascript = "function toggleManualExercises(){
+                var select = document.getElementById('template_id');
+                var box = document.getElementById('manual_exercises');
+                box.style.display = (select.value === '') ? '' : 'none';
+                }
+                toggleManualExercises();"
     )))
 }
 
