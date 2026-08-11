@@ -337,6 +337,13 @@ async fn main()
             "/templates/{id}/delete",
             post(handlers::plan::template_delete),
         )
+        // 【M4 修订：模板排序】模板上移/下移（?dir=up|down）
+        .route("/templates/{id}/sort", post(handlers::plan::template_sort))
+        // 【M4 修订：模板项排序】模板内动作上移/下移
+        .route(
+            "/templates/{id}/items/{item_id}/move",
+            post(handlers::plan::template_item_move),
+        )
         // 计划：挂在阶段下
         .route(
             "/phases/{phase_id}/plans",
@@ -346,12 +353,16 @@ async fn main()
             "/phases/{phase_id}/plans/new",
             get(handlers::plan::plan_create_form),
         )
+        // 【M4 修订：plan_detail 已并入编辑功能，GET /plans/{id} 直接可编辑；
+        // 原 GET /plans/{id}/edit（plan_edit_form）已移除】
         .route("/plans/{id}", get(handlers::plan::plan_detail))
-        .route(
-            "/plans/{id}/edit",
-            get(handlers::plan::plan_edit_form).post(handlers::plan::plan_update),
-        )
+        .route("/plans/{id}/edit", post(handlers::plan::plan_update))
         .route("/plans/{id}/delete", post(handlers::plan::plan_delete))
+        // 【M4 修订：计划项排序】计划内动作上移/下移
+        .route(
+            "/plans/{id}/items/{item_id}/move",
+            post(handlers::plan::plan_item_move),
+        )
         // ----------------------------------------------------------
         // M4 新增：训练记录（今日页 + 单动作记录/编辑 + 保存）
         // 教学注释见 src/handlers/record.rs 顶部

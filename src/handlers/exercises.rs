@@ -220,12 +220,14 @@ pub async fn list(
         query_ret_rows = match part_filter
     {
         None => sqlx::query_as::<_, Exercise>(
-            "SELECT * FROM exercises WHERE user_id = ? ORDER BY body_part, name",
+            // 【M4 修订：动作库排序】同一 body_part 内按 sort_order 排
+            // （id 兜底：老数据或 sort_order 并列时保持稳定顺序）
+            "SELECT * FROM exercises WHERE user_id = ? ORDER BY body_part, sort_order, id",
         )
         .bind(&user.id)
         .fetch_all(&state.pool),
         Some(pt) => sqlx::query_as::<_, Exercise>(
-            "SELECT * FROM exercises WHERE user_id = ? AND body_part = ? ORDER BY body_part, name",
+            "SELECT * FROM exercises WHERE user_id = ? AND body_part = ? ORDER BY sort_order, id",
         )
         .bind(&user.id)
         .bind(pt)
@@ -392,6 +394,7 @@ pub async fn create_form(
             </label><br>
             <button type="submit">提交</button>
         </form>
+        <p><a href="/exercises">返回动作库</a></p>
         <script>
             function toggleBarWeight() {
                 var mode = document.getElementById('default_mode').value;
@@ -482,10 +485,24 @@ pub async fn create(
         .default_reps
         .parse::<i64>()
         .map_err(|_| AppError::Validation("默认次数必须是整数".to_string()))?;
-    // INSERT（9 列）。create 不需要 rows_affected：
+    // 【M4 修订：部位内排序号】
+    // 同一 body_part 内新动作排末尾：MAX(sort_order) + 1。
+    // COALESCE：空部位 MAX 是 NULL → 取 0 → +1 = 1（从 1 开始）。
+    // 注意：这是"下一次查询 + 本次插入"两步，不包事务——
+    // 单用户场景下并发创建同部位动作的概率极低，可接受；
+    // 即使撞号也只是显示顺序并列（id 兜底），不会出错。
+    let next_sort_order = sqlx::query_scalar::<_, i64>(
+        "SELECT COALESCE(MAX(sort_order), 0) + 1 FROM exercises WHERE user_id = ? AND body_part = ?",
+    )
+    .bind(user.id)
+    .bind(&form.body_part)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(AppError::Database)?;
+    // INSERT（10 列）。create 不需要 rows_affected：
     // INSERT 成功必然影响 1 行，execute() 的结果直接丢弃。
     sqlx::query(
-        "INSERT INTO exercises (user_id, name, body_part, default_mode, bar_weight, default_sets, default_reps, key_points) VALUES (?,?,?,?,?,?,?,?)",
+        "INSERT INTO exercises (user_id, name, body_part, default_mode, bar_weight, default_sets, default_reps, key_points, sort_order) VALUES (?,?,?,?,?,?,?,?,?)",
     )
     .bind(user.id)
     .bind(name)
@@ -495,6 +512,7 @@ pub async fn create(
     .bind(default_sets)
     .bind(default_reps)
     .bind(&form.key_points)
+    .bind(next_sort_order)
     .execute(&state.pool)
     .await
     .map_err(AppError::Database)?;
@@ -635,6 +653,7 @@ pub async fn edit_form(
             </label><br>
             <button type="submit">提交</button>
         </form>
+        <p><a href="/exercises">返回动作库</a></p>
         <script>
             {javascript}
         </script>

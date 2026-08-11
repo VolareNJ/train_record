@@ -11,15 +11,18 @@
 //   GET  /templates/{id}/edit                → 编辑模板表单（template_edit_form）
 //   POST /templates/{id}/edit                → 更新模板（template_update）
 //   POST /templates/{id}/delete              → 删除模板（template_delete）
+//   POST /templates/{id}/sort                → 模板排序（template_sort）【M4 修订】
+//   POST /templates/{id}/items/{item_id}/move
+//                                           → 模板项上移/下移（template_item_move）【M4 修订】
 //
 // 二、当日计划（Plan）—— 某一天的训练安排
 //   GET  /phases/{phase_id}/plans            → 计划列表（list_plans）
 //   GET  /phases/{phase_id}/plans/new        → 新建计划表单（plan_create_form）
 //   POST /phases/{phase_id}/plans            → 创建计划（plan_create）
-//   GET  /plans/{id}                         → 计划详情（plan_detail）
-//   GET  /plans/{id}/edit                    → 编辑计划表单（plan_edit_form）
+//   GET  /plans/{id}                         → 计划详情 + 编辑（plan_detail）【M4 修订：原 plan_edit_form 并入】
 //   POST /plans/{id}/edit                    → 更新计划（plan_update）
 //   POST /plans/{id}/delete                  → 删除计划（plan_delete）
+//   POST /plans/{id}/items/{item_id}/move    → 计划项上移/下移（plan_item_move）【M4 修订】
 //
 // 📌 阶段要求：M3 你来实现本文件所有函数。
 //   实现完成后对照检查（完整实现备份在 docs/learning_path/M3_ref/）。
@@ -177,27 +180,38 @@ pub async fn list_templates(
         ""
     };
 
-    // ③ 查模板列表 → 每行：名称 + 编辑/删除操作链接（M3 指南第 1 步验收要求）
-    //    操作链接用表单 POST（删除是改数据，不能用 GET 链接）
-    let template_ret = sqlx::query_as::<_, Template>("SELECT * FROM templates WHERE phase_id = ?")
-        .bind(&phase_ret.id)
-        .fetch_all(&state.pool)
-        .await
-        .map_err(AppError::Database)?
-        .iter()
-        .map(|item| {
-            format!(
-                r#"<tr><td>{tmp_name}</td>
+    // ③ 查模板列表 → 每行：名称 + 排序（上移/下移）+ 编辑/删除操作
+    //     【M4 修订：模板排序】templates.sort_order 从预留字段变成实际字段，
+    //     列表里每行给"上移/下移"小表单（POST /templates/{id}/sort?dir=up|down），
+    //     handler 在同一阶段内交换相邻模板的 sort_order。
+    //     操作链接用表单 POST（删除是改数据，不能用 GET 链接）
+    let template_ret = sqlx::query_as::<_, Template>(
+        "SELECT * FROM templates WHERE phase_id = ? ORDER BY sort_order, id",
+    )
+    .bind(&phase_ret.id)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(AppError::Database)?
+    .iter()
+    .map(|item| {
+        format!(
+            r#"<tr><td>{tmp_name}</td>
+                <td>
+                <form method="post" action="/templates/{tmp_id}/sort?dir=up"
+                style="display:inline"><button type="submit">↑</button></form>
+                <form method="post" action="/templates/{tmp_id}/sort?dir=down"
+                style="display:inline"><button type="submit">↓</button></form>
+                </td>
                 <td><a href="/templates/{tmp_id}/edit">编辑</a></td>
                 <td><form method="post" action="/templates/{tmp_id}/delete"
                 style="display:inline"><button type="submit">删除</button></form></td>
                 </tr>"#,
-                tmp_id = item.id,
-                tmp_name = item.name
-            )
-        })
-        .collect::<Vec<String>>()
-        .join("\n");
+            tmp_id = item.id,
+            tmp_name = item.name
+        )
+    })
+    .collect::<Vec<String>>()
+    .join("\n");
 
     // ④ 拼页面（注意：r#"... "# 内部不能再出现裸引号，否则会渲染到页面）
     Ok(Html(format!(
@@ -205,7 +219,7 @@ pub async fn list_templates(
                 <head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
                 <h2>训练模板</h2>
                 {archived_note}
-                    <table border="1"><tr><th>名称</th><th>操作</th></tr>
+                    <table border="1"><tr><th>名称</th><th>排序</th><th>操作</th></tr>
                         {tmp_content}
                     </table>
                 <p><a href="/phases/{phase_id}/templates/new">创建训练模板</a></p>
@@ -412,17 +426,22 @@ pub async fn template_create(
 // ============================================================
 // 编辑模板表单页（GET /templates/{id}/edit）
 // ============================================================
-/// 显示编辑模板的表单（模板名 + 动作多选，已选的勾上）
+/// 显示编辑模板的表单（模板名 + 已选动作表格 + 添加动作 + 排序）
+///
+/// 【M4 修订：表格化改造（任务 1）】
+/// 旧版：模板名 + 全量动作 checkbox 列表（勾选=选中）。
+/// 新版：以"表格"形式呈现已选动作（动作名 | 排序 | 删除），
+///   上面修改模板名，下面"添加动作"（身体部位下拉 + 动作下拉 + 添加按钮）。
+///   每行有上移/下移按钮（POST /templates/{id}/items/{item_id}/move）。
 ///
 /// 实现步骤：
 /// 1. 签名：State + AuthUser + Path(template_id)
-/// 2. 查模板 + 验证归属（JOIN phases 或先查 phase 再验 user_id）
-///    SELECT t.*, p.user_id FROM templates t JOIN phases p ON t.phase_id = p.id
-///    WHERE t.id = ? → 检查 p.user_id == user.id
-/// 3. 查模板已有的动作：SELECT exercise_id FROM template_items WHERE template_id = ?
-///    → 得到 HashSet<i64>（已选集合，判断 checkbox 勾选状态）
-/// 4. 查全部动作（同 create_form）
-/// 5. 拼表单：已选的 checkbox 加 checked 属性
+/// 2. 查模板 + 验证归属（JOIN phases）
+/// 3. 查模板已有的动作项（按 sort_order 排序，连同 item id）
+/// 4. 查全部动作 → 两个下拉框选项（部位 + 动作）
+/// 5. 拼表单：模板名 input + 表格（hidden checkbox name={id} value=1 checked
+///    + ↑↓ + 删除）+ 添加动作区 + 保存
+///    动作数据嵌入 JSON（EX_OPTIONS），JS 的 addRow 克隆行模板
 pub async fn template_edit_form(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
@@ -442,29 +461,25 @@ pub async fn template_edit_form(
     .map_err(AppError::Database)?
     .ok_or_else(|| AppError::NotFound("No template found in such user and phase".to_string()))?;
 
-    // ② 查模板已有的动作（只查 exercise_id 一列）
-    //    注意返回类型是 i64（跟数据库列类型一致），不是 String！
-    let current_template_item_ids = sqlx::query_scalar::<_, i64>(
-        "SELECT exercise_id FROM template_items WHERE template_id = ?",
+    // ② 查模板已有的动作项（带 item id，供上移/下移路由用）
+    let current_items = sqlx::query_as::<_, TemplateItem>(
+        "SELECT * FROM template_items WHERE template_id = ? ORDER BY sort_order, id",
     )
     .bind(&template_id)
     .fetch_all(&state.pool)
     .await
     .map_err(AppError::Database)?;
+    let selected_item_ids: HashSet<i64> = current_items.iter().map(|i| i.exercise_id).collect();
 
-    // 把 Vec<i64> 转成 HashSet<i64>：判断"这个动作勾没勾"用 O(1) 查找
-    // （用 HashSet 而不是 Vec.contains —— 动作多时哈希查找比线性扫描快）
-    let selected_item_ids: HashSet<i64> = current_template_item_ids.into_iter().collect();
-
-    // ③ 查【全部】动作（和 create_form 一样）→ 生成所有 checkbox 行
-    //    编辑页必须显示全部动作，否则用户没法新增没勾过的动作
+    // ③ 查【全部】动作（供下拉框 + 表格行名 + JSON）
     let all_exercises = sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE user_id = ?")
         .bind(&user.id)
         .fetch_all(&state.pool)
         .await
         .map_err(AppError::Database)?;
+    let ex_map: HashMap<i64, Exercise> = all_exercises.iter().map(|e| (e.id, e.clone())).collect();
 
-    // ③b 部位筛选下拉框选项（从动作列表去重，动态生成）
+    // ③b 部位下拉框选项（从动作列表去重，动态生成）
     let mut part_list: Vec<String> = all_exercises
         .iter()
         .map(|ex| ex.body_part.clone())
@@ -478,71 +493,153 @@ pub async fn template_edit_form(
         .collect::<Vec<String>>()
         .join("\n");
 
-    let checkbox_rows = all_exercises
+    // ③c 动作下拉框选项：value = 动作 id，文字 = 名称（JS 按部位过滤）
+    let ex_options = all_exercises
         .iter()
         .map(|ex| {
-            // checked 是条件字符串：选中的输出 " checked"，没选中的输出 ""
-            // 放到 value="1" 后面：value="1" checked> 或 value="1">
-            let checked = if selected_item_ids.contains(&ex.id)
-            {
-                " checked"
-            }
-            else
-            {
-                ""
-            };
             format!(
-                // checkbox 的 name 用动作 id（唯一键）、value=1 —— 和 create_form 同一套约定
-                // 这样 POST 提交后 #[serde(flatten)] 能收集到所有勾选
-                // class="ex-row"：块级 div 整行，JS 按部位隐藏时不残留空行
-                // data-part 属性：供前端 JS 按部位显隐过滤
-                r#"<div class="ex-row" data-part="{part}"><label><input type="checkbox" name="{id}" value="1"{checked}> {name}</label></div>"#,
-                part = ex.body_part,
+                r#"<option value="{id}" data-part="{part}">{name}</option>"#,
                 id = ex.id,
-                checked = checked,
-                name = ex.name
+                part = ex.body_part,
+                name = ex.name,
             )
         })
         .collect::<Vec<String>>()
         .join("\n");
 
+    // ③d 表格行（已选动作，按 sort_order 排）
+    let item_rows = current_items
+        .iter()
+        .map(|item| {
+            let ex_name = ex_map
+                .get(&item.exercise_id)
+                .map(|e| e.name.clone())
+                .unwrap_or_else(|| "?".to_string());
+            format!(
+                r#"<tr id="ex-row-{ex_id}">
+                <td><input type="checkbox" name="{ex_id}" value="1" checked hidden>
+                {ex_name}</td>
+                <td>
+                <button type="button" onclick="submitMove('/templates/{template_id}/items/{item_id}/move?dir=up')">↑</button>
+                <button type="button" onclick="submitMove('/templates/{template_id}/items/{item_id}/move?dir=down')">↓</button>
+                </td>
+                <td><button type="button" onclick="removeRow({ex_id})">删除</button></td>
+                </tr>"#,
+                ex_id = item.exercise_id,
+                item_id = item.id,
+                template_id = template_id,
+                ex_name = ex_name,
+            )
+        })
+        .collect::<Vec<String>>()
+        .join("\n");
+
+    // ③e 动作数据 JSON（JS 添加动作时用：名称/部位/默认组次）
+    //     serde_json 序列化：动作名可能含引号等特殊字符，必须 JSON 转义
+    let ex_data_json = all_exercises
+        .iter()
+        .map(|ex| {
+            serde_json::json!({
+                "id": ex.id,
+                "name": ex.name,
+                "part": ex.body_part,
+            })
+        })
+        .collect::<Vec<_>>();
+    let ex_data_json = serde_json::to_string(&ex_data_json)
+        .map_err(|_| AppError::Validation("动作数据序列化失败".to_string()))?;
+
     // ④ 拼表单：
     //    - action 指向编辑提交地址 /templates/{template_id}/edit（不是创建页！）
     //    - 模板名输入框预填当前名字 value="{name}"
-    //    - 按钮文字改成"保存"
+    //    - 表格：已选动作行（hidden checkbox 保证提交后后端收到勾选）
+    //    - 添加动作区：部位下拉 + 动作下拉 + 添加按钮（JS addRow）
+    //    - 每行 ↑↓：表单用 form 属性关联外部隐藏 form（避免 form 嵌套）
     Ok(Html(format!(
         r#"
         <head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
         <h2>编辑训练模板</h2>
         <form method="post" action="/templates/{template_id}/edit">
-            模板名：<input name="name" value="{name}"><br>
-            部位筛选：
-            <select id="part_filter" onchange="filterByPart('exercise_list')">
-                <option value="">全部</option>
-                {part_options}
-            </select><br>
-            <div id="exercise_list">
-                {checkbox_rows}
-            </div>
+            模板名：<input name="name" value="{name}" required><br>
+            <table border="1">
+                <tr><th>动作</th><th>排序</th><th>操作</th></tr>
+                <tbody id="template-items-body">
+                {item_rows}
+                </tbody>
+            </table>
             <button type="submit">保存</button>
         </form>
+        <p>添加动作：
+            <select id="part-select" onchange="filterExByPart()">
+                <option value="">全部</option>
+                {part_options}
+            </select>
+            <select id="ex-select">
+                {ex_options}
+            </select>
+            <button type="button" onclick="addRow()">添加</button>
+        </p>
         <p><a href="/phases/{phase_id}/templates">返回模板列表</a></p>
         <script>
-            {javascript}
+            var EX_DATA = {ex_data_json};
+            function exById(id) {{
+                for (var i = 0; i < EX_DATA.length; i++) {{
+                    if (String(EX_DATA[i].id) === String(id)) return EX_DATA[i];
+                }}
+                return null;
+            }}
+            /* 上移/下移：页面级动态 form（不能直接嵌 <tr> 里，HTML 解析器会忽略） */
+            function submitMove(url) {{
+                var f = document.createElement('form');
+                f.method = 'post';
+                f.action = url;
+                f.style.display = 'none';
+                document.body.appendChild(f);
+                f.submit();
+            }}
+            function filterExByPart() {{
+                var part = document.getElementById('part-select').value;
+                document.querySelectorAll('#ex-select option').forEach(function(opt) {{
+                    opt.style.display = (part === '' || opt.getAttribute('data-part') === part) ? '' : 'none';
+                }});
+            }}
+            function addRow() {{
+                var sel = document.getElementById('ex-select');
+                var id = sel.value;
+                if (!id) return;
+                if (document.getElementById('ex-row-' + id)) return; // 已在表格中
+                var ex = exById(id);
+                if (!ex) return;
+                var tbody = document.getElementById('template-items-body');
+                var tr = document.createElement('tr');
+                tr.id = 'ex-row-' + id;
+                // 新行还没有 item_id，无法上移/下移 → 排序单元格留空占位
+                // （若放"待保存"按钮则必须等保存后才有 item_id，得不偿失）
+                tr.innerHTML =
+                    '<td><input type="checkbox" name="' + id + '" value="1" checked hidden>' +
+                    escapeHtml(ex.name) + '</td>' +
+                    '<td></td>' +
+                    '<td><button type="button" onclick="removeRow(' + id + ')">删除</button></td>';
+                tbody.appendChild(tr);
+                // 重新筛选下拉框（保持当前部位过滤）
+                filterExByPart();
+            }}
+            function removeRow(id) {{
+                var row = document.getElementById('ex-row-' + id);
+                if (row) row.remove();
+            }}
+            function escapeHtml(s) {{
+                return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+            }}
         </script>
         "#,
         template_id = template_id,
         name = current_template.name,
         phase_id = current_template.phase_id,
         part_options = part_options,
-        checkbox_rows = checkbox_rows,
-        javascript = r#"function filterByPart(listId){
-                var part = document.getElementById('part_filter').value;
-                document.querySelectorAll('#' + listId + ' .ex-row').forEach(function(row){
-                    row.style.display = (part === '' || row.getAttribute('data-part') === part) ? '' : 'none';
-                });
-                }
-                filterByPart('exercise_list');"#
+        ex_options = ex_options,
+        item_rows = item_rows,
+        ex_data_json = ex_data_json,
     )))
 }
 
@@ -612,6 +709,24 @@ pub async fn template_update(
         .await
         .map_err(AppError::Database)?;
 
+    // 3.1.5 【M4 修订：保留旧 sort_order（排序修复）】
+    //     旧版"先删后插"用 enumerate 重新编号 → 用户在编辑页调的排序全丢！
+    //     而且 exercise_ids() 来自 HashMap，顺序本就不定。
+    //     修复：删前把 (exercise_id → sort_order) 存下来，INSERT 时沿用旧值；
+    //     新添加的动作排末尾（MAX+1 起）。
+    let old_items = sqlx::query_as::<_, TemplateItem>(
+        "SELECT * FROM template_items WHERE template_id = ? ORDER BY sort_order, id",
+    )
+    .bind(&template_id)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(AppError::Database)?;
+    let old_order: HashMap<i64, i64> = old_items
+        .iter()
+        .map(|i| (i.exercise_id, i.sort_order))
+        .collect();
+    let base_order = old_order.values().copied().max().unwrap_or(-1);
+
     // 3.2 删掉所有旧子表行（先删后插：清空重来，避免"残留旧动作"）
     sqlx::query("DELETE FROM template_items WHERE template_id = ?")
         .bind(&template_id)
@@ -621,14 +736,25 @@ pub async fn template_update(
 
     // 3.3 重新插入所有勾选的动作（enumerate 生成 sort_order）
     let ex_ids: Vec<i64> = form.exercise_ids();
-    for (idx, ex_id) in ex_ids.iter().enumerate()
+    let mut new_idx: i64 = 0;
+    for ex_id in ex_ids
     {
+        // 旧动作沿用旧 sort_order；新动作从 base_order+1 起递增
+        let sort_order = match old_order.get(&ex_id)
+        {
+            Some(o) => *o,
+            None =>
+            {
+                new_idx += 1;
+                base_order + new_idx
+            },
+        };
         sqlx::query(
             "INSERT INTO template_items (template_id, exercise_id, sort_order) VALUES (?, ?, ?)",
         )
         .bind(&template_id)
         .bind(ex_id) // ex_id 已经是 &i64，不用再 &
-        .bind(idx as i64) // ← usize 必须转 i64
+        .bind(sort_order)
         .execute(&mut *tx) // ← 事务要 &mut *tx（Transaction 可变解引用）
         .await
         .map_err(AppError::Database)?;
@@ -755,8 +881,7 @@ pub async fn list_plans(
             .map(|item| {
                 format!(
                     r#"<tr><td>{plan_dt}</td><td>{plan_note}</td>
-                    <td><a href="/plans/{plan_id}">详情</a>
-                    <a href="/plans/{plan_id}/edit">编辑</a>
+                    <td><a href="/plans/{plan_id}">详情/编辑</a>
                     <form method="post" action="/plans/{plan_id}/delete"
                     style="display:inline"><button type="submit">删除</button></form></td></tr>"#,
                     plan_id = item.id,
@@ -1154,6 +1279,23 @@ pub async fn plan_create(
 /// 3. 查计划项：SELECT * FROM plan_items WHERE plan_id = ? ORDER BY sort_order
 /// 4. 查动作库全部动作 → HashMap 索引 id → name
 /// 5. 拼表格：动作名 + 组数 + 次数 + 重量（None 显示 "-"）
+// ============================================================
+// 计划详情 + 编辑（GET /plans/{id}）【M4 修订：原 plan_edit_form 并入】
+// ============================================================
+/// 显示计划详情，并直接以表格形式编辑（任务 0）
+///
+/// 【M4 修订说明（任务 0）】
+/// 旧版：plan_detail 只读表格 + 独立的 plan_edit_form 编辑页（checkbox 列表）。
+/// 新版：两页合并 —— GET /plans/{id} 直接是"表格形式的编辑页"：
+///   - 上面：日期 + 备注 input（随表单提交）
+///   - 中间：表格（动作 | 组数 | 次数 | 实际强度 | 计重方式 | 杆重/体重 |
+///           观测强度换算 | 休息 | 要领 | 备注 | 操作）
+///   - 每行一个 hidden checkbox（name=动作id，value=1，checked）
+///     → 提交时 exercise_ids() 收集到"仍存在于 DOM 的行"；
+///       删除行 = JS remove DOM → checkbox 随之消失 → 不提交
+///   - 每行 ↑↓ 按钮：HTML5 form 属性关联外部隐藏 form（form 不能嵌套）
+///   - 下方"添加动作"区：身体部位下拉 + 动作下拉 + 添加按钮（JS addRow）
+///   - 动作数据以 JSON 嵌入（EX_OPTIONS），JS 动态加行
 pub async fn plan_detail(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
@@ -1172,9 +1314,9 @@ pub async fn plan_detail(
     .map_err(AppError::Database)?
     .ok_or_else(|| AppError::NotFound("No plan found in such user and phase".to_string()))?;
 
-    // ② 查计划项（按 sort_order 排序）
+    // ② 查计划项（按 sort_order 排序，带 item id 供上移/下移路由用）
     let plan_items = sqlx::query_as::<_, PlanItem>(
-        "SELECT * FROM plan_items WHERE plan_id = ? ORDER BY sort_order",
+        "SELECT * FROM plan_items WHERE plan_id = ? ORDER BY sort_order, id",
     )
     .bind(&plan_id)
     .fetch_all(&state.pool)
@@ -1182,151 +1324,18 @@ pub async fn plan_detail(
     .map_err(AppError::Database)?;
 
     // ③ 查全部动作 → HashMap 索引（一次查询换 N 次查询）
-    //    计划项表只存 exercise_id（数字），页面要显示动作名
-    //    先全部查出来建索引，拼行时 O(1) 查找
-    let exercises = sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE user_id = ?")
-        .bind(&user.id)
-        .fetch_all(&state.pool)
-        .await
-        .map_err(AppError::Database)?;
-    let ex_map: HashMap<i64, String> = exercises.iter().map(|e| (e.id, e.name.clone())).collect();
-
-    // ④ 拼表格行
-    let item_rows = plan_items
-        .iter()
-        .map(|item| {
-            // 动作名：从索引取，查不到显示 "?"（理论上不会发生）
-            let ex_name = ex_map
-                .get(&item.exercise_id)
-                .cloned()
-                .unwrap_or_else(|| "?".to_string());
-            // None 值显示 "-"：map_or 把 Option 转成字符串
-            let sets = item.plan_sets.map_or("-".to_string(), |v| v.to_string());
-            let reps = item.plan_reps.map_or("-".to_string(), |v| v.to_string());
-            let weight = item.plan_weight.map_or("-".to_string(), |v| v.to_string());
-            // 计重方式（mode 英文存库，显示中文；None → "-"）
-            // 【M4 修订：lb2kg 移除，老数据归一化成"标准"显示】
-            let mode = item
-                .plan_mode
-                .as_deref()
-                .map(|m| match m
-                {
-                    "bar" => "杠铃",
-                    "support" => "支撑",
-                    "std" => "标准",
-                    "lb2kg" => "标准",
-                    _ => m,
-                })
-                .unwrap_or("-")
-                .to_string();
-            // 杆重（None → "-"）
-            let bar_weight = item
-                .plan_bar_weight
-                .map_or("-".to_string(), |v| v.to_string());
-            // 休息秒（None → "-"）
-            let rest = item.plan_rest.map_or("-".to_string(), |v| v.to_string());
-            format!(
-                "<tr><td>{ex_name}</td><td>{sets}</td><td>{reps}</td><td>{weight}</td>\
-                 <td>{mode}</td><td>{bar_weight}</td><td>{rest}</td></tr>",
-                ex_name = ex_name,
-                sets = sets,
-                reps = reps,
-                weight = weight,
-                mode = mode,
-                bar_weight = bar_weight,
-                rest = rest,
-            )
-        })
-        .collect::<Vec<String>>()
-        .join("\n");
-
-    // ⑤ 拼页面
-    Ok(Html(format!(
-        r#"
-        <head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
-        <h2>计划详情（{plan_date}）</h2>
-        <p>备注：{plan_note}</p>
-        <table border="1"><tr><th>动作</th><th>组数</th><th>次数</th><th>重量</th><th>计重方式</th><th>杆重</th><th>休息</th></tr>
-            {item_rows}
-        </table>
-        <p><a href="/plans/{plan_id}/edit">编辑</a> |
-        <a href="/phases/{phase_id}/plans">返回计划列表</a></p>
-        "#,
-        plan_date = current_plan.date,
-        plan_note = current_plan.note,
-        item_rows = item_rows,
-        plan_id = current_plan.id,
-        phase_id = current_plan.phase_id,
-    )))
-}
-
-// ============================================================
-// 编辑计划表单页（GET /plans/{id}/edit）
-// ============================================================
-/// 显示编辑计划表单（改日期 + 增删动作 + 改计划值）
-///
-/// 【教学：编辑子表集合 —— 比"先删后插"更好的是逐项更新】
-/// M3 计划编辑提供两件事：
-///   a. 改日期、备注（父表 UPDATE）
-///   b. 增删动作（子表集合变更，M3 简化为"重新提交整个清单"）
-/// 为了简单，M3 采用和模板一样的"先删后插"（事务内）。
-/// 注意：计划项删除后，M4 的记录若已关联 plan_item_id 会变孤儿——
-/// 所以 M3 里计划编辑仅限"当天未训练"（M4 再加强校验），
-/// 现在先实现基本 CRUD，注释里说明这个限制。
-pub async fn plan_edit_form(
-    State(state): State<AppState>,
-    AuthUser(user): AuthUser,
-    Path(plan_id): Path<i64>,
-) -> Result<Html<String>, AppError>
-{
-    // ① 查计划 + 验证归属（JOIN phases）
-    let current_plan = sqlx::query_as::<_, Plan>(
-        "SELECT p.* FROM plans p INNER JOIN phases ph ON p.phase_id = ph.id
-    WHERE p.id = ? AND ph.user_id = ?",
-    )
-    .bind(&plan_id)
-    .bind(&user.id)
-    .fetch_optional(&state.pool)
-    .await
-    .map_err(AppError::Database)?
-    .ok_or_else(|| AppError::NotFound("No plan found in such user and phase".to_string()))?;
-
-    // ② 查计划已有的计划项 → 建 exercise_id → PlanItem 索引（回显组/次/重）
-    //    不能只查 exercise_id 列表了：编辑页要给每行回显 sets/reps/weight
-    let current_items = sqlx::query_as::<_, PlanItem>("SELECT * FROM plan_items WHERE plan_id = ?")
-        .bind(&plan_id)
-        .fetch_all(&state.pool)
-        .await
-        .map_err(AppError::Database)?;
-    let item_map: HashMap<i64, PlanItem> = current_items
-        .into_iter()
-        .map(|i| (i.exercise_id, i))
-        .collect();
-
-    // ③ 查全部动作 → 每行 checkbox + 计重方式/杆重/休息 + 组/次/重输入框
-    //    【教学：前缀键方案（扩展版）】
-    //    一个动作 7 个输入，键必须唯一（serde_urlencoded map 语义，同名覆盖）：
-    //      checkbox：name = 动作 id（如 6），value = "1" —— 勾选标记
-    //      计重/杆重/休息/组/次/重：name = "{字段}_{动作id}"
-    //        （mode_6 / bar_weight_6 / rest_6 / sets_6 / reps_6 / weight_6）
-    //    提交形如：6=1&7=1&sets_6=4&reps_6=8&weight_6=60&mode_6=bar&...
-    //    前缀键互不冲突、与数字勾选键也互不冲突，全部进 flatten 的 rest。
-    //    value 回显：已选动作显示计划当前值；未选动作预填动作库默认
-    //    （勾选即用，不用二次填写）；重量/休息默认空。
+    //    需要 name（显示）+ body_part（部位）+ 默认值（新动作回显）
     let all_exercises = sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE user_id = ?")
         .bind(&user.id)
         .fetch_all(&state.pool)
         .await
         .map_err(AppError::Database)?;
+    let ex_map: HashMap<i64, Exercise> = all_exercises.iter().map(|e| (e.id, e.clone())).collect();
 
-    // ③a 【M5 修订：最近实际强度参考（不入库）】
-    //    表结构里没有"实际强度"字段（plan_items 只有 plan_weight 计划值），
-    //    用户要求不加字段，但编辑计划时能参考"上次实际完成重量"很有用
-    //    （渐进超负荷：本次计划重量应比上次实际强度略高）。
-    //    实现：按 exercise_id 取最近一条记录的 weight（同 record_form 的
-    //    ORDER BY record_date DESC, id DESC LIMIT 1 语义，聚合到每个动作），
-    //    渲染在每行作为灰字参考。纯展示、不入库，JS 零改动。
-    //    ⚠️ 数据隔离：JOIN exercises 过滤 user_id，只统计当前用户的记录。
+    // ③a 【M5 修订（随 M4 迁移到合并页）：最近实际强度参考（不入库）】
+    //    按 exercise_id 取最近一条记录的 weight，渲染在每行作灰字参考
+    //    （渐进超负荷：本次计划重量应比上次实际强度略高）
+    //    ⚠️ 数据隔离：JOIN exercises 过滤 user_id
     let last_actual_map: HashMap<i64, f64> = sqlx::query_as::<_, (i64, f64)>(
         "SELECT r.exercise_id AS \"_1\", r.weight AS \"_2\" FROM records r
          JOIN exercises e ON r.exercise_id = e.id AND e.user_id = ?
@@ -1343,7 +1352,7 @@ pub async fn plan_edit_form(
     .into_iter()
     .collect();
 
-    // ③b 部位筛选下拉框选项（从动作列表去重，动态生成）
+    // ③b 部位下拉框选项（从动作列表去重，动态生成）
     let mut part_list: Vec<String> = all_exercises
         .iter()
         .map(|ex| ex.body_part.clone())
@@ -1357,40 +1366,92 @@ pub async fn plan_edit_form(
         .collect::<Vec<String>>()
         .join("\n");
 
-    let checkbox_rows = all_exercises
+    // ③c 动作下拉框选项：value = 动作 id，文字 = 名称（JS 按部位过滤）
+    let ex_options = all_exercises
         .iter()
         .map(|ex| {
-            let item = item_map.get(&ex.id);
-            let checked = if item.is_some() { " checked" } else { "" };
-            // 回显链：计划项有值 → 用计划项；没有（未选/没设过）→ 动作库默认
+            format!(
+                r#"<option value="{id}" data-part="{part}">{name}</option>"#,
+                id = ex.id,
+                part = ex.body_part,
+                name = ex.name,
+            )
+        })
+        .collect::<Vec<String>>()
+        .join("\n");
+
+    // ③d 动作数据 JSON（JS addRow 用：名称/部位/默认组次/默认计重/杆重/要领）
+    //     key = 动作 id 字符串，value = 该动作的默认值
+    let ex_data_map: serde_json::Map<String, serde_json::Value> = all_exercises
+        .iter()
+        .map(|ex| {
+            // 【M4 修订：lb2kg 模式移除 → JSON 里直接归一化成 std】
+            let mode = if ex.default_mode == "lb2kg"
+            {
+                "std".to_string()
+            }
+            else
+            {
+                ex.default_mode.clone()
+            };
+            (
+                ex.id.to_string(),
+                serde_json::json!({
+                    "id": ex.id,
+                    "name": ex.name,
+                    "part": ex.body_part,
+                    "default_sets": ex.default_sets,
+                    "default_reps": ex.default_reps,
+                    "default_mode": mode,
+                    "bar_weight": ex.bar_weight,
+                    "key_points": ex.key_points,
+                }),
+            )
+        })
+        .collect();
+    let ex_data_json = serde_json::Value::Object(ex_data_map).to_string();
+
+    // ③e 表格行（计划项，按 sort_order 排）
+    //     回显链：计划项有值 → 用计划项；没有 → 动作库默认
+    //     每行：hidden checkbox（保证提交收集）+ 全部编辑输入 + ↑↓ + 删除
+    let item_rows = plan_items
+        .iter()
+        .map(|item| {
+            let ex = ex_map.get(&item.exercise_id);
+            // 动作名 + 部位（查不到显示 "?"，理论不发生）
+            let (ex_name, ex_part) = match ex
+            {
+                Some(e) => (e.name.clone(), e.body_part.clone()),
+                None => ("?".to_string(), "未分组".to_string()),
+            };
+            // 组/次/重/计重/杆重/休息/要领/备注 回显
             let sets = item
-                .and_then(|i| i.plan_sets)
-                .map_or(ex.default_sets.to_string(), |v| v.to_string());
+                .plan_sets
+                .map_or(ex.map_or(0, |e| e.default_sets).to_string(), |v| v.to_string());
             let reps = item
-                .and_then(|i| i.plan_reps)
-                .map_or(ex.default_reps.to_string(), |v| v.to_string());
+                .plan_reps
+                .map_or(ex.map_or(0, |e| e.default_reps).to_string(), |v| v.to_string());
             let weight = item
-                .and_then(|i| i.plan_weight)
+                .plan_weight
                 .map_or(String::new(), |v| v.to_string());
-            // 计重方式回显：计划项预设 → 动作库 default_mode
+            // 计重方式回显：计划项预设 → 动作库默认（lb2kg 老数据归一化成 std）
             let mode = item
-                .and_then(|i| i.plan_mode.clone())
-                .unwrap_or_else(|| ex.default_mode.clone());
-            // 杆重回显：计划项预设 → 动作库 bar_weight
-            let bar_weight = item
-                .and_then(|i| i.plan_bar_weight)
-                .unwrap_or(ex.bar_weight);
-            // 休息回显：只有计划项预设才有（动作库没有默认休息）
-            let rest = item
-                .and_then(|i| i.plan_rest)
-                .map_or(String::new(), |v| v.to_string());
-            // 要领回显：计划项预设 → 动作库 key_points
-            let key_points = item
-                .and_then(|i| i.plan_key_points.clone())
-                .unwrap_or_else(|| ex.key_points.clone());
-            // 计重方式下拉选项（当前模式 selected，与 record_form 同款）
-            // 【M4 修订：lb2kg 模式移除；老数据 lb2kg → std 归一化】
+                .plan_mode
+                .clone()
+                .unwrap_or_else(|| ex.map_or("std".to_string(), |e| e.default_mode.clone()));
             let mode = if mode == "lb2kg" { "std".to_string() } else { mode };
+            let bar_weight = item
+                .plan_bar_weight
+                .unwrap_or(ex.map_or(0.0, |e| e.bar_weight));
+            let rest = item
+                .plan_rest
+                .map_or(String::new(), |v| v.to_string());
+            let key_points = item
+                .plan_key_points
+                .clone()
+                .unwrap_or_else(|| ex.map_or(String::new(), |e| e.key_points.clone()));
+            let note = item.plan_note.clone().unwrap_or_default();
+            // 计重方式下拉选项（当前模式 selected，与 record_form 同款）
             let mode_options = ["bar", "support", "std"]
                 .iter()
                 .map(|m| {
@@ -1434,106 +1495,48 @@ pub async fn plan_edit_form(
                 })
                 .collect::<Vec<_>>()
                 .join("\n");
-            // 【方案 b：编辑框只在勾选时显示 + 换行】
-            // 之前编辑框直接排勾选框后面（一行塞满 7 个输入框），
-            // 手机上根本没法看。优化：
-            //   1. 整行动态切换：勾选 → 显示该行的编辑详情块；
-            //      取消勾选 → 隐藏（勾选状态变化由 JS 处理，见下方脚本）
-            //   2. 编辑详情块内每个字段单独一行，手机友好
-            //   3. 未勾选动作不渲染可见编辑框 → 页面干净、提交数据少
-            //   （注意：JS 隐藏的输入框仍会提交！所以提交键只在"已勾选且
-            //     可见"时有效——后端 plan_update 只认 exercise_ids 里的动作，
-            //     隐藏行提交的键会被忽略，无副作用）
-            //
-            // 【M5 修订：与 record_form 保持一致】
-            // 之前这 7 个输入框是裸排的，和 record_form 有这些不一致：
-            //   a. 计重方式选 std 时杆重不隐藏；选 support 时显示的
-            //      还是杆重而不是体重 —— record_form 有 mode 联动
-            //      （bar→杆重行、support→体重行、std→都隐藏）
-            //   b. "重量"直填总重 —— record_form 是"观测强度(片重) +
-            //      换算器自动算实际强度"，计划层也按这个交互来
-            //   c. 字段顺序也和 record_form 对齐：
-            //      实际强度(readonly) → 计重方式 → 杆重 → 体重 →
-            //      观测强度 → 组数 → 次数 → 休息 → 要领
-            //   d. 每行"实际强度"旁加灰字参考：该动作上次实际完成重量
-            //      （last_actual_map，不入库，见 ③a）
-            //   e. 动作级备注 plan_note：如"深蹲行程深一些"、"硬拉70kg晋级赛"
-            //      （区别于整计划 plans.note，见 0004 迁移）
-            //   所以这里给每行复刻 record_form 的换算器：
-            //     - 观测强度(plate-{id}) 不入库（无 name），只做换算输入
-            //     - 实际强度(name=weight_{id}) readonly，JS 实时换算自动填入
-            //       （存 plan_weight，编辑计划页的"实际强度"就是计划预设值）
-            //     - 杆重/体重行按 mode 显隐联动（多实例 JS，见下方脚本）
-            //     - 观测强度/杆重/体重/计重方式任一变化 → 自动重算实际强度，
-            //       不需要"填入强度"按钮（M5 打磨：按钮多余，去掉）
-            //   体重输入不入库（records/plan_items 都没有体重列），
-            //   仅 support 模式换算用（localStorage 记忆，和 record_form 同 key）
-            //   上次实际强度参考：有记录才显示
+            // 上次实际强度参考（有记录才显示灰字）
             let last_ref = last_actual_map
-                .get(&ex.id)
-                .map(|w| format!(r#"<span style="color:#888">（上次实际：{w}kg）</span>"#, w = w))
-                .unwrap_or_default();
-            // 动作备注回显：计划项预设 → 空串
-            let note = item
-                .and_then(|i| i.plan_note.clone())
+                .get(&item.exercise_id)
+                .map(|w| {
+                    format!(
+                        r#"<span style="color:#888">（上次实际：{w}kg）</span>"#,
+                        w = w
+                    )
+                })
                 .unwrap_or_default();
             format!(
-                r#"<div class="ex-row" data-part="{part}">
-                <label><input type="checkbox" name="{id}" value="1"{checked} onchange="toggleDetail({id})"> {name}</label>
-                <div id="detail-{id}" class="ex-detail"{detail_style}>
-                    <label>实际强度
-                        <input name="weight_{id}" id="weight-input-{id}" type="number" step="0.5" value="{weight}" readonly style="background:#eee; color:#888; cursor:not-allowed;">
-                    </label>{last_ref}<br>
-                    <label>计重方式
-                        <select name="mode_{id}" id="mode-{id}" class="mode-select" data-ex="{id}">{mode_options}</select>
-                    </label><br>
-                    <div id="bar-row-{id}">
-                        <label>杆重
-                            <select name="bar_weight_{id}" id="bar-{id}">{bar_weight_options}</select>
-                        </label>
-                    </div>
-                    <div id="body-row-{id}" style="display:none">
-                        <label>体重
-                            <input id="body-{id}" type="number" step="0.5" value="">
-                        </label>
-                    </div>
-                    <label>观测强度
-                        <input id="plate-{id}" type="number" step="0.5" value="">
-                        <select id="unit-{id}">
-                            <option value="kg" selected>kg</option>
-                            <option value="lb">lb</option>
-                        </select>
-                    </label>
-                    <span id="result-{id}"></span><br>
-                    <label>组数
-                        <input name="sets_{id}" type="number" step="1" value="{sets}">
-                    </label><br>
-                    <label>次数
-                        <input name="reps_{id}" type="number" step="1" value="{reps}">
-                    </label><br>
-                    <label>休息（秒）
-                        <input name="rest_{id}" type="number" step="1" value="{rest}">
-                    </label><br>
-                    <label>要领
-                        <input name="key_points_{id}" value="{key_points}" size="20">
-                    </label><br>
-                    <label>备注
-                        <input name="note_{id}" value="{note}" size="20">
-                    </label>
-                </div>
-                </div>"#,
-                part = ex.body_part,
-                id = ex.id,
-                checked = checked,
-                // 已勾选动作的详情块默认可见；未勾选默认隐藏
-                detail_style = if item.is_some() { "" } else { " style=\"display:none\"" },
-                name = ex.name,
-                mode_options = mode_options,
-                bar_weight_options = bar_weight_options,
-                rest = rest,
+                r#"<tr id="row-{ex_id}" data-part="{ex_part}">
+                <td><input type="checkbox" name="{ex_id}" value="1" checked hidden>{ex_name}</td>
+                <td><input name="sets_{ex_id}" type="number" step="1" value="{sets}"></td>
+                <td><input name="reps_{ex_id}" type="number" step="1" value="{reps}"></td>
+                <td><input name="weight_{ex_id}" id="weight-input-{ex_id}" type="number" step="0.5" value="{weight}" readonly style="background:#eee;">{last_ref}</td>
+                <td><select name="mode_{ex_id}" id="mode-{ex_id}" class="mode-select" data-ex="{ex_id}">{mode_options}</select></td>
+                <td id="bar-cell-{ex_id}"><select name="bar_weight_{ex_id}" id="bar-{ex_id}">{bar_weight_options}</select></td>
+                <td id="body-cell-{ex_id}" style="display:none"><input id="body-{ex_id}" type="number" step="0.5" value=""></td>
+                <td><input id="plate-{ex_id}" type="number" step="0.5" value="">
+                    <select id="unit-{ex_id}"><option value="kg" selected>kg</option><option value="lb">lb</option></select>
+                    <span id="result-{ex_id}"></span></td>
+                <td><input name="rest_{ex_id}" type="number" step="1" value="{rest}"></td>
+                <td><input name="key_points_{ex_id}" value="{key_points}" size="12"></td>
+                <td><input name="note_{ex_id}" value="{note}" size="12"></td>
+                <td>
+                <button type="button" onclick="submitMove('/plans/{plan_id}/items/{item_id}/move?dir=up')">↑</button>
+                <button type="button" onclick="submitMove('/plans/{plan_id}/items/{item_id}/move?dir=down')">↓</button>
+                <button type="button" onclick="removeRow({ex_id})">删除</button>
+                </td>
+                </tr>"#,
+                ex_id = item.exercise_id,
+                item_id = item.id,
+                plan_id = plan_id,
+                ex_part = ex_part,
+                ex_name = ex_name,
                 sets = sets,
                 reps = reps,
                 weight = weight,
+                mode_options = mode_options,
+                bar_weight_options = bar_weight_options,
+                rest = rest,
                 key_points = key_points,
                 note = note,
                 last_ref = last_ref,
@@ -1542,25 +1545,35 @@ pub async fn plan_edit_form(
         .collect::<Vec<String>>()
         .join("\n");
 
-    // ④ 拼表单（date + note + 动作多选 + 每动作计重/杆重/休息/组/次/重）
+    // ④ 拼页面：
+    //    - form（action=/plans/{id}/edit）：日期 + 备注 + 表格 + 保存
+    //    - 表格外"添加动作"区（部位下拉 + 动作下拉 + 添加按钮）
+    //    - JS：EX_OPTIONS + addRow/removeRow + 多实例换算器（移植自 plan_edit_form）
     Ok(Html(format!(
         r#"
         <head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
-        <h2>编辑计划</h2>
+        <h2>编辑计划（{plan_date}）</h2>
         <form method="post" action="/plans/{plan_id}/edit">
-            日期：<input type="date" name="date" value="{plan_date}"><br>
-            备注：<input name="note" value="{plan_note}"><br>
-            动作（计重/杆重/休息/组/次/重可直接修改）：<br>
-            部位筛选：
-            <select id="part_filter" onchange="filterByPart('exercise_list')">
-                <option value="">全部</option>
-                {part_options}
-            </select><br>
-            <div id="exercise_list">
-                {checkbox_rows}
-            </div>
+            日期：<input type="date" name="date" value="{plan_date}">
+            备注：<input name="note" value="{plan_note}" size="30"><br><br>
+            <table border="1">
+                <tr><th>动作</th><th>组数</th><th>次数</th><th>实际强度</th><th>计重方式</th><th>杆重/体重</th><th>观测强度换算</th><th>休息(秒)</th><th>要领</th><th>备注</th><th>操作</th></tr>
+                <tbody id="plan-items-body">
+                {item_rows}
+                </tbody>
+            </table>
             <button type="submit">保存</button>
         </form>
+        <p>添加动作：
+            <select id="part-select" onchange="filterExByPart()">
+                <option value="">全部</option>
+                {part_options}
+            </select>
+            <select id="ex-select">
+                {ex_options}
+            </select>
+            <button type="button" onclick="addRow()">添加</button>
+        </p>
         <p><a href="/phases/{phase_id}/plans">返回计划列表</a></p>
         <script>
             {javascript}
@@ -1569,37 +1582,86 @@ pub async fn plan_edit_form(
         plan_id = current_plan.id,
         plan_date = current_plan.date,
         plan_note = current_plan.note,
-        part_options = part_options,
-        checkbox_rows = checkbox_rows,
         phase_id = current_plan.phase_id,
-        javascript = r#"function toggleDetail(exId){
-                // 勾选 → 显示该动作的编辑详情块；取消勾选 → 隐藏
-                var box = document.getElementById('detail-' + exId);
-                var cb = document.querySelector('input[name="' + exId + '"]');
-                box.style.display = cb.checked ? '' : 'none';
+        part_options = part_options,
+        ex_options = ex_options,
+        item_rows = item_rows,
+        javascript = r#"var EX_OPTIONS = __EX_DATA__;
+                /* 上移/下移：页面级动态 form（不能直接嵌 <tr> 里，HTML 解析器会忽略） */
+                function submitMove(url){
+                var f = document.createElement('form');
+                f.method = 'post';
+                f.action = url;
+                f.style.display = 'none';
+                document.body.appendChild(f);
+                f.submit();
                 }
-                function filterByPart(listId){
-                var part = document.getElementById('part_filter').value;
-                document.querySelectorAll('#' + listId + ' .ex-row').forEach(function(row){
-                var show = (part === '' || row.getAttribute('data-part') === part);
-                row.style.display = show ? '' : 'none';
-                // 详情块跟随行的可见性 + 勾选态：
-                //   行隐藏 → 详情隐藏；行可见 → 详情按 checkbox 状态显示
-                var d = row.querySelector('.ex-detail');
-                if (d) {
-                var cb = row.querySelector('input[type="checkbox"]');
-                d.style.display = (show && cb.checked) ? '' : 'none';
+                function escapeHtml(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+                function modeOptions(sel){
+                var opts = [['bar','杠铃'],['support','支撑'],['std','标准']];
+                var html = '';
+                for (var i=0;i<opts.length;i++){
+                html += '<option value="' + opts[i][0] + '"' + (opts[i][0]===sel?' selected':'') + '>' + opts[i][1] + '</option>';
                 }
+                return html;
+                }
+                function barOptions(sel){
+                var opts = [['20','Olympic(20kg)'],['11.3','Smith(11.3kg)'],['10','短杠(10kg)'],['0','双边(0kg)']];
+                var html = '';
+                for (var i=0;i<opts.length;i++){
+                html += '<option value="' + opts[i][0] + '"' + (String(opts[i][0])===String(sel)?' selected':'') + '>' + opts[i][1] + '</option>';
+                }
+                return html;
+                }
+                /* ---- 添加动作：从下拉框取动作 → 按默认值克隆一行 ---- */
+                function addRow(){
+                var sel = document.getElementById('ex-select');
+                var id = sel.value;
+                if (!id) return;
+                if (document.getElementById('row-' + id)) return; // 已在表格中
+                var ex = EX_OPTIONS[String(id)];
+                if (!ex) return;
+                var tbody = document.getElementById('plan-items-body');
+                var tr = document.createElement('tr');
+                tr.id = 'row-' + id;
+                tr.setAttribute('data-part', ex.part);
+                tr.innerHTML =
+                '<td><input type="checkbox" name="' + id + '" value="1" checked hidden>' + escapeHtml(ex.name) + '</td>' +
+                '<td><input name="sets_' + id + '" type="number" step="1" value="' + ex.default_sets + '"></td>' +
+                '<td><input name="reps_' + id + '" type="number" step="1" value="' + ex.default_reps + '"></td>' +
+                '<td><input name="weight_' + id + '" id="weight-input-' + id + '" type="number" step="0.5" readonly style="background:#eee;"></td>' +
+                '<td><select name="mode_' + id + '" id="mode-' + id + '" class="mode-select" data-ex="' + id + '">' + modeOptions(ex.default_mode) + '</select></td>' +
+                '<td id="bar-cell-' + id + '"><select name="bar_weight_' + id + '" id="bar-' + id + '">' + barOptions(ex.bar_weight) + '</select></td>' +
+                '<td id="body-cell-' + id + '" style="display:none"><input id="body-' + id + '" type="number" step="0.5" value=""></td>' +
+                '<td><input id="plate-' + id + '" type="number" step="0.5" value="">' +
+                '<select id="unit-' + id + '"><option value="kg" selected>kg</option><option value="lb">lb</option></select>' +
+                '<span id="result-' + id + '"></span></td>' +
+                '<td><input name="rest_' + id + '" type="number" step="1" value=""></td>' +
+                '<td><input name="key_points_' + id + '" value="' + escapeHtml(ex.key_points) + '" size="12"></td>' +
+                '<td><input name="note_' + id + '" size="12"></td>' +
+                '<td><button type="button" onclick="removeRow(' + id + ')">删除</button></td>';
+                tbody.appendChild(tr);
+                syncModeRow(id);
+                setupRow(id);
+                filterExByPart();
+                }
+                function removeRow(id){
+                var row = document.getElementById('row-' + id);
+                if (row) row.remove();
+                }
+                /* ---- 部位筛选（添加动作下拉框） ---- */
+                function filterExByPart(){
+                var part = document.getElementById('part-select').value;
+                document.querySelectorAll('#ex-select option').forEach(function(opt){
+                opt.style.display = (part === '' || opt.getAttribute('data-part') === part) ? '' : 'none';
                 });
                 }
-                /* ---- 行级重量换算器（与 record_form 的 weight_converter.js 同逻辑，多实例版）----
-                 * record_form 是单实例（id 不带后缀），编辑计划页每行一个动作，
-                 * 所以全部 id 用 -{exId} 后缀区分。换算规则完全一致：
-                 *   bar     总重 = 杆重 + 2×片重
-                 *   support 总重 = 体重 − 支撑量（下限 0）
-                 *   std     总重 = 片重
+                /* ---- 行级重量换算器（多实例版，与 record_form 的 weight_converter.js 同逻辑）----
+                 * bar     总重 = 杆重 + 2×片重
+                 * support 总重 = 体重 − 支撑量（下限 0）
+                 * std     总重 = 片重
                  * 观测强度(plate) 不入库，只做换算；实际强度(name=weight_{exId}，
-                 * readonly) 由 JS 实时自动写入（无需"填入强度"按钮），随表单提交。
+                 * readonly) 由 JS 实时自动写入，随表单提交。
                  * 体重 input 不入库，仅 support 换算用，localStorage 记忆。
                  * 【M4 修订：单位选择在观测强度旁（unit-{exId}，kg/lb，不入库）】
                  *   lb → 先 ×0.4536 归一化成 kg 再套公式；杆重/体重固定 kg。 */
@@ -1618,8 +1680,8 @@ pub async fn plan_edit_form(
                 function roundToHalf(x){ return Math.round(x * 2) / 2; }
                 function syncModeRow(exId){
                 var mode = document.getElementById('mode-' + exId).value;
-                document.getElementById('bar-row-' + exId).style.display = (mode === 'bar') ? '' : 'none';
-                document.getElementById('body-row-' + exId).style.display = (mode === 'support') ? '' : 'none';
+                document.getElementById('bar-cell-' + exId).style.display = (mode === 'bar') ? '' : 'none';
+                document.getElementById('body-cell-' + exId).style.display = (mode === 'support') ? '' : 'none';
                 }
                 function rowTotal(exId){
                 var mode = document.getElementById('mode-' + exId).value;
@@ -1631,20 +1693,14 @@ pub async fn plan_edit_form(
                 return roundToHalf(convertWeight(mode, plate, bar, body || defaultBody, unit));
                 }
                 function updateRow(exId){
-                // 实时换算：结果显示 + 自动写入实际强度（无需按钮）
                 document.getElementById('result-' + exId).textContent = rowTotal(exId) + ' kg';
-                // 保护：只在观测强度有输入时写入实际强度
-                // —— 页面加载时 plate 为空（行里只有回显的计划实际强度），
-                //    此时写入会把回显值覆盖成"纯杆重 20"，所以不能写；
-                //    用户清空观测强度同理，保留上一次的实际强度。
                 if (document.getElementById('plate-' + exId).value !== '') {
                 document.getElementById('weight-input-' + exId).value = rowTotal(exId);
                 }
                 }
-                document.querySelectorAll('.mode-select').forEach(function(sel){
-                var exId = sel.getAttribute('data-ex');
+                function setupRow(exId){
+                var sel = document.getElementById('mode-' + exId);
                 syncModeRow(exId);
-                // 【M4 修订：单位偏好从 localStorage 带出（与 record_form 同 key）】
                 var savedUnit = localStorage.getItem('weight_converter_unit');
                 if (savedUnit === 'kg' || savedUnit === 'lb') {
                 document.getElementById('unit-' + exId).value = savedUnit;
@@ -1660,12 +1716,16 @@ pub async fn plan_edit_form(
                 localStorage.setItem('weight_converter_body', this.value);
                 updateRow(exId);
                 });
-                // 已有计划实际强度回显的行，不覆盖显示（换算结果留待用户改观测强度时出现）
                 if (document.getElementById('plate-' + exId).value === '') {
                 document.getElementById('result-' + exId).textContent = '';
                 }
+                }
+                /* 初始化：已有行全部 setup + 部位下拉联动 */
+                document.querySelectorAll('.mode-select').forEach(function(sel){
+                setupRow(sel.getAttribute('data-ex'));
                 });
-                filterByPart('exercise_list');"#
+                filterExByPart();"#
+                .replace("__EX_DATA__", &ex_data_json),
     )))
 }
 
@@ -1749,6 +1809,22 @@ pub async fn plan_update(
     //     ⚠️【外键陷阱：同 plan_delete】已训练过的计划项有 records 引用，
     //     直接删会报 FOREIGN KEY constraint failed。
     //     先解除关联（保留训练历史），再删。
+    //     【M4 修订：删前先存旧 (exercise_id → sort_order) 映射，
+    //     4.3 重新插入时沿用旧 sort_order，用户在编辑页调的排序不丢；
+    //     新添加的动作排末尾（base + 1 起）】
+    let old_items = sqlx::query_as::<_, PlanItem>(
+        "SELECT * FROM plan_items WHERE plan_id = ? ORDER BY sort_order, id",
+    )
+    .bind(&plan_id)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(AppError::Database)?;
+    let old_order: HashMap<i64, i64> = old_items
+        .iter()
+        .map(|i| (i.exercise_id, i.sort_order))
+        .collect();
+    let base_order = old_order.values().copied().max().unwrap_or(-1);
+
     sqlx::query(
         "UPDATE records SET plan_item_id = NULL
         WHERE plan_item_id IN (SELECT id FROM plan_items WHERE plan_id = ?)",
@@ -1769,8 +1845,19 @@ pub async fn plan_update(
     //    （编辑页已回显当前值，未选动作预填默认值），
     //    空字符串 → None → 存 NULL（plan_detail 显示 "-"）
     let ex_ids: Vec<i64> = form.exercise_ids();
-    for (idx, ex_id) in ex_ids.iter().enumerate()
+    let mut new_idx: i64 = 0;
+    for ex_id in ex_ids
     {
+        // 旧动作沿用旧 sort_order；新动作从 base_order+1 起递增
+        let sort_order = match old_order.get(&ex_id)
+        {
+            Some(o) => *o,
+            None =>
+            {
+                new_idx += 1;
+                base_order + new_idx
+            },
+        };
         sqlx::query(
             "INSERT INTO plan_items
             (plan_id, exercise_id, sort_order, plan_sets, plan_reps, plan_weight,
@@ -1779,15 +1866,15 @@ pub async fn plan_update(
         )
         .bind(&plan_id)
         .bind(ex_id)
-        .bind(idx as i64)
-        .bind(form.plan_sets(*ex_id))
-        .bind(form.plan_reps(*ex_id))
-        .bind(form.plan_weight(*ex_id))
-        .bind(form.plan_mode(*ex_id))
-        .bind(form.plan_bar_weight(*ex_id))
-        .bind(form.plan_rest(*ex_id))
-        .bind(form.plan_key_points(*ex_id))
-        .bind(form.plan_note(*ex_id))
+        .bind(sort_order)
+        .bind(form.plan_sets(ex_id))
+        .bind(form.plan_reps(ex_id))
+        .bind(form.plan_weight(ex_id))
+        .bind(form.plan_mode(ex_id))
+        .bind(form.plan_bar_weight(ex_id))
+        .bind(form.plan_rest(ex_id))
+        .bind(form.plan_key_points(ex_id))
+        .bind(form.plan_note(ex_id))
         .execute(&mut *tx)
         .await
         .map_err(AppError::Database)?;
@@ -1869,6 +1956,297 @@ pub async fn plan_delete(
     Ok(Redirect::to(&format!(
         "/phases/{phase_id}/plans",
         phase_id = current_plan.phase_id
+    )))
+}
+
+// ============================================================
+// 【M4 修订：排序 handler（任务 4）】模板排序 + 模板项/计划项上移下移
+// ============================================================
+// 三个 handler 共用一套思路（"重排"式 swap）：
+//   1. 查同组兄弟行（按 sort_order, id 排好）→ 找到当前行下标 i
+//   2. 目标下标 j = i ± 1（dir=up/down），越界（首/尾）直接跳过
+//   3. 事务内先重写全部 sort_order = 1..n（保证连续），再交换 i、j 两行
+//   4. Redirect 回原页面
+//
+// 为什么"先重写再交换"？
+//   模板 sort_order 是 M4 前预留的字段（恒为 0），直接 swap 两行都变 0 无效；
+//   重写 1..n 后再交换 → 每次操作都产生唯一正确的相邻顺序。
+//   （模板项/计划项的 sort_order 本来就是 1..n，重写后行为一致。）
+
+/// 查询参数：?dir=up | ?dir=down
+#[derive(Deserialize)]
+pub struct MoveQuery
+{
+    pub dir: String,
+}
+
+/// 模板上移/下移（POST /templates/{id}/sort?dir=up|down）
+/// 在【同一阶段】内交换相邻模板的 sort_order
+pub async fn template_sort(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(template_id): Path<i64>,
+    Query(query): Query<MoveQuery>,
+) -> Result<Redirect, AppError>
+{
+    // ① 验证归属：JOIN phases 拿 user_id（模板不存在/不属于你 → NotFound）
+    let current = sqlx::query_as::<_, Template>(
+        "SELECT t.* FROM templates t INNER JOIN phases p ON t.phase_id = p.id
+    WHERE t.id = ? AND p.user_id = ?",
+    )
+    .bind(&template_id)
+    .bind(&user.id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(AppError::Database)?
+    .ok_or_else(|| AppError::NotFound("No template found".to_string()))?;
+
+    // ② 查同阶段全部模板（按 sort_order, id 排）→ 找当前行下标
+    let siblings = sqlx::query_as::<_, Template>(
+        "SELECT * FROM templates WHERE phase_id = ? ORDER BY sort_order, id",
+    )
+    .bind(&current.phase_id)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(AppError::Database)?;
+    let index = siblings.iter().position(|t| t.id == template_id);
+    let Some(index) = index
+    else
+    {
+        // 理论上不发生（归属已验证），防御性处理
+        return Ok(Redirect::to(&format!(
+            "/phases/{phase_id}/templates",
+            phase_id = current.phase_id
+        )));
+    };
+    // 目标下标：up → index-1，down → index+1；越界 → 不动（首行↑/尾行↓）
+    let target = match query.dir.as_str()
+    {
+        "up" => index.checked_sub(1),
+        "down" =>
+        {
+            let t = index + 1;
+            (t < siblings.len()).then_some(t)
+        },
+        _ => return Err(AppError::Validation("dir must be up or down".to_string())),
+    };
+    let Some(target) = target
+    else
+    {
+        // 首行/尾行：无需变化，直接回列表
+        return Ok(Redirect::to(&format!(
+            "/phases/{phase_id}/templates",
+            phase_id = current.phase_id
+        )));
+    };
+
+    // ③ 事务：先重写 1..n 再交换（见文件头注释）
+    let mut tx = state.pool.begin().await.map_err(AppError::Database)?;
+    for (i, t) in siblings.iter().enumerate()
+    {
+        sqlx::query("UPDATE templates SET sort_order = ? WHERE id = ?")
+            .bind((i + 1) as i64)
+            .bind(t.id)
+            .execute(&mut *tx)
+            .await
+            .map_err(AppError::Database)?;
+    }
+    let (a, b) = (&siblings[index], &siblings[target]);
+    sqlx::query("UPDATE templates SET sort_order = ? WHERE id = ?")
+        .bind((target + 1) as i64)
+        .bind(a.id)
+        .execute(&mut *tx)
+        .await
+        .map_err(AppError::Database)?;
+    sqlx::query("UPDATE templates SET sort_order = ? WHERE id = ?")
+        .bind((index + 1) as i64)
+        .bind(b.id)
+        .execute(&mut *tx)
+        .await
+        .map_err(AppError::Database)?;
+    tx.commit().await.map_err(AppError::Database)?;
+
+    Ok(Redirect::to(&format!(
+        "/phases/{phase_id}/templates",
+        phase_id = current.phase_id
+    )))
+}
+
+/// 模板项上移/下移（POST /templates/{id}/items/{item_id}/move?dir=up|down）
+/// 同一模板内交换相邻 template_items 的 sort_order
+pub async fn template_item_move(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path((template_id, item_id)): Path<(i64, i64)>,
+    Query(query): Query<MoveQuery>,
+) -> Result<Redirect, AppError>
+{
+    // ① 验证模板归属（JOIN phases）
+    let _current = sqlx::query_as::<_, Template>(
+        "SELECT t.* FROM templates t INNER JOIN phases p ON t.phase_id = p.id
+    WHERE t.id = ? AND p.user_id = ?",
+    )
+    .bind(&template_id)
+    .bind(&user.id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(AppError::Database)?
+    .ok_or_else(|| AppError::NotFound("No template found".to_string()))?;
+
+    // ② 查同模板全部项（按 sort_order, id 排）→ 找当前行下标
+    let siblings = sqlx::query_as::<_, TemplateItem>(
+        "SELECT * FROM template_items WHERE template_id = ? ORDER BY sort_order, id",
+    )
+    .bind(&template_id)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(AppError::Database)?;
+    let index = siblings.iter().position(|i| i.id == item_id);
+    let Some(index) = index
+    else
+    {
+        return Ok(Redirect::to(&format!(
+            "/templates/{template_id}/edit",
+            template_id = template_id
+        )));
+    };
+    let target = match query.dir.as_str()
+    {
+        "up" => index.checked_sub(1),
+        "down" =>
+        {
+            let t = index + 1;
+            (t < siblings.len()).then_some(t)
+        },
+        _ => return Err(AppError::Validation("dir must be up or down".to_string())),
+    };
+    let Some(target) = target
+    else
+    {
+        return Ok(Redirect::to(&format!(
+            "/templates/{template_id}/edit",
+            template_id = template_id
+        )));
+    };
+
+    // ③ 事务：先重写 1..n 再交换
+    let mut tx = state.pool.begin().await.map_err(AppError::Database)?;
+    for (i, item) in siblings.iter().enumerate()
+    {
+        sqlx::query("UPDATE template_items SET sort_order = ? WHERE id = ?")
+            .bind((i + 1) as i64)
+            .bind(item.id)
+            .execute(&mut *tx)
+            .await
+            .map_err(AppError::Database)?;
+    }
+    let (a, b) = (&siblings[index], &siblings[target]);
+    sqlx::query("UPDATE template_items SET sort_order = ? WHERE id = ?")
+        .bind((target + 1) as i64)
+        .bind(a.id)
+        .execute(&mut *tx)
+        .await
+        .map_err(AppError::Database)?;
+    sqlx::query("UPDATE template_items SET sort_order = ? WHERE id = ?")
+        .bind((index + 1) as i64)
+        .bind(b.id)
+        .execute(&mut *tx)
+        .await
+        .map_err(AppError::Database)?;
+    tx.commit().await.map_err(AppError::Database)?;
+
+    Ok(Redirect::to(&format!(
+        "/templates/{template_id}/edit",
+        template_id = template_id
+    )))
+}
+
+/// 计划项上移/下移（POST /plans/{id}/items/{item_id}/move?dir=up|down）
+/// 同一计划内交换相邻 plan_items 的 sort_order
+pub async fn plan_item_move(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path((plan_id, item_id)): Path<(i64, i64)>,
+    Query(query): Query<MoveQuery>,
+) -> Result<Redirect, AppError>
+{
+    // ① 验证计划归属（JOIN phases）
+    let _current = sqlx::query_as::<_, Plan>(
+        "SELECT p.* FROM plans p INNER JOIN phases ph ON p.phase_id = ph.id
+    WHERE p.id = ? AND ph.user_id = ?",
+    )
+    .bind(&plan_id)
+    .bind(&user.id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(AppError::Database)?
+    .ok_or_else(|| AppError::NotFound("No plan found".to_string()))?;
+
+    // ② 查同计划全部项（按 sort_order, id 排）→ 找当前行下标
+    let siblings = sqlx::query_as::<_, PlanItem>(
+        "SELECT * FROM plan_items WHERE plan_id = ? ORDER BY sort_order, id",
+    )
+    .bind(&plan_id)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(AppError::Database)?;
+    let index = siblings.iter().position(|i| i.id == item_id);
+    let Some(index) = index
+    else
+    {
+        return Ok(Redirect::to(&format!(
+            "/plans/{plan_id}",
+            plan_id = plan_id
+        )));
+    };
+    let target = match query.dir.as_str()
+    {
+        "up" => index.checked_sub(1),
+        "down" =>
+        {
+            let t = index + 1;
+            (t < siblings.len()).then_some(t)
+        },
+        _ => return Err(AppError::Validation("dir must be up or down".to_string())),
+    };
+    let Some(target) = target
+    else
+    {
+        return Ok(Redirect::to(&format!(
+            "/plans/{plan_id}",
+            plan_id = plan_id
+        )));
+    };
+
+    // ③ 事务：先重写 1..n 再交换
+    let mut tx = state.pool.begin().await.map_err(AppError::Database)?;
+    for (i, item) in siblings.iter().enumerate()
+    {
+        sqlx::query("UPDATE plan_items SET sort_order = ? WHERE id = ?")
+            .bind((i + 1) as i64)
+            .bind(item.id)
+            .execute(&mut *tx)
+            .await
+            .map_err(AppError::Database)?;
+    }
+    let (a, b) = (&siblings[index], &siblings[target]);
+    sqlx::query("UPDATE plan_items SET sort_order = ? WHERE id = ?")
+        .bind((target + 1) as i64)
+        .bind(a.id)
+        .execute(&mut *tx)
+        .await
+        .map_err(AppError::Database)?;
+    sqlx::query("UPDATE plan_items SET sort_order = ? WHERE id = ?")
+        .bind((index + 1) as i64)
+        .bind(b.id)
+        .execute(&mut *tx)
+        .await
+        .map_err(AppError::Database)?;
+    tx.commit().await.map_err(AppError::Database)?;
+
+    Ok(Redirect::to(&format!(
+        "/plans/{plan_id}",
+        plan_id = plan_id
     )))
 }
 

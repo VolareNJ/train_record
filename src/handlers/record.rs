@@ -152,14 +152,16 @@ pub async fn today(
     .fetch_all(&state.pool)
     .await
     .map_err(AppError::Database)?;
-    let id_to_name = sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE user_id = ?")
+    let id_to_ex = sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE user_id = ?")
         .bind(&user.id)
         .fetch_all(&state.pool)
         .await
         .map_err(AppError::Database)?
         .iter()
-        .map(|e| (e.id, e.name.clone()))
-        .collect::<HashMap<i64, String>>();
+        // 【M4 修订：索引扩展成 (动作名, 身体部位) 元组】
+        // today 页要按 body_part 分组，所以索引不再只存名字
+        .map(|e| (e.id, (e.name.clone(), e.body_part.clone())))
+        .collect::<HashMap<i64, (String, String)>>();
     // 6. 每个计划项查"最近一条记录"判断状态 + 上次策略：
     //    SELECT * FROM records WHERE plan_item_id = ?
     //    ORDER BY record_date DESC, id DESC LIMIT 1
@@ -197,61 +199,89 @@ pub async fn today(
     };
 
     // 7b. 动作列表行（items_with_records = (计划项, 最近记录) 配对）
-    let item_rows = items_with_records
+    //     【M4 修订：按身体部位分组（保留计划项顺序）】
+    //     遍历 items_with_records，同一 body_part 的动作归到一组
+    //     （保序分组：Vec<(部位, Vec<行>)>，按出现顺序，不重排）。
+    //     组内顺序 = plan_items 的 sort_order（上面查询已排好）。
+    //     每个部位渲染一个小节：<h3>部位</h3> + 表格。
+    let mut groups: Vec<(String, Vec<String>)> = Vec::new();
+    for (item, last) in &items_with_records
+    {
+        // 动作名 + 部位：从索引取（查不到显示 "?" / "未分组"，理论不发生）
+        let (ex_name, body_part) = id_to_ex
+            .get(&item.exercise_id)
+            .cloned()
+            .unwrap_or_else(|| ("?".to_string(), "未分组".to_string()));
+        // 计划值：组×次，重量有就带括号（None → "-"）
+        let plan_value = format!(
+            "{}组 * {}次{}",
+            item.plan_sets.map_or("-".to_string(), |v| v.to_string()),
+            item.plan_reps.map_or("-".to_string(), |v| v.to_string()),
+            item.plan_weight
+                .map_or(String::new(), |v| format!("({v}kg)")),
+        );
+        // 状态徽标 + 上次策略提示
+        // 【M4 修订：只有 records.completed = 1 才算"已完成"】
+        //   Some(rec) 且 completed → ✅已完成
+        //   Some(rec) 但未勾选  → ⬜已记录未完成（练了但没做完/没勾）
+        //   None                → ⬜未训练
+        let (badge, strategy_hint) = match last
+        {
+            Some(rec) if rec.completed => (
+                "✅已完成".to_string(),
+                format!("上次策略：{}", rec.strategy),
+            ),
+            Some(rec) => (
+                "⬜已记录未完成".to_string(),
+                format!("上次策略：{}", rec.strategy),
+            ),
+            None => ("⬜未训练".to_string(), String::new()),
+        };
+        let row = format!(
+            "<tr><td>{ex_name}</td><td>{plan_value}</td><td>{badge}</td>\
+             <td>{strategy_hint}</td>\
+             <td><a href=\"/plans/{plan_id}/record/{item_id}\">记录/编辑</a></td></tr>",
+            ex_name = ex_name,
+            plan_value = plan_value,
+            badge = badge,
+            strategy_hint = strategy_hint,
+            plan_id = today_plan.id,
+            item_id = item.id,
+        );
+        // 保序分组：找到同部位组就追加，找不到就开新组
+        match groups.iter_mut().find(|(part, _)| *part == body_part)
+        {
+            Some((_, rows)) => rows.push(row),
+            None => groups.push((body_part, vec![row])),
+        }
+    }
+
+    // 7c. 每组渲染一个小节（<h3>部位名</h3> + 表头 + 行）
+    let grouped_html = groups
         .iter()
-        .map(|(item, last)| {
-            // 动作名：从 HashMap 索引取（查不到显示 "?"，理论不发生）
-            let ex_name = id_to_name
-                .get(&item.exercise_id)
-                .cloned()
-                .unwrap_or_else(|| "?".to_string());
-            // 计划值：组×次，重量有就带括号（None → "-"）
-            let plan_value = format!(
-                "{}组 * {}次{}",
-                item.plan_sets.map_or("-".to_string(), |v| v.to_string()),
-                item.plan_reps.map_or("-".to_string(), |v| v.to_string()),
-                item.plan_weight
-                    .map_or(String::new(), |v| format!("({v}kg)")),
-            );
-            // 状态徽标 + 上次策略提示
-            let (badge, strategy_hint) = match last
-            {
-                Some(rec) => (
-                    "✅已训练".to_string(),
-                    format!("上次策略：{}", rec.strategy),
-                ),
-                None => ("⬜未训练".to_string(), String::new()),
-            };
+        .map(|(part, rows)| {
             format!(
-                "<tr><td>{ex_name}</td><td>{plan_value}</td><td>{badge}</td>\
-                 <td>{strategy_hint}</td>\
-                 <td><a href=\"/plans/{plan_id}/record/{item_id}\">记录/编辑</a></td></tr>",
-                ex_name = ex_name,
-                plan_value = plan_value,
-                badge = badge,
-                strategy_hint = strategy_hint,
-                plan_id = today_plan.id,
-                item_id = item.id,
+                "<h3>{part}</h3>\n<table border=\"1\"><tr><th>动作</th><th>计划值</th><th>状态</th><th>上次策略</th><th>操作</th></tr>\n{rows}\n</table>",
+                part = part,
+                rows = rows.join("\n"),
             )
         })
         .collect::<Vec<String>>()
         .join("\n");
 
-    // 7c. 拼整页（风格与 M3 一致：h2 + 表格 + 返回链接）
+    // 7d. 拼整页（风格与 M3 一致：h2 + 分组小节 + 返回链接）
     Ok(Html(format!(
         r#"
         <head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
         <h2>今日训练({today_dt})</h2>
         <p>阶段：{phase_name} | 已坚持 {persist_days} 天</p>
-        <table border="1"><tr><th>动作</th><th>计划值</th><th>状态</th><th>上次策略</th><th>操作</th></tr>
-            {item_rows}
-        </table>
+        {grouped_html}
         <p><a href="/">返回首页</a></p>
         "#,
         today_dt = today_dt,
         phase_name = current_phase.name,
         persist_days = persist_days,
-        item_rows = item_rows,
+        grouped_html = grouped_html,
     )))
 }
 
@@ -544,6 +574,10 @@ pub async fn record_form(
         <p>上次参考：{last_ref}</p>
 
         <form method="post" action="/plans/{plan_id}/record/{item_id}/save">
+            <label>已完成
+                <input type="checkbox" name="completed" value="1"{completed_checked}>
+            </label><br>
+
             <label>实际强度
                 <input name="weight" id="weight-input" type="number" step="0.5" value="{prefill_weight}" readonly style="background:#eee; color:#888; cursor:not-allowed;">
             </label><br>
@@ -643,6 +677,19 @@ pub async fn record_form(
         last_ref = last_ref,
         plan_id = current_plan.id,
         item_id = plan_item.id,
+        // 【M4 修订：已完成勾选框预填最近记录状态】
+        // 编辑旧记录时回显上次勾选；新记录默认未勾选
+        completed_checked = if most_recent_record
+            .as_ref()
+            .map(|r| r.completed)
+            .unwrap_or(false)
+        {
+            " checked"
+        }
+        else
+        {
+            ""
+        },
         prefill_weight = prefill_weight,
         mode_options = mode_options,
         bar_weight_options = bar_weight_options,
@@ -773,6 +820,9 @@ pub async fn record_save(
             "重量/组数/次数/休息不能为负数".to_string(),
         ));
     }
+    // 【M4 修订：已完成标记】
+    // checkbox 勾选 → form.completed = Some("1") → true；未勾选 → None → false
+    let completed = form.completed.as_deref() == Some("1");
     // 4. 查该计划项最近一条记录（决定 INSERT 还是 UPDATE）
     let most_recent_record = sqlx::query_as::<_, Record>(
         "SELECT * FROM records WHERE plan_item_id = ?
@@ -798,7 +848,8 @@ pub async fn record_save(
         {
             sqlx::query(
                 "UPDATE records
-                SET weight = ?,
+                SET completed = ?,
+                weight = ?,
                 sets = ?,
                 reps = ?,
                 rest = ?,
@@ -808,6 +859,7 @@ pub async fn record_save(
                 mode = ?
                 WHERE id = ?",
             )
+            .bind(completed)
             .bind(&weight)
             .bind(&sets)
             .bind(&reps)
@@ -829,14 +881,15 @@ pub async fn record_save(
                 .map_err(AppError::Database)?;
             sqlx::query(
                 "INSERT INTO records
-                (plan_item_id, phase_id, exercise_id, record_date,
+                (plan_item_id, phase_id, exercise_id, record_date, completed,
                 weight, sets, reps, rest, feeling, strategy, key_points, mode)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(&plan_item.id)
             .bind(&phase.id)
             .bind(&plan_item.exercise_id)
             .bind(&today_dt)
+            .bind(completed)
             .bind(&weight)
             .bind(&sets)
             .bind(&reps)
@@ -867,6 +920,10 @@ pub async fn record_save(
 #[derive(Debug, Deserialize)]
 pub struct RecordForm
 {
+    /// 【M4 修订：已完成勾选框（表单第一个字段）】
+    /// checkbox 勾选 → 提交 completed=1 → Some("1")；未勾选 → 键不提交 → None
+    /// 只有 completed = 1 时，今日页该动作才标"✅已完成"
+    pub completed: Option<String>,
     /// 实际总重 kg（表单层 String，入库前 parse）
     pub weight: String,
     /// 实际组数

@@ -82,6 +82,8 @@ pub struct Exercise
     pub default_reps: i64,
     /// 动作要领文本
     pub key_points: String,
+    /// 部位内排序（同一 body_part 内从 1 开始；M4 修订新增）
+    pub sort_order: i64,
     pub created_at: String,
 }
 
@@ -184,5 +186,8 @@ pub struct Record
     pub key_points: String,
     /// 录入时模式
     pub mode: String,
+    /// 是否已完成（0=未完成 1=已完成；M4 修订新增）
+    /// 今日页只有 completed = 1 才标"✅已完成"
+    pub completed: bool,
     pub created_at: String,
 }
