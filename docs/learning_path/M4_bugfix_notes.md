@@ -355,3 +355,167 @@ record_form 去掉按钮后，浏览器仍报
 | 版本号破缓存 | 资源 URL 变化 → 强制重新下载，最简可靠方案 | ✅ |
 | 排查顺序 | 现象 → curl 服务器 → 浏览器无痕/版本号 | ✅ 与 §5 排查法呼应 |
 
+---
+
+## 10. M4 修订追加：表格化 + 分组排序 + 顺序配置化（vibe coding 复盘）
+
+> M4 收尾的 4 个 commit（计重方式精简 → 注释修正 → 表格化/分组/today → 列重排+顺序可配置）
+> 里，能沉淀为**跨框架通用**知识点的共 5 条。前端 DOM 细节（隐式 tbody、动态 form、
+> colspan）与 §6 同理由跳过。
+
+### 10.1 保序分组：find 追加 vs 开新组 + 稳定排序
+
+#### 需求
+
+计划/模板的编辑页要按 body_part 分组展示动作（腿/背/胸/…），
+且**组间按配置顺序排**，组内保持动作原顺序。
+
+#### 算法（Rust 通用，iced 列表分组必考 ✅）
+
+```rust
+// 第一遍：保序分组——维护 Vec<(部位, Vec<动作>)>，边遍历边找
+//   find：同部位已存在 → 追加到该组
+//   None：新部位 → 开新组
+// 第二遍：按配置顺序排序（sort_by_key）
+let mut keyed: Vec<(usize, Vec<(String, String)>)> = Vec::new();
+for row in rows
+{
+    match keyed.iter_mut().find(|(_, g)| g[0].0 == row.0)
+    {
+        Some((_, g)) => g.push(row),
+        None => keyed.push((part_rank(&row.0, order), vec![row])),
+    }
+}
+keyed.sort_by_key(|(rank, _)| *rank);
+keyed.into_iter().map(|(_, g)| g).collect()
+```
+
+**为什么最后要稳定排序**：`sort_by_key` 是**稳定排序**（相同 key 保持原相对顺序）。
+前面"保序分组"已经保证了组内顺序，如果改用不稳定排序（`sort_unstable_by_key`），
+相同 rank 的组（如配置里没有的部位）相对顺序可能被打乱——稳定排序保证确定性。
+
+#### 知识点
+
+| 知识点 | 说明 | iced 会重演吗 |
+|---|---|---|
+| 保序分组模式 | 遍历 + `find` 已存在追加 / 不存在开新组 | ✅ 分组列表常考 |
+| `sort_by_key` 稳定性 | 稳定排序：相同 key 保持输入顺序；`sort_unstable_by_key` 不保证 | ✅ 必考 |
+| 两步法 | 先"保序分组"再"按 rank 排序"，把两个目标拆成两次遍历 | ✅ 通用思维 |
+
+---
+
+### 10.2 未收录值兜底：usize::MAX 排最后
+
+#### 需求与设计
+
+配置的 BODY_PART_ORDER 只写了 6 个部位，但数据库里可能混入配置外的值
+（实测：配置写"肩部"而库里实际是"肩"——字面值不匹配）。
+分组函数对**配置里没有的部位**不能 panic，也不能挤到最前。
+
+#### 解法（容错模式，通用 ✅）
+
+```rust
+fn part_rank(part: &str, order: &[String]) -> usize
+{
+    order.iter().position(|p| p == part).unwrap_or(usize::MAX)
+}
+```
+
+- `position` 找不到 → `usize::MAX`（极大值）
+- 排序时未收录值自然沉底，且多个未收录值之间靠稳定排序保持原顺序
+
+**配套教训（数据层）**：配置的字符串必须与数据库实际字面值一致
+（`SELECT DISTINCT body_part FROM exercises` 核对，而不是拍脑袋写"肩部"）。
+
+#### 知识点
+
+| 知识点 | 说明 | iced 会重演吗 |
+|---|---|---|
+| `unwrap_or(极大值)` 兜底 | 缺失/未知值排最后，而不是崩溃或排最前 | ✅ 通用容错 |
+| 配置与数据一致性 | 配置字面值要先核对 DB 实际值 | ✅ 后端必考 |
+| 枚举缺失的安全处理 | `position`/`find` 的 None 分支必须有明确语义 | ✅ |
+
+---
+
+### 10.3 配置单一来源：环境变量 → AppConfig → 双端注入
+
+#### 需求
+
+三分化顺序"腿 > 背 > 胸 > 核心 > 手臂 > 肩"要**可配置**，且前端 JS 的排序
+也要用同一份配置——不能后端一份、前端手写一份（必然漂移）。
+
+#### 设计（架构知识点 ✅）
+
+```
+环境变量 BODY_PART_ORDER（"腿,背,胸,核心,手臂,肩"）
+  → config.rs 解析成 AppConfig.body_part_order: Vec<String>
+    → 后端：group_by_body_part(&rows, &config.body_part_order)
+    → 前端：页面里 serde_json::to_string 注入 → JS var PART_ORDER = [...]
+```
+
+前端 JS 里的 `PART_ORDER` **不是手写的常量**，而是服务端渲染时注入的变量
+（`format!` 拼接 + `serde_json::to_string` 序列化），改配置只改一处。
+
+#### 知识点
+
+| 知识点 | 说明 | iced 会重演吗 |
+|---|---|---|
+| 单一事实来源 | 配置只存一处，其他端从它派生（注入），不复制 | ✅ 架构常考 |
+| 环境变量 + 默认值模式 | `read().unwrap_or_else(默认)`，可配且不配也能跑 | ✅ 与 M0/M1 同模式 |
+| 数据注入 vs 手写 | 服务端渲染时把数据序列化进页面，避免前端重复维护 | ✅ iced 里就是 State 传递 |
+
+---
+
+### 10.4 排序号分配：MAX(sort_order) + 1 + COALESCE 空表兜底
+
+#### 需求
+
+动作库同一 body_part 内新动作排末尾：给 `exercises.sort_order` 分配"当前最大 + 1"。
+
+#### 解法（SQL 层 ✅）
+
+```sql
+SELECT COALESCE(MAX(sort_order), 0) + 1 FROM exercises WHERE user_id = ? AND body_part = ?
+```
+
+- `MAX()` 对**空集合返回 NULL**（不是 0！）
+- `COALESCE(x, 0)`：NULL → 0，保证 +1 后从 1 开始
+- 这是"先查后插"两步，不包事务——单用户并发撞号概率极低，且撞号只是
+  显示顺序并列（id 兜底排序），不会出错
+
+#### 知识点
+
+| 知识点 | 说明 | iced 会重演吗 |
+|---|---|---|
+| `MAX` 空集返回 NULL | 聚合函数对空表返回 NULL 而非 0 | ✅ 后端必考 |
+| `COALESCE` 兜底 | NULL → 默认值，SQL 版 `unwrap_or` | ✅ |
+| "先查后插"竞态取舍 | 并发概率低 + 后果可接受时可不包事务，但要写明理由 | ✅ 工程权衡 |
+
+---
+
+### 10.5 双进程运维：pkill 模式误杀 → PID 精确 kill
+
+#### 现象
+
+开发（8080）与生产（80）两个进程并存。用 `pkill -f train_record` 重启生产时，
+**把开发进程也杀了**——pkill 按命令行模式匹配，两个进程命令行都含
+`./train_record`。
+
+#### 修复（部署运维，跨框架通用 ✅）
+
+```bash
+# 精确找生产 PID（可加 grep 条件区分 cwd/参数），再 kill
+ps aux | grep -E '\./train_record' | grep -v grep | awk '{print $2}'
+kill <精确PID>
+```
+
+**纪律**：多实例并存时，进程管理一律用"先查 PID 再 kill"，禁用 pkill 模式匹配。
+
+#### 知识点
+
+| 知识点 | 说明 | iced 会重演吗 |
+|---|---|---|
+| pkill 按模式匹配 | 模式匹配会误杀所有匹配进程，多实例必踩 | ✅ 部署运维 |
+| 先查 PID 再 kill | `ps + grep + awk` 精确定位，安全重启 | ✅ |
+| 开发/生产隔离验证 | 改完先在 8080 实测，再动生产，两边数据独立 | ✅ 与 §5 呼应 |
+
