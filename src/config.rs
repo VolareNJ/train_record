@@ -88,6 +88,14 @@ pub struct AppConfig
     /// 首次启动时创建的管理员密码（环境变量 ADMIN_PASSWORD）
     /// 生产环境必须设置！默认空 = 不自动创建管理员
     pub admin_password: String,
+    /// 身体部位标准显示顺序（环境变量 BODY_PART_ORDER，逗号分隔）
+    /// 用于 today / 模板编辑 / 计划编辑三处的组间排序。
+    /// 默认 = 三分化习惯：腿 → 背 → 胸 → 核心 → 手臂 → 肩。
+    /// 【M4 修订：用户要求"加一个修改静态排序的地方"】
+    /// 方案：环境变量注入（本项目配置统一走"环境变量 + 默认值"模式），
+    /// 无需数据库迁移、无需改代码 —— 改部署环境变量即可调整顺序。
+    /// 注：部位名必须与 exercises.body_part 存的字面值一致（如"肩"非"肩部"）。
+    pub body_part_order: Vec<String>,
 }
 
 impl AppConfig
@@ -181,12 +189,23 @@ impl AppConfig
         let admin_username = read("ADMIN_USERNAME").unwrap_or_default();
         let admin_password = read("ADMIN_PASSWORD").unwrap_or_default();
 
+        // 身体部位显示顺序：BODY_PART_ORDER 逗号分隔字符串 → Vec<String>
+        // 默认三分化：腿 → 背 → 胸 → 核心 → 手臂 → 肩
+        // （用 split + filter + map + collect 函数式适配器链，空段自动丢弃）
+        let body_part_order = read("BODY_PART_ORDER")
+            .unwrap_or_else(|| "腿,背,胸,核心,手臂,肩".to_string())
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+
         Self {
             port,
             database_path,
             session_secret,
             admin_username,
             admin_password,
+            body_part_order,
         }
     }
 }
@@ -222,6 +241,11 @@ mod tests
         // 新字段：管理员默认不自动创建（空字符串）
         assert_eq!(config.admin_username, "");
         assert_eq!(config.admin_password, "");
+        // 新字段：部位顺序默认三分化（腿→背→胸→核心→手臂→肩）
+        assert_eq!(
+            config.body_part_order,
+            vec!["腿", "背", "胸", "核心", "手臂", "肩"]
+        );
     }
 
     #[test]
@@ -235,6 +259,7 @@ mod tests
             "SESSION_SECRET" => Some("my-secret".to_string()),
             "ADMIN_USERNAME" => Some("admin".to_string()),
             "ADMIN_PASSWORD" => Some("admin-pass".to_string()),
+            "BODY_PART_ORDER" => Some("背,胸,腿".to_string()),
             _ => None,
         });
         assert_eq!(config.port, 9000);
@@ -242,5 +267,6 @@ mod tests
         assert_eq!(config.session_secret, "my-secret");
         assert_eq!(config.admin_username, "admin");
         assert_eq!(config.admin_password, "admin-pass");
+        assert_eq!(config.body_part_order, vec!["背", "胸", "腿"]);
     }
 }

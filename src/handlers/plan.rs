@@ -46,7 +46,7 @@ use crate::{
     AppState,
     error::AppError,
     handlers::auth::AuthUser,
-    models::{Exercise, Phase, Plan, PlanItem, Template, TemplateItem},
+    models::{Exercise, Phase, Plan, PlanItem, Template, TemplateItem, group_by_body_part},
 };
 
 // ============================================================
@@ -507,16 +507,25 @@ pub async fn template_edit_form(
         .collect::<Vec<String>>()
         .join("\n");
 
-    // ③d 表格行（已选动作，按 sort_order 排）
-    let item_rows = current_items
+    // ③d 表格行（已选动作，按 sort_order 排，再按 body_part 分组）
+    //     【M4 修订：分组显示（单表 + 分组标题行）】
+    //     先按 sort_order 拼好"裸行"（含 data-part 供 JS 归组），
+    //     再用 group_by_body_part 分组（组间按 BODY_PART_ORDER 常量排序，
+    //     组内保持 sort_order 顺序）。
+    //     每组渲染一行 <tr class="group-header" data-part="部位"> 作分节标题，
+    //     后跟本组行 —— 单表格内分区，JS addRow 只需在组头行后插入（见下）。
+    let raw_rows = current_items
         .iter()
         .map(|item| {
-            let ex_name = ex_map
-                .get(&item.exercise_id)
+            let ex = ex_map.get(&item.exercise_id);
+            let ex_name = ex
                 .map(|e| e.name.clone())
                 .unwrap_or_else(|| "?".to_string());
-            format!(
-                r#"<tr id="ex-row-{ex_id}">
+            let part = ex
+                .map(|e| e.body_part.clone())
+                .unwrap_or_else(|| "未分组".to_string());
+            let row = format!(
+                r#"<tr id="ex-row-{ex_id}" data-part="{part}">
                 <td><input type="checkbox" name="{ex_id}" value="1" checked hidden>
                 {ex_name}</td>
                 <td>
@@ -529,6 +538,21 @@ pub async fn template_edit_form(
                 item_id = item.id,
                 template_id = template_id,
                 ex_name = ex_name,
+                part = part,
+            );
+            (part, row)
+        })
+        .collect::<Vec<_>>();
+    // 分组渲染：组头行 + 组内行（colspan = 3 列）
+    // 【M4 修订：组间顺序来自配置 AppConfig.body_part_order（环境变量可配）】
+    let item_rows = group_by_body_part(raw_rows.into_iter(), &state.config.body_part_order)
+        .iter()
+        .map(|(part, rows)| {
+            format!(
+                r#"<tr class="group-header" data-part="{part}"><td colspan="3">{part}</td></tr>
+{rows}"#,
+                part = part,
+                rows = rows.join("\n"),
             )
         })
         .collect::<Vec<String>>()
@@ -549,12 +573,18 @@ pub async fn template_edit_form(
     let ex_data_json = serde_json::to_string(&ex_data_json)
         .map_err(|_| AppError::Validation("动作数据序列化失败".to_string()))?;
 
+    // ③f 部位顺序 JSON（JS 动态组头按配置顺序插入，与后端 group_by_body_part 一致）
+    let body_part_order_json = serde_json::to_string(&state.config.body_part_order)
+        .map_err(|_| AppError::Validation("部位顺序序列化失败".to_string()))?;
+
     // ④ 拼表单：
     //    - action 指向编辑提交地址 /templates/{template_id}/edit（不是创建页！）
     //    - 模板名输入框预填当前名字 value="{name}"
     //    - 表格：已选动作行（hidden checkbox 保证提交后后端收到勾选）
     //    - 添加动作区：部位下拉 + 动作下拉 + 添加按钮（JS addRow）
     //    - 每行 ↑↓：表单用 form 属性关联外部隐藏 form（避免 form 嵌套）
+    //    【M4 修订：单表格 + 组头行分组；JS 用 PART_HEADER_MAP 记录
+    //      "部位 → 组头行 id"，addRow 新行插到对应组头行之后】
     Ok(Html(format!(
         r#"
         <head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
@@ -563,9 +593,7 @@ pub async fn template_edit_form(
             模板名：<input name="name" value="{name}" required><br>
             <table border="1">
                 <tr><th>动作</th><th>排序</th><th>操作</th></tr>
-                <tbody id="template-items-body">
                 {item_rows}
-                </tbody>
             </table>
             <button type="submit">保存</button>
         </form>
@@ -603,6 +631,23 @@ pub async fn template_edit_form(
                     opt.style.display = (part === '' || opt.getAttribute('data-part') === part) ? '' : 'none';
                 }});
             }}
+            /* 部位 → 组头行 id：addRow 插行时定位目标组 */
+            /* 【M4 修订：部位标准顺序】动态添加"新部位"时组头也按
+               配置顺序（BODY_PART_ORDER 环境变量，默认腿→背→胸→核心→手臂→肩）
+               插入，不在表内 → 末尾 */
+            var PART_ORDER = {body_part_order_json};
+            function partRank(p) {{
+                var i = PART_ORDER.indexOf(p);
+                return i === -1 ? PART_ORDER.length : i;
+            }}
+            var PART_HEADER_MAP = {{}};
+            function initPartHeaders() {{
+                PART_HEADER_MAP = {{}};
+                document.querySelectorAll('tr.group-header').forEach(function(h) {{
+                    PART_HEADER_MAP[h.getAttribute('data-part')] = h;
+                }});
+            }}
+            initPartHeaders();
             function addRow() {{
                 var sel = document.getElementById('ex-select');
                 var id = sel.value;
@@ -610,9 +655,9 @@ pub async fn template_edit_form(
                 if (document.getElementById('ex-row-' + id)) return; // 已在表格中
                 var ex = exById(id);
                 if (!ex) return;
-                var tbody = document.getElementById('template-items-body');
                 var tr = document.createElement('tr');
                 tr.id = 'ex-row-' + id;
+                tr.setAttribute('data-part', ex.part);
                 // 新行还没有 item_id，无法上移/下移 → 排序单元格留空占位
                 // （若放"待保存"按钮则必须等保存后才有 item_id，得不偿失）
                 tr.innerHTML =
@@ -620,7 +665,32 @@ pub async fn template_edit_form(
                     escapeHtml(ex.name) + '</td>' +
                     '<td></td>' +
                     '<td><button type="button" onclick="removeRow(' + id + ')">删除</button></td>';
-                tbody.appendChild(tr);
+                // 插到该部位的组头行之后（组头不存在 → 按常量顺序新建组头）
+                var header = PART_HEADER_MAP[ex.part];
+                if (header) {{
+                    header.parentNode.insertBefore(tr, header.nextSibling);
+                }} else {{
+                    var table = document.querySelector('table');
+                    var tbody = table.tBodies[0] || table; // 浏览器隐式 tbody
+                    var newHeader = document.createElement('tr');
+                    newHeader.className = 'group-header';
+                    newHeader.setAttribute('data-part', ex.part);
+                    newHeader.innerHTML = '<td colspan="3">' + escapeHtml(ex.part) + '</td>';
+                    // 找第一个标准顺序比它靠后的已有组头 → 插到其前面；否则插末尾
+                    var after = null;
+                    document.querySelectorAll('tr.group-header').forEach(function(h) {{
+                        if (after === null && partRank(h.getAttribute('data-part')) > partRank(ex.part)) {{
+                            after = h;
+                        }}
+                    }});
+                    if (after) {{
+                        tbody.insertBefore(newHeader, after);
+                    }} else {{
+                        tbody.appendChild(newHeader);
+                    }}
+                    tbody.insertBefore(tr, newHeader.nextSibling);
+                    PART_HEADER_MAP[ex.part] = newHeader;
+                }}
                 // 重新筛选下拉框（保持当前部位过滤）
                 filterExByPart();
             }}
@@ -640,6 +710,7 @@ pub async fn template_edit_form(
         ex_options = ex_options,
         item_rows = item_rows,
         ex_data_json = ex_data_json,
+        body_part_order_json = body_part_order_json,
     )))
 }
 
@@ -1411,10 +1482,24 @@ pub async fn plan_detail(
         .collect();
     let ex_data_json = serde_json::Value::Object(ex_data_map).to_string();
 
-    // ③e 表格行（计划项，按 sort_order 排）
+    // ③d 部位顺序 JSON（JS 动态组头按配置顺序插入，与后端 group_by_body_part 一致）
+    let body_part_order_json = serde_json::to_string(&state.config.body_part_order)
+        .map_err(|_| AppError::Validation("部位顺序序列化失败".to_string()))?;
+
+    // ③e 表格行（计划项，按 sort_order 排，再按 body_part 分组）
+    //     【M4 修订：列重排 + 分组】
+    //     列顺序改为：动作|备注|实际强度|计重方式|杆重/体重|观测强度换算|
+    //                组数|次数|休息|要领|操作
+    //       - 备注移到动作后（用户诉求 2：备注紧跟动作名）
+    //       - 强度相关列（实际强度/计重方式/杆重/体重/观测强度换算）在备注后、组数前
+    //       - 要领保留末尾（超长文本不撑开前段列）
+    //       - 操作永远最后
+    //     分组：先按 sort_order 拼裸行（含 data-part），
+    //           再用 group_by_body_part 分组（组间按常量排序，组内保序），
+    //           每组一行 <tr class="group-header"> 分节标题。
     //     回显链：计划项有值 → 用计划项；没有 → 动作库默认
     //     每行：hidden checkbox（保证提交收集）+ 全部编辑输入 + ↑↓ + 删除
-    let item_rows = plan_items
+    let raw_rows = plan_items
         .iter()
         .map(|item| {
             let ex = ex_map.get(&item.exercise_id);
@@ -1505,11 +1590,10 @@ pub async fn plan_detail(
                     )
                 })
                 .unwrap_or_default();
-            format!(
+            let row = format!(
                 r#"<tr id="row-{ex_id}" data-part="{ex_part}">
                 <td><input type="checkbox" name="{ex_id}" value="1" checked hidden>{ex_name}</td>
-                <td><input name="sets_{ex_id}" type="number" step="1" value="{sets}"></td>
-                <td><input name="reps_{ex_id}" type="number" step="1" value="{reps}"></td>
+                <td><input name="note_{ex_id}" value="{note}" size="12"></td>
                 <td><input name="weight_{ex_id}" id="weight-input-{ex_id}" type="number" step="0.5" value="{weight}" readonly style="background:#eee;">{last_ref}</td>
                 <td><select name="mode_{ex_id}" id="mode-{ex_id}" class="mode-select" data-ex="{ex_id}">{mode_options}</select></td>
                 <td id="bar-cell-{ex_id}"><select name="bar_weight_{ex_id}" id="bar-{ex_id}">{bar_weight_options}</select></td>
@@ -1517,9 +1601,10 @@ pub async fn plan_detail(
                 <td><input id="plate-{ex_id}" type="number" step="0.5" value="">
                     <select id="unit-{ex_id}"><option value="kg" selected>kg</option><option value="lb">lb</option></select>
                     <span id="result-{ex_id}"></span></td>
+                <td><input name="sets_{ex_id}" type="number" step="1" value="{sets}"></td>
+                <td><input name="reps_{ex_id}" type="number" step="1" value="{reps}"></td>
                 <td><input name="rest_{ex_id}" type="number" step="1" value="{rest}"></td>
                 <td><input name="key_points_{ex_id}" value="{key_points}" size="12"></td>
-                <td><input name="note_{ex_id}" value="{note}" size="12"></td>
                 <td>
                 <button type="button" onclick="submitMove('/plans/{plan_id}/items/{item_id}/move?dir=up')">↑</button>
                 <button type="button" onclick="submitMove('/plans/{plan_id}/items/{item_id}/move?dir=down')">↓</button>
@@ -1540,6 +1625,20 @@ pub async fn plan_detail(
                 key_points = key_points,
                 note = note,
                 last_ref = last_ref,
+            );
+            (ex_part, row)
+        })
+        .collect::<Vec<_>>();
+    // 分组渲染：组头行 + 组内行（colspan = 11 列）
+    // 【M4 修订：组间顺序来自配置 AppConfig.body_part_order（环境变量可配）】
+    let item_rows = group_by_body_part(raw_rows.into_iter(), &state.config.body_part_order)
+        .iter()
+        .map(|(part, rows)| {
+            format!(
+                r#"<tr class="group-header" data-part="{part}"><td colspan="11">{part}</td></tr>
+{rows}"#,
+                part = part,
+                rows = rows.join("\n"),
             )
         })
         .collect::<Vec<String>>()
@@ -1557,10 +1656,8 @@ pub async fn plan_detail(
             日期：<input type="date" name="date" value="{plan_date}">
             备注：<input name="note" value="{plan_note}" size="30"><br><br>
             <table border="1">
-                <tr><th>动作</th><th>组数</th><th>次数</th><th>实际强度</th><th>计重方式</th><th>杆重/体重</th><th>观测强度换算</th><th>休息(秒)</th><th>要领</th><th>备注</th><th>操作</th></tr>
-                <tbody id="plan-items-body">
+                <tr><th>动作</th><th>备注</th><th>实际强度</th><th>计重方式</th><th>杆重/体重</th><th>观测强度换算</th><th>组数</th><th>次数</th><th>休息(秒)</th><th>要领</th><th>操作</th></tr>
                 {item_rows}
-                </tbody>
             </table>
             <button type="submit">保存</button>
         </form>
@@ -1614,6 +1711,24 @@ pub async fn plan_detail(
                 return html;
                 }
                 /* ---- 添加动作：从下拉框取动作 → 按默认值克隆一行 ---- */
+                /* 【M4 修订：列序与组头对齐】
+                   动作 | 备注 | 实际强度 | 计重方式 | 杆重/体重 | 观测强度换算 |
+                   组数 | 次数 | 休息 | 要领 | 操作 （11 列，组头 colspan=11） */
+                /* 部位标准顺序（与服务端 group_by_body_part 同一配置注入）：
+                   动态添加"新部位"时，组头也按此顺序插入（不在表内 → 排最后） */
+                var PART_ORDER = __PART_ORDER__;
+                function partRank(p){
+                var i = PART_ORDER.indexOf(p);
+                return i === -1 ? PART_ORDER.length : i;
+                }
+                var PART_HEADER_MAP = {};
+                function initPartHeaders(){
+                PART_HEADER_MAP = {};
+                document.querySelectorAll('tr.group-header').forEach(function(h){
+                PART_HEADER_MAP[h.getAttribute('data-part')] = h;
+                });
+                }
+                initPartHeaders();
                 function addRow(){
                 var sel = document.getElementById('ex-select');
                 var id = sel.value;
@@ -1621,14 +1736,12 @@ pub async fn plan_detail(
                 if (document.getElementById('row-' + id)) return; // 已在表格中
                 var ex = EX_OPTIONS[String(id)];
                 if (!ex) return;
-                var tbody = document.getElementById('plan-items-body');
                 var tr = document.createElement('tr');
                 tr.id = 'row-' + id;
                 tr.setAttribute('data-part', ex.part);
                 tr.innerHTML =
                 '<td><input type="checkbox" name="' + id + '" value="1" checked hidden>' + escapeHtml(ex.name) + '</td>' +
-                '<td><input name="sets_' + id + '" type="number" step="1" value="' + ex.default_sets + '"></td>' +
-                '<td><input name="reps_' + id + '" type="number" step="1" value="' + ex.default_reps + '"></td>' +
+                '<td><input name="note_' + id + '" size="12"></td>' +
                 '<td><input name="weight_' + id + '" id="weight-input-' + id + '" type="number" step="0.5" readonly style="background:#eee;"></td>' +
                 '<td><select name="mode_' + id + '" id="mode-' + id + '" class="mode-select" data-ex="' + id + '">' + modeOptions(ex.default_mode) + '</select></td>' +
                 '<td id="bar-cell-' + id + '"><select name="bar_weight_' + id + '" id="bar-' + id + '">' + barOptions(ex.bar_weight) + '</select></td>' +
@@ -1636,11 +1749,37 @@ pub async fn plan_detail(
                 '<td><input id="plate-' + id + '" type="number" step="0.5" value="">' +
                 '<select id="unit-' + id + '"><option value="kg" selected>kg</option><option value="lb">lb</option></select>' +
                 '<span id="result-' + id + '"></span></td>' +
+                '<td><input name="sets_' + id + '" type="number" step="1" value="' + ex.default_sets + '"></td>' +
+                '<td><input name="reps_' + id + '" type="number" step="1" value="' + ex.default_reps + '"></td>' +
                 '<td><input name="rest_' + id + '" type="number" step="1" value=""></td>' +
                 '<td><input name="key_points_' + id + '" value="' + escapeHtml(ex.key_points) + '" size="12"></td>' +
-                '<td><input name="note_' + id + '" size="12"></td>' +
                 '<td><button type="button" onclick="removeRow(' + id + ')">删除</button></td>';
-                tbody.appendChild(tr);
+                /* 插到该部位的组头行之后（组头不存在 → 按常量顺序新建组头） */
+                var header = PART_HEADER_MAP[ex.part];
+                if (header) {
+                header.parentNode.insertBefore(tr, header.nextSibling);
+                } else {
+                var table = document.querySelector('table');
+                var tbody = table.tBodies[0] || table; // 浏览器隐式 tbody
+                var newHeader = document.createElement('tr');
+                newHeader.className = 'group-header';
+                newHeader.setAttribute('data-part', ex.part);
+                newHeader.innerHTML = '<td colspan="11">' + escapeHtml(ex.part) + '</td>';
+                /* 找第一个标准顺序比它靠后的已有组头 → 插到其前面；否则插末尾 */
+                var after = null;
+                document.querySelectorAll('tr.group-header').forEach(function(h){
+                if (after === null && partRank(h.getAttribute('data-part')) > partRank(ex.part)) {
+                after = h;
+                }
+                });
+                if (after) {
+                tbody.insertBefore(newHeader, after);
+                } else {
+                tbody.appendChild(newHeader);
+                }
+                tbody.insertBefore(tr, newHeader.nextSibling);
+                PART_HEADER_MAP[ex.part] = newHeader;
+                }
                 syncModeRow(id);
                 setupRow(id);
                 filterExByPart();
@@ -1725,7 +1864,8 @@ pub async fn plan_detail(
                 setupRow(sel.getAttribute('data-ex'));
                 });
                 filterExByPart();"#
-                .replace("__EX_DATA__", &ex_data_json),
+                .replace("__EX_DATA__", &ex_data_json)
+                .replace("__PART_ORDER__", &body_part_order_json),
     )))
 }
 

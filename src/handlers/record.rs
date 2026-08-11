@@ -34,7 +34,7 @@ use crate::{
     AppState,
     error::AppError,
     handlers::auth::AuthUser,
-    models::{Exercise, Phase, Plan, PlanItem, Record},
+    models::{Exercise, Phase, Plan, PlanItem, Record, group_by_body_part},
 };
 
 // ============================================================
@@ -199,12 +199,14 @@ pub async fn today(
     };
 
     // 7b. 动作列表行（items_with_records = (计划项, 最近记录) 配对）
-    //     【M4 修订：按身体部位分组（保留计划项顺序）】
+    //     【M4 修订：按身体部位分组 + 组间标准排序】
     //     遍历 items_with_records，同一 body_part 的动作归到一组
     //     （保序分组：Vec<(部位, Vec<行>)>，按出现顺序，不重排）。
     //     组内顺序 = plan_items 的 sort_order（上面查询已排好）。
+    //     组间顺序 = models::BODY_PART_ORDER 常量（背→胸→肩→核心→腿→手臂），
+    //     与模板编辑页/计划详情页一致（未收录部位按出现顺序兜底）。
     //     每个部位渲染一个小节：<h3>部位</h3> + 表格。
-    let mut groups: Vec<(String, Vec<String>)> = Vec::new();
+    let mut groups: Vec<(String, String)> = Vec::new();
     for (item, last) in &items_with_records
     {
         // 动作名 + 部位：从索引取（查不到显示 "?" / "未分组"，理论不发生）
@@ -248,13 +250,13 @@ pub async fn today(
             plan_id = today_plan.id,
             item_id = item.id,
         );
-        // 保序分组：找到同部位组就追加，找不到就开新组
-        match groups.iter_mut().find(|(part, _)| *part == body_part)
-        {
-            Some((_, rows)) => rows.push(row),
-            None => groups.push((body_part, vec![row])),
-        }
+        // 保序分组 → 组间标准排序：group_by_body_part 返回
+        //   按配置顺序排好的 (部位, 行列表)，组内保持本处顺序
+        groups.push((body_part, row));
     }
+    // 统一交给 group_by_body_part（保序分组 + 组间配置排序）
+    // 【M4 修订：顺序来自 AppConfig.body_part_order（环境变量可配）】
+    let groups = group_by_body_part(groups.into_iter(), &state.config.body_part_order);
 
     // 7c. 每组渲染一个小节（<h3>部位名</h3> + 表头 + 行）
     let grouped_html = groups
