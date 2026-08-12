@@ -2055,6 +2055,25 @@ pub async fn plan_update(
         .collect();
     let base_order = old_order.values().copied().max().unwrap_or(-1);
 
+    // ⚠️【M5 修订：重新关联训练记录】
+    // 解除关联前先备份 (exercise_id → record_id 列表)，
+    // 4.3 重建 plan_items（新 id）后按此清单精确还原——
+    // 否则 today 页/record_form 按 plan_item_id 查记录 → 全部"未训练"！
+    // 不能事后按 (plan_id, exercise_id) 猜，会误捞其他计划/历史遗留的 NULL 记录。
+    let orphaned: HashMap<i64, Vec<i64>> = sqlx::query_as::<_, (i64, i64)>(
+        "SELECT r.exercise_id, r.id FROM records r
+        WHERE r.plan_item_id IN (SELECT id FROM plan_items WHERE plan_id = ?)",
+    )
+    .bind(&plan_id)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(AppError::Database)?
+    .into_iter()
+    .fold(HashMap::new(), |mut acc, (ex_id, rec_id)| {
+        acc.entry(ex_id).or_default().push(rec_id);
+        acc
+    });
+
     sqlx::query(
         "UPDATE records SET plan_item_id = NULL
         WHERE plan_item_id IN (SELECT id FROM plan_items WHERE plan_id = ?)",
@@ -2074,6 +2093,10 @@ pub async fn plan_update(
     //    组/次/重/计重方式/杆重/休息/要领直接来自表单
     //    （编辑页已回显当前值，未选动作预填默认值），
     //    空字符串 → None → 存 NULL（plan_detail 显示 "-"）
+    //    ⚠️【M5 修订：重建后按备份清单精确还原记录关联】
+    //    4.2 已把该计划下所有 records.plan_item_id 置 NULL（外键防冲突），
+    //    重建的 plan_items 是新 id——这里用 orphaned 清单还原：
+    //    同一计划内每个动作唯一，exercise_id → 新 plan_item_id 一一对应。
     let ex_ids: Vec<i64> = form.exercise_ids();
     let mut new_idx: i64 = 0;
     for ex_id in ex_ids
@@ -2088,7 +2111,7 @@ pub async fn plan_update(
                 base_order + new_idx
             },
         };
-        sqlx::query(
+        let result = sqlx::query(
             "INSERT INTO plan_items
             (plan_id, exercise_id, sort_order, plan_sets, plan_reps, plan_weight,
             plan_mode, plan_bar_weight, plan_rest, plan_key_points, plan_note)
@@ -2108,6 +2131,22 @@ pub async fn plan_update(
         .execute(&mut *tx)
         .await
         .map_err(AppError::Database)?;
+        let new_item_id = result.last_insert_rowid();
+
+        // 精确还原：仅把备份清单中该动作的记录挂回新 plan_item_id
+        //（逐条 UPDATE，避免依赖 SQLite JSON1 扩展）
+        if let Some(rec_ids) = orphaned.get(&ex_id)
+        {
+            for rec_id in rec_ids
+            {
+                sqlx::query("UPDATE records SET plan_item_id = ? WHERE id = ?")
+                    .bind(new_item_id)
+                    .bind(rec_id)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(AppError::Database)?;
+            }
+        }
     }
 
     // ⑤ 提交
