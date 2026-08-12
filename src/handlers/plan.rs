@@ -2113,9 +2113,14 @@ pub async fn plan_update(
     // ⑤ 提交
     tx.commit().await.map_err(AppError::Database)?;
 
+    // ⑥ 重定向回计划列表（本阶段的 plans 列表页）
+    //     【M5 修订：原重定向回 /plans/{plan_id}（编辑页自身），
+    //     用户要求保存后离开编辑态，回到列表。】
+    //     ⚠️ 不能跳裸 /plans（无该路由，会 404）——计划列表挂在阶段下：
+    //     GET /phases/{phase_id}/plans（main.rs 已注册）
     Ok(Redirect::to(&format!(
-        "/plans/{plan_id}",
-        plan_id = current_plan.id
+        "/phases/{phase_id}/plans",
+        phase_id = current_plan.phase_id
     )))
 }
 
