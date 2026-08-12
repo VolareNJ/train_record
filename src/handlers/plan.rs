@@ -1359,7 +1359,7 @@ pub async fn plan_create(
 /// 旧版：plan_detail 只读表格 + 独立的 plan_edit_form 编辑页（checkbox 列表）。
 /// 新版：两页合并 —— GET /plans/{id} 直接是"表格形式的编辑页"：
 ///   - 上面：日期 + 备注 input（随表单提交）
-///   - 中间：表格（动作 | 组数 | 次数 | 实际强度 | 计重方式 | 杆重/体重 |
+///   - 中间：表格（动作 | 组数 | 次数 | 实际强度 | 计重方式 | 杆重/支撑 |
 ///           观测强度换算 | 休息 | 要领 | 备注 | 操作）
 ///   - 每行一个 hidden checkbox（name=动作id，value=1，checked）
 ///     → 提交时 exercise_ids() 收集到"仍存在于 DOM 的行"；
@@ -1403,12 +1403,13 @@ pub async fn plan_detail(
         .map_err(AppError::Database)?;
     let ex_map: HashMap<i64, Exercise> = all_exercises.iter().map(|e| (e.id, e.clone())).collect();
 
-    // ③a 【M5 修订（随 M4 迁移到合并页）：最近实际强度参考（不入库）】
-    //    按 exercise_id 取最近一条记录的 weight，渲染在每行作灰字参考
-    //    （渐进超负荷：本次计划重量应比上次实际强度略高）
+    // ③a 【M5 修订（随 M4 迁移到合并页）：最近记录参考（不入库）】
+    //    按 exercise_id 取最近一条记录的 weight + strategy，渲染在每行作灰字参考
+    //    （渐进超负荷：本次计划重量应比上次实际强度略高；
+    //     最近策略提示上次怎么安排的 —— 用户诉求 2）
     //    ⚠️ 数据隔离：JOIN exercises 过滤 user_id
-    let last_actual_map: HashMap<i64, f64> = sqlx::query_as::<_, (i64, f64)>(
-        "SELECT r.exercise_id AS \"_1\", r.weight AS \"_2\" FROM records r
+    let last_record_map: HashMap<i64, (f64, String)> = sqlx::query_as::<_, (i64, f64, String)>(
+        "SELECT r.exercise_id AS \"_1\", r.weight AS \"_2\", r.strategy AS \"_3\" FROM records r
          JOIN exercises e ON r.exercise_id = e.id AND e.user_id = ?
          JOIN (
              SELECT exercise_id, MAX(record_date || '#' || printf('%010d', id)) AS k
@@ -1421,6 +1422,7 @@ pub async fn plan_detail(
     .await
     .map_err(AppError::Database)?
     .into_iter()
+    .map(|(ex_id, w, s)| (ex_id, (w, s)))
     .collect();
 
     // ③b 部位下拉框选项（从动作列表去重，动态生成）
@@ -1495,10 +1497,10 @@ pub async fn plan_detail(
 
     // ③e 表格行（计划项，按 sort_order 排，再按 body_part 分组）
     //     【M4 修订：列重排 + 分组】
-    //     列顺序改为：动作|备注|实际强度|计重方式|杆重/体重|观测强度换算|
+    //     列顺序改为：动作|备注|实际强度|计重方式|杆重/支撑|观测强度换算|
     //                组数|次数|休息|要领|操作
     //       - 备注移到动作后（用户诉求 2：备注紧跟动作名）
-    //       - 强度相关列（实际强度/计重方式/杆重/体重/观测强度换算）在备注后、组数前
+    //       - 强度相关列（实际强度/计重方式/杆重/支撑/观测强度换算）在备注后、组数前
     //       - 要领保留末尾（超长文本不撑开前段列）
     //       - 操作永远最后
     //     分组：先按 sort_order 拼裸行（含 data-part），
@@ -1587,23 +1589,37 @@ pub async fn plan_detail(
                 })
                 .collect::<Vec<_>>()
                 .join("\n");
-            // 上次实际强度参考（有记录才显示灰字）
-            let last_ref = last_actual_map
+            // 上次记录参考（有记录才显示灰字）：实际强度 + 最近策略
+            //     【M5 修订：用户诉求 2 —— 备注列旁显示最近一次 strategy】
+            //     策略是"上次怎么安排的"（如"维持"、"加 5kg"），训练时
+            //     参考它决定这次怎么调，和上次实际强度一样是渐进超负荷参照物。
+            let last_actual_ref = last_record_map
                 .get(&item.exercise_id)
-                .map(|w| {
+                .map(|(w, _)| {
                     format!(
                         r#"<span style="color:#888">（上次实际：{w}kg）</span>"#,
                         w = w
                     )
                 })
                 .unwrap_or_default();
-            // 【M5 修订：Bug 1 —— 杆重/体重列合并成单 td + std 占位符】
+            let last_strategy_ref = last_record_map
+                .get(&item.exercise_id)
+                .map(|(_, s)| s.clone())
+                .filter(|s| !s.is_empty())
+                .map(|s| {
+                    format!(
+                        r#"<br><span style="color:#888;font-size:0.85em">上次策略：{s}</span>"#,
+                        s = s
+                    )
+                })
+                .unwrap_or_default();
+            // 【M5 修订：Bug 1 —— 杆重/支撑列合并成单 td + std 占位符】
             // 旧版拆两个 td（bar-cell + body-cell），std 模式两个都 display:none
             // → 该行可见 td 少 2 个，与 11 列表头错位（用户报告的错位 bug 根因）。
             // 新版合并为一个 td：内含三种状态，只显示一个：
             //   bar    → 杆重下拉（select）
             //   support → 体重输入（input，预填全局体重）
-            //   std    → 占位符 "N/A"（该模式不需要杆重/体重）
+            //   std    → 占位符 "N/A"（该模式不需要杆重/支撑）
             // 列数恒为 11，不再塌陷。
             let bar_body_cell = format!(
                 r#"<td id="bar-body-cell-{ex_id}">
@@ -1618,8 +1634,8 @@ pub async fn plan_detail(
             let row = format!(
                 r#"<tr id="row-{ex_id}" data-part="{ex_part}">
                 <td><input type="checkbox" name="{ex_id}" value="1" checked hidden>{ex_name}</td>
-                <td><input name="note_{ex_id}" value="{note}" size="12"></td>
-                <td><input name="weight_{ex_id}" id="weight-input-{ex_id}" type="number" step="0.5" value="{weight}" readonly style="background:#eee;">{last_ref}</td>
+                <td><input name="note_{ex_id}" value="{note}" size="12">{last_strategy_ref}</td>
+                <td><input name="weight_{ex_id}" id="weight-input-{ex_id}" type="number" step="0.5" value="{weight}" readonly style="background:#eee;">{last_actual_ref}</td>
                 <td><select name="mode_{ex_id}" id="mode-{ex_id}" class="mode-select" data-ex="{ex_id}">{mode_options}</select></td>
                 {bar_body_cell}
                 <td><input id="plate-{ex_id}" type="number" step="0.5" value="">
@@ -1647,7 +1663,8 @@ pub async fn plan_detail(
                 rest = rest,
                 key_points = key_points,
                 note = note,
-                last_ref = last_ref,
+                last_actual_ref = last_actual_ref,
+                last_strategy_ref = last_strategy_ref,
                 bar_body_cell = bar_body_cell,
             );
             (ex_part, row)
@@ -1680,7 +1697,7 @@ pub async fn plan_detail(
             日期：<input type="date" name="date" value="{plan_date}">
             备注：<input name="note" value="{plan_note}" size="30"><br><br>
             <table border="1">
-                <tr><th>动作</th><th>备注</th><th>实际强度</th><th>计重方式</th><th>杆重/体重</th><th>观测强度换算</th><th>组数</th><th>次数</th><th>休息(秒)</th><th>要领</th><th>操作</th></tr>
+                <tr><th>动作</th><th>备注</th><th>实际强度</th><th>计重方式</th><th>杆重/支撑</th><th>观测强度换算</th><th>组数</th><th>次数</th><th>休息(秒)</th><th>要领</th><th>操作</th></tr>
                 {item_rows}
             </table>
             <button type="submit">保存</button>
@@ -1739,7 +1756,7 @@ pub async fn plan_detail(
                 }
                 /* ---- 添加动作：从下拉框取动作 → 按默认值克隆一行 ---- */
                 /* 【M4 修订：列序与组头对齐】
-                   动作 | 备注 | 实际强度 | 计重方式 | 杆重/体重 | 观测强度换算 |
+                   动作 | 备注 | 实际强度 | 计重方式 | 杆重/支撑 | 观测强度换算 |
                    组数 | 次数 | 休息 | 要领 | 操作 （11 列，组头 colspan=11） */
                 /* 部位标准顺序（与服务端 group_by_body_part 同一配置注入）：
                    动态添加"新部位"时，组头也按此顺序插入（不在表内 → 排最后） */
@@ -1833,7 +1850,7 @@ pub async fn plan_detail(
                  * readonly) 由 JS 实时自动写入，随表单提交。
                  * 体重 input 不入库，仅 support 换算用，localStorage 记忆。
                  * 【M4 修订：单位选择在观测强度旁（unit-{exId}，kg/lb，不入库）】
-                 *   lb → 先 ×0.4536 归一化成 kg 再套公式；杆重/体重固定 kg。 */
+                 *   lb → 先 ×0.4536 归一化成 kg 再套公式；杆重/支撑固定 kg。 */
                 function convertWeight(mode, plate, bar, body, unit){
                 var raw = Number(plate) || 0;
                 var barKg = Number(bar) || 0;
@@ -1867,7 +1884,7 @@ pub async fn plan_detail(
                 return (unit === 'lb') ? plateKg / 0.4536 : plateKg;
                 }
                 /* 【M5 修订：Bug 1 —— 单 td 三态切换】
-                 * 杆重/体重列合并后，syncModeRow 控制 td 内三个子元素的显隐：
+                 * 杆重/支撑列合并后，syncModeRow 控制 td 内三个子元素的显隐：
                  *   bar     → 显示杆重 select
                  *   support → 显示体重 input
                  *   std     → 显示 "N/A" 占位符

@@ -940,6 +940,24 @@ pub async fn record_save(
             .map_err(AppError::Database)?;
         },
     }
+    // 6.5 【M5 修订：用户诉求 0 —— 记录里的要领回写动作库】
+    //     record_form 的要领预填自动作库（key_points），训练时用户常会
+    //     边练边修正（"行程深一些"、"手腕中立"），这些修正比动作库的
+    //     通用描述更贴合本人，保存记录时同步回 exercises.key_points。
+    //     下次任何计划用这个动作，要领都是更新后的版本。
+    //     ⚠️ 只回写非空值：空字符串说明用户清空了（有意或无意），
+    //        不覆盖动作库的默认描述。
+    //     ⚠️ 数据隔离：WHERE id = ? AND user_id = ?（按 id 查询必须带 user_id）
+    if !form.key_points.trim().is_empty()
+    {
+        sqlx::query("UPDATE exercises SET key_points = ? WHERE id = ? AND user_id = ?")
+            .bind(&form.key_points)
+            .bind(&plan_item.exercise_id)
+            .bind(&user.id)
+            .execute(&state.pool)
+            .await
+            .map_err(AppError::Database)?;
+    }
     // 7. 重定向回 /today（今日页刷新后显示 ✅ 已训练）
     Ok(Redirect::to("/today"))
 }
