@@ -225,6 +225,7 @@ WHERE plan_item_id IN (SELECT id FROM plan_items WHERE plan_id = ?);
 5. **输入净化链**（BUG 1 + 3）：前端隐藏 ≠ 不提交，后端永远白名单校验
 6. **自动计算保护条件**（§9.1）：自动联动写值要区分"初始回显"与"用户输入"，空输入 ≠ 0
 7. **迁移设计约束**（§9.2）：SQLite `ADD COLUMN` 只能加 NULL/带默认值列，新列对老数据 = NULL，模型必须 `Option`
+8. **修复副作用 / 先删后插**（§11）：修 bug 的手段可能埋下新雷；DELETE+INSERT 重建主键后必须把引用方挂回去
 
 ---
 
@@ -238,6 +239,7 @@ WHERE plan_item_id IN (SELECT id FROM plan_items WHERE plan_id = ?);
 | 4 | 删除计划报外键错误 | records 引用 plan_items，删被引用的行违反约束 | 外键删除策略 |
 | 5 | 自动更新覆盖回显值 | JS 无条件写 weight，把计划回显 60 覆盖成杆重 20 | 自动计算要保护条件 |
 | 6 | 改了代码但没生效 | 浏览器缓存旧 JS，curl 却看到新文件 | 版本号破缓存 |
+| 7 | 训练了但 today 显示未训练 | plan_update 先删后插重建新 id，records.plan_item_id 没挂回去 | 备份-重建-还原三阶段 |
 
 ---
 
@@ -518,4 +520,96 @@ kill <精确PID>
 | pkill 按模式匹配 | 模式匹配会误杀所有匹配进程，多实例必踩 | ✅ 部署运维 |
 | 先查 PID 再 kill | `ps + grep + awk` 精确定位，安全重启 | ✅ |
 | 开发/生产隔离验证 | 改完先在 8080 实测，再动生产，两边数据独立 | ✅ 与 §5 呼应 |
+
+---
+
+## 11. 修复的副作用：plan_update 先删后插 → 记录关联断裂（vibe coding 复盘）
+
+> **最有教学价值的一节**：§4 修的 bug（删除计划外键报错）和本节 bug 是**同一段代码**
+> 的两次交手——§4 用"置 NULL 解除关联"修复了外键问题，但留下了"关联永久丢失"
+> 的隐患，实际使用中才暴露。这叫**修复副作用**：修一个 bug 引入下一个。
+
+### 现象
+
+生产环境：用户今天胸训练完了（数据库里 7 条记录都在），但：
+
+- today 页显示这些动作"⬜未训练"
+- record_form（记录/编辑页）也查不到记录
+- **plan_detail 的"上次训练提示"却正常显示**（如"上次 2026-08-12: 35kg × 2组 × 15次"）
+
+### 根因（数据关联层，iced + 后端必考 ⚠️）
+
+`plan_update`（编辑计划保存）的事务是**先删后插**：
+
+```sql
+-- ① 解除关联（§4 的外键修复：防 DELETE 时外键约束失败）
+UPDATE records SET plan_item_id = NULL
+WHERE plan_item_id IN (SELECT id FROM plan_items WHERE plan_id = ?);
+-- ② 删旧计划项
+DELETE FROM plan_items WHERE plan_id = ?;
+-- ③ 按表单重新插入 → 生成全新 id（如 205 → 219）
+INSERT INTO plan_items ...;
+```
+
+③ 重建的 plan_items 是**新 id**，但 ① 把 records.plan_item_id 置 NULL 后
+**没有重新挂回去**。查数据库一眼可见：今天的记录全在（weight/sets/feeling 都完好），
+但 `plan_item_id` 全部是 NULL。
+
+**为什么三个页面表现不一致？** 因为查询口径不同：
+
+| 页面 | 查询口径 | 结果 |
+|---|---|---|
+| today 页 / record_form | 按 `plan_item_id` 查记录 | 关联断了 → 显示未训练 |
+| plan_detail 上次提示 | 按 `exercise_id` 查最近记录 | 不依赖关联 → 正常 |
+
+> **排查线索**：同一份数据，一个页面正常一个页面不正常时，先查两个页面
+> 的**查询字段**差异——口径不同就是线索所在。
+
+### 修复
+
+解除关联前先**备份清单**，重建后按清单**精确还原**：
+
+```rust
+// ① 备份：记录下"哪些 record 属于哪个 exercise"（在被置 NULL 之前）
+let orphaned: HashMap<i64, Vec<i64>> = /* SELECT exercise_id, id FROM records
+    WHERE plan_item_id IN (SELECT id FROM plan_items WHERE plan_id = ?) */
+    .into_iter().fold(HashMap::new(), |mut acc, (ex_id, rec_id)| {
+        acc.entry(ex_id).or_default().push(rec_id); acc
+    });
+
+// ② ...先删后插照旧...
+
+// ③ 插入每个新 plan_item 后，立刻拿 last_insert_rowid() 还原该动作的记录
+let new_item_id = result.last_insert_rowid();
+for rec_id in &orphaned[&ex_id] {
+    UPDATE records SET plan_item_id = ? WHERE id = ?;  // 逐条，不依赖 JSON1 扩展
+}
+```
+
+**为什么不能事后按 (plan_id, exercise_id) 猜？** 因为同一 exercise 可能出现在
+多个计划里，且历史遗留的 NULL 记录（计划已被删的）会**误捞**——必须用
+删除前备份的精确清单。
+
+### 知识点
+
+| 知识点 | 说明 | iced 会重演吗 |
+|---|---|---|
+| **修复副作用** | 修 bug A 的手段（置 NULL）埋下 bug B 的雷，事后才爆 | ✅ 思维必考 |
+| 先删后插重建主键 | DELETE + INSERT 生成新 id，引用方关联全断 | ✅ 后端必考 |
+| 备份-重建-还原三阶段 | 删前备份关联清单 → 重建 → 按清单精确还原 | ✅ 通用模式 |
+| 查询口径不一致 = 线索 | 同数据一个页面正常一个异常 → 比查询字段 | ✅ 排查思维 |
+| `last_insert_rowid()` | 拿刚插入行的自增 id，立即用于关联 | ✅ 后端必考 |
+| 不能"事后猜"关联 | 按 (plan_id, exercise_id) 猜会误捞其他计划的记录，必须精确清单 | ✅ 数据纪律 |
+| 验证闭环 | 修复后在开发环境实测"保存计划 → today 页记录仍显示已完成" | ✅ 与 §5 呼应 |
+
+### 生产数据修复（一次性 SQL）
+
+已断裂的旧记录按 exercise_id 手动重新挂回（今天的记录 7 条）：
+
+```python
+# 建立 exercise_id → plan_item_id 映射（该计划内唯一），逐条 UPDATE
+mapping = {ex_id: item_id for item_id, ex_id, _ in plan_items_of_plan8}
+for rec in today_records:
+    UPDATE records SET plan_item_id = mapping[rec.exercise_id] WHERE id = rec.id
+```
 

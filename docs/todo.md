@@ -69,6 +69,17 @@
   函数结束 `tx` drop → 全部回滚，数据静默丢失（页面却显示成功）。
 - **解法**：`begin()` → 所有 `execute` 用 `&mut *tx` → 结尾 `tx.commit().await?;`
 
+### 2.3 plan_update 先删后插导致记录关联断裂（已解决 ✅，78bfb2d）
+
+- **坑**：编辑计划 = 先删后插（§2.1 外键策略之一：置 NULL 解除关联 → DELETE → 重新 INSERT）。
+  重建的 plan_items 是**新 id**，但 records.plan_item_id 没重新挂回去 → 全变 NULL。
+- **现象**：数据库里训练记录都在，但 today 页 / record_form（都按 plan_item_id 查）
+  显示"未训练"；plan_detail 的"上次训练提示"按 exercise_id 查 → 正常。
+- **解法**：解除关联前先备份 `(exercise_id → record_id 列表)`，
+  重建后按备份清单精确还原关联（逐条 UPDATE，不依赖 JSON1 扩展）。
+  生产数据已手动修复（今天的记录全部重新挂回）。
+- **详细复盘**：`docs/learning_path/M4_bugfix_notes.md` §11
+
 ---
 
 ## 三、测试数据（M3/M4 阶段 curl 实测用）
