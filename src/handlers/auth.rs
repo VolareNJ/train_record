@@ -1001,3 +1001,57 @@ impl FromRequestParts<AppState> for AuthUser
         // unimplemented!("M2 学生实现：AuthUser 提取器")
     }
 }
+
+// ============================================================
+// 【M5 修订：全局体重维护（POST /profile/weight）】
+// 用户问题 0：support 模式的体重应来自"一个地方维护的通用变量"。
+// 归属地选 users 表（和 display_name 同款——用户属性）。
+// record_form / plan_detail 读取时走 AuthUser（SELECT u.* 已含 body_weight），
+// 维护入口在首页"账户"区（每个用户都能改自己的，数据隔离按 user_id）。
+// ============================================================
+/// 更新自己的全局体重（kg）
+///
+/// 表单字段：weight（字符串，可空 → 清除体重）
+/// 校验：非数字 → Validation 400；负数 → Validation 400；
+/// 超范围（> 500kg）→ Validation 400（防手滑）
+/// 数据隔离：UPDATE ... WHERE id = ?（只改自己的行）
+#[derive(Debug, Deserialize)]
+pub struct BodyWeightForm
+{
+    pub weight: String,
+}
+
+pub async fn update_body_weight(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Form(form): Form<BodyWeightForm>,
+) -> Result<Redirect, AppError>
+{
+    // 空串 → 清除体重（None）；否则解析 + 校验
+    let weight: Option<f64> = if form.weight.trim().is_empty()
+    {
+        None
+    }
+    else
+    {
+        let w = form
+            .weight
+            .trim()
+            .parse::<f64>()
+            .map_err(|_| AppError::Validation("体重必须是数字".to_string()))?;
+        if !(0.0..=500.0).contains(&w)
+        {
+            return Err(AppError::Validation("体重必须在 0~500kg 之间".to_string()));
+        }
+        Some(w)
+    };
+
+    sqlx::query("UPDATE users SET body_weight = ? WHERE id = ?")
+        .bind(weight)
+        .bind(&user.id)
+        .execute(&state.pool)
+        .await
+        .map_err(AppError::Database)?;
+
+    Ok(Redirect::to("/"))
+}

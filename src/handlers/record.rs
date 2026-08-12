@@ -388,15 +388,30 @@ pub async fn record_form(
             .await
             .map_err(AppError::Database)?
             .ok_or_else(|| AppError::NotFound("No such exercise".to_string()))?;
-    // 5. 查该计划项最近一条记录（有 → 编辑模式预填；无 → 空表单）
-    let most_recent_record = sqlx::query_as::<_, Record>(
-        "SELECT * FROM records WHERE plan_item_id = ?
+    // 5. 查记录（拆两个查询：当日值 + 上次训练值）
+    //     【M5 修订：预填链升级 —— 当日值 > 计划值 > 上次训练值】
+    //     旧版只查"最近一条"（可能=今天），且计划值优先于它。
+    //     新版拆成两个查询，语义更清晰：
+    //       - today_record：今天已保存的记录（训练中改过就回显"今天的实际"）
+    //       - last_record：今天之前的最近一条（渐进超负荷参照物 + 兜底回显）
+    let today_record = sqlx::query_as::<_, Record>(
+        "SELECT * FROM records WHERE plan_item_id = ? AND record_date = date('now','localtime')
+        ORDER BY id DESC LIMIT 1",
+    )
+    .bind(&item_id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(AppError::Database)?;
+    let last_record = sqlx::query_as::<_, Record>(
+        "SELECT * FROM records WHERE plan_item_id = ? AND record_date < date('now','localtime')
         ORDER BY record_date DESC, id DESC LIMIT 1",
     )
     .bind(&item_id)
     .fetch_optional(&state.pool)
     .await
     .map_err(AppError::Database)?;
+    // 兼容变量：最近一次记录（当日 → 上次），供"上次参考"展示和 completed 回显
+    let most_recent_record = today_record.as_ref().or(last_record.as_ref());
     // 6. 拼 HTML：计划值 + 上次参考 + 表单（含换算器挂载点）
 
     // 6a. 上次记录参考（Option → HTML 行，None → 提示"还没有记录"）
@@ -433,53 +448,62 @@ pub async fn record_form(
         })
         .unwrap_or_else(|| "还没有记录，这是第一次！".to_string());
 
-    // 6b. 表单预填 —— 预填链：计划预设 → 最近记录 → 动作库默认
-    //     【教学：预填链 = 三层 Option 优先级（M4 扩展）】
+    // 6b. 表单预填 —— 预填链：当日值 > 计划预设 → 最近记录 → 动作库默认
+    //     【教学：预填链 = 四层 Option 优先级（M5 修订）】
     //     计划编辑时已能预设计重信息（plan_weight/plan_mode/plan_bar_weight/
     //     plan_rest/plan_key_points），所以 record_form 预填不再
     //     "有记录就全取旧值"，而是按优先级：
+    //       0. 当日值（今天已保存过）→ 训练中"改过再进来"回显今天改的值
     //       1. plan_item 有预设 → 用它（训练前的安排优先，用户按计划执行）
-    //       2. 没有 → 最近记录旧值（上次实际完成的参照，渐进超负荷）
+    //       2. 没有 → 上次记录旧值（上次实际完成的参照，渐进超负荷）
     //       3. 再没有 → 动作库默认（新动作第一条）
-    //     感受/策略只在 record_form 填（计划层没有这两列）→ 只有 2/3 两层。
+    //     感受/策略只在 record_form 填（计划层没有这两列）→ 只有 0/2/3 三层。
     //     or_else 链：Option 依次尝试，第一个 Some 生效，全 None 才落兜底。
-    let prefill_weight = plan_item
-        .plan_weight
-        .map(|v| v.to_string())
-        .or_else(|| most_recent_record.as_ref().map(|r| r.weight.to_string()))
+    let prefill_weight = today_record
+        .as_ref()
+        .map(|r| r.weight.to_string())
+        .or_else(|| plan_item.plan_weight.map(|v| v.to_string()))
+        .or_else(|| last_record.as_ref().map(|r| r.weight.to_string()))
         .unwrap_or_default();
-    let prefill_sets = plan_item
-        .plan_sets
-        .map(|v| v.to_string())
-        .or_else(|| most_recent_record.as_ref().map(|r| r.sets.to_string()))
+    let prefill_sets = today_record
+        .as_ref()
+        .map(|r| r.sets.to_string())
+        .or_else(|| plan_item.plan_sets.map(|v| v.to_string()))
+        .or_else(|| last_record.as_ref().map(|r| r.sets.to_string()))
         .unwrap_or_default();
-    let prefill_reps = plan_item
-        .plan_reps
-        .map(|v| v.to_string())
-        .or_else(|| most_recent_record.as_ref().map(|r| r.reps.to_string()))
+    let prefill_reps = today_record
+        .as_ref()
+        .map(|r| r.reps.to_string())
+        .or_else(|| plan_item.plan_reps.map(|v| v.to_string()))
+        .or_else(|| last_record.as_ref().map(|r| r.reps.to_string()))
         .unwrap_or_default();
-    let prefill_rest = plan_item
-        .plan_rest
-        .map(|v| v.to_string())
-        .or_else(|| most_recent_record.as_ref().map(|r| r.rest.to_string()))
+    let prefill_rest = today_record
+        .as_ref()
+        .map(|r| r.rest.to_string())
+        .or_else(|| plan_item.plan_rest.map(|v| v.to_string()))
+        .or_else(|| last_record.as_ref().map(|r| r.rest.to_string()))
         .unwrap_or_default();
-    let prefill_feeling = most_recent_record
+    let prefill_feeling = today_record
         .as_ref()
         .map(|r| r.feeling.clone())
+        .or_else(|| last_record.as_ref().map(|r| r.feeling.clone()))
         .unwrap_or_default();
-    let prefill_strategy = most_recent_record
+    let prefill_strategy = today_record
         .as_ref()
         .map(|r| r.strategy.clone())
+        .or_else(|| last_record.as_ref().map(|r| r.strategy.clone()))
         .unwrap_or_default();
-    let prefill_key_points = plan_item
-        .plan_key_points
-        .clone()
-        .or_else(|| most_recent_record.as_ref().map(|r| r.key_points.clone()))
+    let prefill_key_points = today_record
+        .as_ref()
+        .map(|r| r.key_points.clone())
+        .or_else(|| plan_item.plan_key_points.clone())
+        .or_else(|| last_record.as_ref().map(|r| r.key_points.clone()))
         .unwrap_or_else(|| exercise_details.key_points.clone());
-    let prefill_mode = plan_item
-        .plan_mode
-        .clone()
-        .or_else(|| most_recent_record.as_ref().map(|r| r.mode.clone()))
+    let prefill_mode = today_record
+        .as_ref()
+        .map(|r| r.mode.clone())
+        .or_else(|| plan_item.plan_mode.clone())
+        .or_else(|| last_record.as_ref().map(|r| r.mode.clone()))
         .unwrap_or_else(|| exercise_details.default_mode.clone());
 
     // 6c. 模式下拉框选项（当前模式 selected，其余普通）
@@ -561,6 +585,16 @@ pub async fn record_form(
         .collect::<Vec<_>>()
         .join("\n");
 
+    // 6c-2. 【M5 修订：全局体重（users.body_weight，首页维护）】
+    //     用户问题 0：support 模式的体重应来自"可编辑的通用变量"，
+    //     在首页统一维护，record_form 自动获取——不再只靠 localStorage。
+    //     localStorage 是浏览器端记忆（换设备就丢），
+    //     users 表是"用户属性"的归属地（display_name 同款）。
+    //     AuthUser 提取器已 SELECT u.* 全列，body_weight 直接可读。
+    let prefill_body_weight = user.body_weight.map(|v| v.to_string()).unwrap_or_default();
+    //     兜底：未设置体重时换算器用 70kg 默认（weight_converter.js 内置），
+    //     页面显示"未设置"提示（见 body-row 的 data 属性）。
+
     // 6d. 拼页面
     //     【教学：r#"..."# 里不能有裸 { } —— format! 只认命名参数】
     //     页面底部有 JS（换算器脚本 + 显隐切换），JS 里全是 {}，
@@ -598,7 +632,7 @@ pub async fn record_form(
             </div>
             <div id="body-row" style="display:none">
                 <label>体重
-                    <input id="body-input" type="number" step="0.5" value="">
+                    <input id="body-input" type="number" step="0.5" value="{prefill_body_weight}" placeholder="未设置">
                 </label>
             </div>
             <label>观测强度
@@ -634,11 +668,12 @@ pub async fn record_form(
         <script>
             {javascript}
         </script>
-        <script src="/static/weight_converter.js?v=3"></script>
+        <script src="/static/weight_converter.js?v=4"></script>
         </body>
         </html>"#,
         ex_name = exercise_details.name,
         bar_weight = prefill_bar_weight,
+        prefill_body_weight = prefill_body_weight,
         // 【M5 修订：展示计划备注（plans.note）作为训练提醒】
         // 用户建计划时可以写"xxkg晋级赛"、"加深动作行程"这类提醒，
         // 训练时应在记录页看到。有内容才渲染该行，空备注不占位。

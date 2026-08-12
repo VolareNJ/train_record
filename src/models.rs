@@ -35,6 +35,8 @@ pub struct User
     pub display_name: String,
     /// 是否管理员：0=否 1=是
     pub is_admin: bool,
+    /// 体重（kg，可空 = 未设置；M5 修订：support 模式换算用，全局可维护）
+    pub body_weight: Option<f64>,
     pub created_at: String,
 }
 

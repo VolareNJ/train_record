@@ -90,6 +90,43 @@ function roundToHalf(x)
     return Math.round(x * 2) / 2;
 }
 
+// 【M5 修订：逆换算 —— 实际强度 → 观测强度（纯函数）】
+// 用户问题 2：record_form / plan_detail 的观测强度打开时为空。
+// 数据库存的是实际强度（weight），但训练时最直观的参考是观测强度（片重）。
+// 所以页面加载时，把 weight-input 的【回显值】逆换算成 plate 预填。
+// 逆换算 = convertWeight 的反函数（解出 plateKg）：
+//   bar:     总重 = 杆重 + 2×片重 → 片重 = (总重 - 杆重) / 2
+//   support: 总重 = 体重 - 支撑量 → 支撑量 = 体重 - 总重
+//   std:     总重 = 片重          → 片重 = 总重
+// 单位 lb 时显示值 = kg ÷ 0.4536（与 convertWeight 的 lb→kg 归一化互逆）。
+// 负数 clamp 到 0（杆重大于总重时会出现，如热身组只挂空杆）。
+// 纯函数：不读 DOM、不写状态，方便与 convertWeight 成对测试。
+function inverseConvert(mode, weight, bar, body, unit)
+{
+    const weightKg = Number(weight) || 0;
+    const barKg = Number(bar) || 0;
+    const bodyKg = Number(body) || 0;
+    let plateKg = 0;
+    switch (mode)
+    {
+        case 'bar':
+            plateKg = (weightKg - barKg) / 2;
+            break;
+        case 'support':
+            plateKg = bodyKg - weightKg;
+            break;
+        case 'std':
+            plateKg = weightKg;
+            break;
+        default:
+            plateKg = 0;
+    }
+    // 不可能负负重 → clamp 到 0
+    plateKg = Math.max(0, plateKg);
+    // lb 单位：显示值 = kg ÷ 0.4536（convertWeight 里 lb → ×0.4536，互逆）
+    return unit === 'lb' ? plateKg / 0.4536 : plateKg;
+}
+
 // 【教学：DOM 操作 —— 页面加载后绑定事件】
 // 模块级 init 函数：找到页面的换算器元素，绑定输入事件。
 // 用 data-* 属性从后端渲染的 HTML 读初始值（见 record_form 的注释）。
@@ -115,8 +152,12 @@ function initWeightConverter()
 
     // 从 <body data-bar-weight="20"> 读初始杆重（后端渲染进 HTML）
     const defaultBar = Number(document.body.dataset.barWeight) || 20;
-    // 体重从 localStorage 读（记过一次后下次自动带出，不用每次填）
-    const defaultBody = Number(localStorage.getItem('weight_converter_body')) || 70;
+    // 【M5 修订：体重优先取服务端全局体重（users.body_weight，首页维护）】
+    // 用户问题 0：体重应在"一个地方维护成可编辑的通用变量"，record_form 自动获取。
+    // 后端已把 users.body_weight 渲染进 body-input 的 value（见 record_form）。
+    // 这里只在输入框为空时兜底用 localStorage（老用户习惯）→ 再兜底 70kg。
+    const defaultBody = Number(bodyInput.value) ||
+        Number(localStorage.getItem('weight_converter_body')) || 70;
     // 【M4：观测强度单位偏好从 localStorage 读】
     // 单位不入库（观测强度本身也不入库），只做前端换算辅助。
     // 记过一次后下次自动带出，不用每次重选（和体重同款机制）。
@@ -166,11 +207,34 @@ function initWeightConverter()
         updateResult();
     });
     // 体重输入：记住到 localStorage（下次打开页面自动带出）
+    // 【M5：服务端已有全局体重时，用户改了本地值 → 记 localStorage 覆盖】
+    // 全局体重是"通用变量"（首页维护），这里保留 localStorage 同步是兼容
+    // 老习惯——但下次打开 record_form 仍会被服务端全局体重覆盖。
     bodyInput.addEventListener('input', () =>
     {
         localStorage.setItem('weight_converter_body', bodyInput.value);
         updateResult();
     });
+
+    // 【M5 修订：逆换算预填 —— 页面加载时只执行一次】
+    // 用户问题 2：观测强度（plate）打开时为空，但 weight-input 有回显值
+    // （当日值/计划值/上次值）。训练时最直观看片重，所以逆换算预填 plate。
+    // ⚠️ 循环计算分析（用户问"会不会观测/实际强度循环计算"）：
+    //   不会死循环。依赖是单向的：plate → weight（updateResult 只读 plate
+    //   写 weight），weight 是 readonly 且没有任何监听器，不存在 weight→plate
+    //   的反向路径。逆预填只在此处执行一次：写 plate 会触发 input 事件 →
+    //   updateResult 重算 weight（结果 = 逆换算的逆 ≈ 原回显值，roundToHalf
+    //   对齐）→ 写 weight 不再触发任何事件 → 链条终止。幂等。
+    if (weightInput.value !== '' && plateInput.value === '')
+    {
+        plateInput.value = roundToHalf(inverseConvert(
+            modeSelect.value,
+            weightInput.value,
+            barInput.value || defaultBar,
+            bodyInput.value || defaultBody,
+            unitSelect.value || 'kg',
+        ));
+    }
 
     // 初始计算一次（页面加载就有结果）
     updateResult();

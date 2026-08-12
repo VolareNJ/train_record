@@ -1486,6 +1486,13 @@ pub async fn plan_detail(
     let body_part_order_json = serde_json::to_string(&state.config.body_part_order)
         .map_err(|_| AppError::Validation("部位顺序序列化失败".to_string()))?;
 
+    // ③d-2 【M5 修订：全局体重（users.body_weight，首页维护）】
+    //     用户问题 0：support 模式的体重来自"可编辑的通用变量"。
+    //     这里在函数体级取一次，行渲染（body input 预填）和
+    //     JS 注入（addRow 新行 + 逆换算兜底）共用。
+    //     未设置 → 空字符串（前端 placeholder 提示"未设置"）。
+    let body_weight_text = user.body_weight.map(|v| v.to_string()).unwrap_or_default();
+
     // ③e 表格行（计划项，按 sort_order 排，再按 body_part 分组）
     //     【M4 修订：列重排 + 分组】
     //     列顺序改为：动作|备注|实际强度|计重方式|杆重/体重|观测强度换算|
@@ -1590,14 +1597,31 @@ pub async fn plan_detail(
                     )
                 })
                 .unwrap_or_default();
+            // 【M5 修订：Bug 1 —— 杆重/体重列合并成单 td + std 占位符】
+            // 旧版拆两个 td（bar-cell + body-cell），std 模式两个都 display:none
+            // → 该行可见 td 少 2 个，与 11 列表头错位（用户报告的错位 bug 根因）。
+            // 新版合并为一个 td：内含三种状态，只显示一个：
+            //   bar    → 杆重下拉（select）
+            //   support → 体重输入（input，预填全局体重）
+            //   std    → 占位符 "N/A"（该模式不需要杆重/体重）
+            // 列数恒为 11，不再塌陷。
+            let bar_body_cell = format!(
+                r#"<td id="bar-body-cell-{ex_id}">
+                <select name="bar_weight_{ex_id}" id="bar-{ex_id}" style="display:none">{bar_weight_options}</select>
+                <input id="body-{ex_id}" type="number" step="0.5" value="{body_weight}" placeholder="未设置" style="display:none">
+                <span id="bar-body-na-{ex_id}" style="color:#999">N/A</span>
+                </td>"#,
+                ex_id = item.exercise_id,
+                bar_weight_options = bar_weight_options,
+                body_weight = body_weight_text,
+            );
             let row = format!(
                 r#"<tr id="row-{ex_id}" data-part="{ex_part}">
                 <td><input type="checkbox" name="{ex_id}" value="1" checked hidden>{ex_name}</td>
                 <td><input name="note_{ex_id}" value="{note}" size="12"></td>
                 <td><input name="weight_{ex_id}" id="weight-input-{ex_id}" type="number" step="0.5" value="{weight}" readonly style="background:#eee;">{last_ref}</td>
                 <td><select name="mode_{ex_id}" id="mode-{ex_id}" class="mode-select" data-ex="{ex_id}">{mode_options}</select></td>
-                <td id="bar-cell-{ex_id}"><select name="bar_weight_{ex_id}" id="bar-{ex_id}">{bar_weight_options}</select></td>
-                <td id="body-cell-{ex_id}" style="display:none"><input id="body-{ex_id}" type="number" step="0.5" value=""></td>
+                {bar_body_cell}
                 <td><input id="plate-{ex_id}" type="number" step="0.5" value="">
                     <select id="unit-{ex_id}"><option value="kg" selected>kg</option><option value="lb">lb</option></select>
                     <span id="result-{ex_id}"></span></td>
@@ -1620,11 +1644,11 @@ pub async fn plan_detail(
                 reps = reps,
                 weight = weight,
                 mode_options = mode_options,
-                bar_weight_options = bar_weight_options,
                 rest = rest,
                 key_points = key_points,
                 note = note,
                 last_ref = last_ref,
+                bar_body_cell = bar_body_cell,
             );
             (ex_part, row)
         })
@@ -1684,6 +1708,9 @@ pub async fn plan_detail(
         ex_options = ex_options,
         item_rows = item_rows,
         javascript = r#"var EX_OPTIONS = __EX_DATA__;
+                /* 【M5 修订：全局体重注入（users.body_weight，首页维护）】
+                 * addRow 动态新行的 body input 与逆换算兜底都用它。 */
+                var BODY_WEIGHT = __BODY_WEIGHT__;
                 /* 上移/下移：页面级动态 form（不能直接嵌 <tr> 里，HTML 解析器会忽略） */
                 function submitMove(url){
                 var f = document.createElement('form');
@@ -1744,8 +1771,11 @@ pub async fn plan_detail(
                 '<td><input name="note_' + id + '" size="12"></td>' +
                 '<td><input name="weight_' + id + '" id="weight-input-' + id + '" type="number" step="0.5" readonly style="background:#eee;"></td>' +
                 '<td><select name="mode_' + id + '" id="mode-' + id + '" class="mode-select" data-ex="' + id + '">' + modeOptions(ex.default_mode) + '</select></td>' +
-                '<td id="bar-cell-' + id + '"><select name="bar_weight_' + id + '" id="bar-' + id + '">' + barOptions(ex.bar_weight) + '</select></td>' +
-                '<td id="body-cell-' + id + '" style="display:none"><input id="body-' + id + '" type="number" step="0.5" value=""></td>' +
+                '<td id="bar-body-cell-' + id + '">' +
+                '<select name="bar_weight_' + id + '" id="bar-' + id + '" style="display:none">' + barOptions(ex.bar_weight) + '</select>' +
+                '<input id="body-' + id + '" type="number" step="0.5" value="' + escapeHtml(BODY_WEIGHT) + '" placeholder="未设置" style="display:none">' +
+                '<span id="bar-body-na-' + id + '" style="color:#999">N/A</span>' +
+                '</td>' +
                 '<td><input id="plate-' + id + '" type="number" step="0.5" value="">' +
                 '<select id="unit-' + id + '"><option value="kg" selected>kg</option><option value="lb">lb</option></select>' +
                 '<span id="result-' + id + '"></span></td>' +
@@ -1817,10 +1847,36 @@ pub async fn plan_detail(
                 }
                 }
                 function roundToHalf(x){ return Math.round(x * 2) / 2; }
+                /* 【M5 修订：逆换算 —— 实际强度 → 观测强度（与 weight_converter.js 同逻辑）】
+                 * bar:     片重 = (总重 - 杆重) / 2
+                 * support: 支撑量 = 体重 - 总重
+                 * std:     片重 = 总重
+                 * lb 单位 → 显示值 = kg ÷ 0.4536。负数 clamp 到 0。 */
+                function inverseConvert(mode, weight, bar, body, unit){
+                var weightKg = Number(weight) || 0;
+                var barKg = Number(bar) || 0;
+                var bodyKg = Number(body) || 0;
+                var plateKg = 0;
+                switch (mode) {
+                case 'bar': plateKg = (weightKg - barKg) / 2; break;
+                case 'support': plateKg = bodyKg - weightKg; break;
+                case 'std': plateKg = weightKg; break;
+                default: plateKg = 0;
+                }
+                plateKg = Math.max(0, plateKg);
+                return (unit === 'lb') ? plateKg / 0.4536 : plateKg;
+                }
+                /* 【M5 修订：Bug 1 —— 单 td 三态切换】
+                 * 杆重/体重列合并后，syncModeRow 控制 td 内三个子元素的显隐：
+                 *   bar     → 显示杆重 select
+                 *   support → 显示体重 input
+                 *   std     → 显示 "N/A" 占位符
+                 * 三种状态只显示一个，td 本身永远占位 → 列数恒 11 不错位。 */
                 function syncModeRow(exId){
                 var mode = document.getElementById('mode-' + exId).value;
-                document.getElementById('bar-cell-' + exId).style.display = (mode === 'bar') ? '' : 'none';
-                document.getElementById('body-cell-' + exId).style.display = (mode === 'support') ? '' : 'none';
+                document.getElementById('bar-' + exId).style.display = (mode === 'bar') ? '' : 'none';
+                document.getElementById('body-' + exId).style.display = (mode === 'support') ? '' : 'none';
+                document.getElementById('bar-body-na-' + exId).style.display = (mode === 'std') ? '' : 'none';
                 }
                 function rowTotal(exId){
                 var mode = document.getElementById('mode-' + exId).value;
@@ -1828,7 +1884,7 @@ pub async fn plan_detail(
                 var bar = document.getElementById('bar-' + exId).value;
                 var body = document.getElementById('body-' + exId).value;
                 var unit = document.getElementById('unit-' + exId).value;
-                var defaultBody = Number(localStorage.getItem('weight_converter_body')) || 70;
+                var defaultBody = Number(localStorage.getItem('weight_converter_body')) || BODY_WEIGHT || 70;
                 return roundToHalf(convertWeight(mode, plate, bar, body || defaultBody, unit));
                 }
                 function updateRow(exId){
@@ -1855,7 +1911,23 @@ pub async fn plan_detail(
                 localStorage.setItem('weight_converter_body', this.value);
                 updateRow(exId);
                 });
-                if (document.getElementById('plate-' + exId).value === '') {
+                /* 【M5 修订：逆换算预填 —— 页面加载只执行一次】
+                 * 与 weight_converter.js 同款：weight-input 有回显值（计划值/
+                 * 上次值）时，逆换算成观测强度（plate）预填，训练时直接看片重。
+                 * 不会循环计算：依赖单向（plate → weight），weight readonly
+                 * 无监听器；写 plate 触发 updateRow 重算 weight 幂等（逆的逆≈原值）。 */
+                var weightEl = document.getElementById('weight-input-' + exId);
+                var plateEl = document.getElementById('plate-' + exId);
+                if (weightEl.value !== '' && plateEl.value === '') {
+                plateEl.value = roundToHalf(inverseConvert(
+                sel.value,
+                weightEl.value,
+                document.getElementById('bar-' + exId).value,
+                document.getElementById('body-' + exId).value || BODY_WEIGHT || 70,
+                document.getElementById('unit-' + exId).value || 'kg',
+                ));
+                }
+                if (plateEl.value === '') {
                 document.getElementById('result-' + exId).textContent = '';
                 }
                 }
@@ -1865,7 +1937,8 @@ pub async fn plan_detail(
                 });
                 filterExByPart();"#
                 .replace("__EX_DATA__", &ex_data_json)
-                .replace("__PART_ORDER__", &body_part_order_json),
+                .replace("__PART_ORDER__", &body_part_order_json)
+                .replace("__BODY_WEIGHT__", &body_weight_text),
     )))
 }
 

@@ -294,6 +294,10 @@ async fn main()
             "/admin/users",
             get(handlers::auth::admin_users).post(handlers::auth::admin_create_user),
         )
+        // 【M5 修订：全局体重维护（首页账户区表单提交）】
+        // 用户问题 0：体重是"一个地方维护的通用变量"，
+        // record_form/plan_detail 的 support 模式自动获取。
+        .route("/profile/weight", post(handlers::auth::update_body_weight))
         .nest_service("/static", ServeDir::new("static")) // 已有
         .route(
             "/phases",
@@ -853,6 +857,12 @@ async fn home(State(state): State<AppState>, headers: HeaderMap) -> Result<Respo
             {admin_link}
             <li><form method="post" action="/logout" style="display:inline"><button type="submit">登出</button></form></li>
         </ul>
+        <h3>我的体重（kg）</h3>
+        <form method="post" action="/profile/weight">
+            <input name="weight" type="number" step="0.5" value="{body_weight}" placeholder="未设置">
+            <button type="submit">保存</button>
+        </form>
+        <p style="color:#888;font-size:0.9em">用于支撑（自重）类动作的重量换算，记录页自动获取。</p>
         "#,
         username = user.username,
         phase_count = phase_count,
@@ -861,6 +871,10 @@ async fn home(State(state): State<AppState>, headers: HeaderMap) -> Result<Respo
         plan_count = plan_count,
         phase_links = phase_links,
         admin_link = admin_link,
+        body_weight = user
+            .body_weight
+            .map(|v| v.to_string())
+            .unwrap_or_default(),
     ))
     .into_response())
 }
