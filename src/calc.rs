@@ -1,4 +1,4 @@
-﻿// ============================================================
+// ============================================================
 // calc.rs —— 纯函数计算模块（1RM 估算公式）
 // ============================================================
 // 【教学说明】
@@ -61,7 +61,22 @@
 /// 3. 计算：weight * (1.0 + reps as f64 / 30.0)
 pub fn epley_1rm(weight: f64, reps: i64) -> f64
 {
-    todo!("M5 第 1 步：实现 Epley 公式（含边界判断）")
+    (if weight <= 0.0
+    {
+        return 0.0;
+    }
+    else
+    {
+        weight
+    }) * (1.0
+        + (if reps <= 0
+        {
+            return 0.0;
+        }
+        else
+        {
+            reps as f64
+        }) / 30.0)
 }
 
 /// Wathan 公式：从 1RM 反推"目标次数下的预估重量"（MRM）
@@ -75,7 +90,23 @@ pub fn epley_1rm(weight: f64, reps: i64) -> f64
 /// 3. 计算：one_rm / 分母
 pub fn wathan_mrm(one_rm: f64, target_reps: i64) -> f64
 {
-    todo!("M5 第 1 步：实现 Wathan 公式（含边界判断）")
+    (if one_rm <= 0.0
+    {
+        return 0.0;
+    }
+    else
+    {
+        one_rm
+    }) / (1.67
+        - 0.067
+            * (if target_reps <= 0
+            {
+                return 0.0;
+            }
+            else
+            {
+                target_reps as f64
+            }))
 }
 
 // ============================================================
@@ -102,9 +133,23 @@ mod tests
     use super::*;
 
     // 你在这里写 3 个 #[test] 函数：
-    // #[test]
-    // fn xxx()
-    // {
-    //     todo!("...")
-    // }
+    #[test]
+    fn test_epley_1rm()
+    {
+        assert!((epley_1rm(60.0, 8) - 76.0).abs() < 0.01);
+    }
+    #[test]
+    fn test_wathan_mrm()
+    {
+        assert!((wathan_mrm(100.0, 2) - 65.1).abs() < 0.01);
+    }
+    #[test]
+    fn test_invalid_input()
+    {
+        assert_eq!(wathan_mrm(0.0, 2), 0.0);
+        assert_eq!(wathan_mrm(100.0, 0), 0.0);
+        assert_eq!(epley_1rm(0.0, 8), 0.0);
+        assert_eq!(epley_1rm(60.0, 0), 0.0);
+        assert_eq!(epley_1rm(-10.0, 8), 0.0);
+    }
 }
