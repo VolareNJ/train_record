@@ -1,4 +1,4 @@
-﻿// ============================================================
+// ============================================================
 // handlers/stats.rs —— 历史回顾（只读查询 + 图表）
 // ============================================================
 // 【教学说明】
@@ -92,7 +92,103 @@ pub async fn history(
     AuthUser(user): AuthUser,
 ) -> Result<Html<String>, AppError>
 {
-    todo!("M5 第 2 步：实现历史首页（日历 + 训练日列表）")
+    let non_empty_train_dts = sqlx::query_scalar::<_, String>(
+        "SELECT DISTINCT record_date FROM records r
+        INNER JOIN exercises e ON r.exercise_id = e.id
+        WHERE e.user_id = ? ORDER BY record_date DESC",
+    )
+    .bind(&user.id)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(AppError::Database)?;
+
+    let current_month =
+        sqlx::query_scalar::<_, String>("SELECT strftime('%Y-%m', date('now','localtime'))")
+            .fetch_one(&state.pool)
+            .await
+            .map_err(AppError::Database)?;
+
+    let current_month_train_dts = non_empty_train_dts
+        .iter()
+        .filter(|dt| dt.starts_with(&current_month))
+        .collect::<Vec<&String>>();
+
+    // —— 以下为渲染部分（HTML 拼接）——
+    // 【教学：M4_bugfix_notes §6 约定——前端 DOM/HTML 部分 vibe coding 不补课，
+    //   所以这半段老师代写。你写的后端逻辑到上面为止都是对的。】
+    // 但注意：渲染前还有最后一点"后端逻辑"——当月天数。
+
+    // 空态：一条记录都没有 → 引导去今日页
+    if non_empty_train_dts.is_empty()
+    {
+        return Ok(Html(
+            r#"<h2>历史回顾</h2>
+            <p>还没有训练记录，去<a href="/today">今日页</a>开始第一次训练吧</p>
+            <p><a href="/">返回首页</a></p>"#
+                .to_string(),
+        ));
+    }
+
+    // 【教学：当月天数也让 SQLite 算——日期纪律】
+    // 链式日期运算：本月 1 号 → +1 月 → -1 天 = 当月最后一天，
+    // 再 strftime('%d') 取"日"，CAST 转整数 → 31/30/28/29
+    // 不引入 chrono、不让 Rust 手算闰年（M5.md 常见坑第 1 条）
+    let days_in_month: i64 = sqlx::query_scalar(
+        "SELECT CAST(strftime('%d', date('now', 'localtime',
+        'start of month', '+1 month', '-1 day')) AS INTEGER)",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .map_err(AppError::Database)?;
+
+    // 日历单元格：1..=当月天数，每 7 格换一行
+    //   - 有记录的日子 → ● 标记 + 链接到 /history/{date}
+    //   - 无记录 → 纯文本日号
+    // 简化：第一天固定从第一格开始，不做真实星期对齐（M5.md 已说明）
+    // {day:02} = 零填充两位数（08-03 的"03"）
+    let cells: String = (1..=days_in_month)
+        .map(|day| {
+            let date_str = format!("{}-{day:02}", current_month);
+            let is_train_day = current_month_train_dts
+                .iter()
+                .any(|dt| dt.as_str() == date_str);
+            let cell = if is_train_day
+            {
+                format!(r#"<td><a href="/history/{date_str}">●{day}</a></td>"#)
+            }
+            else
+            {
+                format!("<td>{day}</td>")
+            };
+            // 每 7 格换行；最后一天恰好整行时不多插空行
+            if day % 7 == 0 && day != days_in_month
+            {
+                format!("{cell}</tr><tr>")
+            }
+            else
+            {
+                cell
+            }
+        })
+        .collect();
+
+    // 训练日列表：全部记录日倒序，每天一个链接
+    let date_links: String = non_empty_train_dts
+        .iter()
+        .map(|dt| format!(r#"<li><a href="/history/{dt}">{dt}</a></li>"#))
+        .collect();
+
+    Ok(Html(format!(
+        r#"<h2>历史回顾</h2>
+        <h3>{current_month} 日历（● = 有记录）</h3>
+        <table border="1">
+        <tr><th>一</th><th>二</th><th>三</th><th>四</th><th>五</th><th>六</th><th>日</th></tr>
+        <tr>{cells}</tr>
+        </table>
+        <h3>全部训练日</h3>
+        <ul>{date_links}</ul>
+        <p><a href="/">返回首页</a></p>"#
+    )))
 }
 
 // ============================================================
@@ -109,8 +205,13 @@ pub async fn history(
 /// 1. 签名：State + AuthUser + Path(date): Path<String>
 /// 2. 校验日期格式（简单检查：长度 10、第 5/8 位是 '-'）
 /// 3. 查该天全部记录：
-///    SELECT * FROM records WHERE user_id = ? AND record_date = ?
-///    ORDER BY created_at
+///    ⚠️ records 表没有 user_id 列！数据隔离要走 JOIN：
+///    SELECT r.* FROM records r
+///    INNER JOIN exercises e ON r.exercise_id = e.id
+///    WHERE e.user_id = ? AND r.record_date = ?
+///    ORDER BY r.created_at
+///    （records 只挂 plan_item_id/phase_id/exercise_id，
+///    用户归属要经过 exercises 才能确定——M5 隔离纪律）
 /// 4. 动作名：沿用 M4 模式——查全部动作 → HashMap<i64, String>
 ///    SELECT * FROM exercises WHERE user_id = ?
 ///    （为什么不用 JOIN？query_as 按列名匹配，JOIN 多出的列与
@@ -145,8 +246,10 @@ pub async fn history_day(
 ///    SELECT * FROM exercises WHERE id = ? AND user_id = ?
 ///    → 没有 → 404（先验证再查记录，404 语义才清晰）
 /// 3. 查该动作全部记录（按日期升序，画折线图必须时间有序）：
-///    SELECT * FROM records WHERE user_id = ? AND exercise_id = ?
+///    SELECT * FROM records WHERE exercise_id = ?
 ///    ORDER BY record_date, id
+///    （⚠️ 这里不需要 user_id 条件：第 2 步已验证动作归属，
+///    exercise_id 已确定属于当前用户；records 表本身没有 user_id 列）
 /// 4. 表格渲染：日期 | 重量 | 组×次 | 1RM(Epley) | 感受 | 策略
 /// 5. 折线图数据：遍历记录生成两个数组
 ///    - 标签：record_date 列表
