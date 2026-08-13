@@ -35,6 +35,7 @@
 // 📌 阶段要求：M0 会用即可（新写文件要在这里加一行 mod）。
 // 🎯 验收：能说出这 4 个 mod 各自对应 src/ 下的哪个文件。
 mod auth;
+mod calc;
 mod config;
 mod db;
 mod error;
@@ -379,6 +380,16 @@ async fn main()
         .route(
             "/plans/{id}/record/{item_id}/save",
             post(handlers::record::record_save),
+        )
+        // ----------------------------------------------------------
+        // M5 新增：历史回顾（日历 + 当天详情 + 动作详情图表）
+        // 教学注释见 src/handlers/stats.rs 顶部
+        // ----------------------------------------------------------
+        .route("/history", get(handlers::stats::history))
+        .route("/history/{date}", get(handlers::stats::history_day))
+        .route(
+            "/exercises/{id}/stats",
+            get(handlers::stats::exercise_stats),
         )
         .with_state(state);
 
@@ -851,6 +862,7 @@ async fn home(State(state): State<AppState>, headers: HeaderMap) -> Result<Respo
             {phase_links}
             <li><a href="/phases">查看训练阶段（含模板 / 计划）</a></li>
             <li><a href="/exercises">查看训练动作</a></li>
+            <li><a href="/history">历史回顾（日历）</a></li>
         </ul>
         <h2>账户</h2>
         <ul>

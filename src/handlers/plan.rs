@@ -405,6 +405,13 @@ pub async fn template_create(
     // checkbox name = 动作 id，值 = "1"（勾选标记）
     let ex_ids: Vec<i64> = form.exercise_ids();
 
+    // 【M5 第 6 步打磨项：空动作校验（todo.md §1.2）】
+    // 一个动作都不勾选 → ex_ids 为空 Vec → 生成"空壳模板"（0 个 template_items）。
+    // 这里加校验：空 → 返回 Validation 错误"至少选择一个动作"。
+    // ⚠️ 校验要在开事务之前（tx 已 begin 了就在这之前判断——检查上面
+    // 事务 begin 的位置，把校验挪到 begin 之前更干净：既省连接又避免空事务）。
+    // 提示：ex_ids.is_empty() 判断即可。
+
     for (idx, ex_id) in ex_ids.iter().enumerate()
     {
         sqlx::query(
@@ -1246,6 +1253,14 @@ pub async fn plan_create(
         let key_points = Some(ex.key_points);
         Ok((sets, reps, mode, bar_weight, key_points))
     }
+
+    // 【M5 第 6 步打磨项：空动作校验（todo.md §1.2）】
+    // plan_create 有两类动作来源：
+    //   ① form.template_id 选了模板 → 复制模板项（模板自身已有校验，不会空）
+    //   ② 没选模板 → 用 form.exercise_ids()（手动勾选）
+    // 校验：template_id 为 None 且 exercise_ids() 为空 → Validation"至少选择一个动作"。
+    // ⚠️ 放在 ④ 事务 begin 之前，避免空动作也开事务插一条空壳计划。
+    // 提示：先拿 ex_ids，再 if form.template_id.is_none() && ex_ids.is_empty() 判断。
 
     // ④ 事务：写两张表（plans 父 + plan_items 子）要么全成要么全败
     let mut tx = state.pool.begin().await.map_err(AppError::Database)?;

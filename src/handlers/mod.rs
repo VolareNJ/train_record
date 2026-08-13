@@ -20,3 +20,4 @@ pub mod exercises;
 pub mod phases;
 pub mod plan;
 pub mod record;
+pub mod stats;
