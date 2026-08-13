@@ -133,7 +133,7 @@ pub async fn history(
     // 链式日期运算：本月 1 号 → +1 月 → -1 天 = 当月最后一天，
     // 再 strftime('%d') 取"日"，CAST 转整数 → 31/30/28/29
     // 不引入 chrono、不让 Rust 手算闰年（M5.md 常见坑第 1 条）
-    let days_in_month: i64 = sqlx::query_scalar(
+    let days_in_month = sqlx::query_scalar::<_, i64>(
         "SELECT CAST(strftime('%d', date('now', 'localtime',
         'start of month', '+1 month', '-1 day')) AS INTEGER)",
     )
@@ -146,7 +146,7 @@ pub async fn history(
     //   - 无记录 → 纯文本日号
     // 简化：第一天固定从第一格开始，不做真实星期对齐（M5.md 已说明）
     // {day:02} = 零填充两位数（08-03 的"03"）
-    let cells: String = (1..=days_in_month)
+    let cells = (1..=days_in_month)
         .map(|day| {
             let date_str = format!("{}-{day:02}", current_month);
             let is_train_day = current_month_train_dts
@@ -170,13 +170,13 @@ pub async fn history(
                 cell
             }
         })
-        .collect();
+        .collect::<String>();
 
     // 训练日列表：全部记录日倒序，每天一个链接
-    let date_links: String = non_empty_train_dts
+    let date_links = non_empty_train_dts
         .iter()
         .map(|dt| format!(r#"<li><a href="/history/{dt}">{dt}</a></li>"#))
-        .collect();
+        .collect::<String>();
 
     Ok(Html(format!(
         r#"<h2>历史回顾</h2>
@@ -227,7 +227,119 @@ pub async fn history_day(
     Path(date): Path<String>,
 ) -> Result<Html<String>, AppError>
 {
-    todo!("M5 第 3 步：实现当天详情页（全部记录 + 1RM）")
+    match date.split('-').collect::<Vec<&str>>().as_slice()
+    {
+        [yyyy, mm, dd] =>
+        {
+            yyyy.parse::<i64>()
+                .map_err(|_| AppError::Validation("年份必须是数字".to_string()))?;
+            mm.parse::<i64>()
+                .map_err(|_| AppError::Validation("月份必须是数字".to_string()))?;
+            dd.parse::<i64>()
+                .map_err(|_| AppError::Validation("日必须是数字".to_string()))?;
+        },
+        _ =>
+        {
+            return Err(AppError::Validation(
+                "日期格式必须是 YYYY-MM-DD".to_string(),
+            ));
+        },
+    }
+
+    let all_records_that_day = sqlx::query_as::<_, Record>(
+        "SELECT r.* FROM records r
+    INNER JOIN exercises e ON r.exercise_id = e.id
+    WHERE e.user_id = ? AND r.record_date = ?
+    ORDER BY e.sort_order ASC",
+    )
+    .bind(&user.id)
+    .bind(&date)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(AppError::Database)?
+    .into_iter()
+    .map(|rec| {
+        let rm = epley_1rm(rec.weight, rec.reps);
+        (rec, rm)
+    })
+    .collect::<Vec<(Record, f64)>>();
+
+    let all_exercises = sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE user_id = ?")
+        .bind(&user.id)
+        .fetch_all(&state.pool)
+        .await
+        .map_err(AppError::Database)?
+        .into_iter()
+        .map(|ex| (ex.id, ex.name))
+        .collect::<HashMap<i64, String>>();
+
+    // —— 以下为渲染部分（HTML 拼接，老师代写）——
+    // 【教学：M4_bugfix_notes §6 约定——前端 DOM/HTML 部分 vibe coding 不补课。
+    //   你写的后端逻辑（校验 + 查询 + 索引 + 1RM 预计算）到这里为止。】
+    // 标题用校验解析出的 yyyy/mm/dd——既展示给用户，又"用上"了校验结果。
+
+    // 空态：该天没有记录
+    if all_records_that_day.is_empty()
+    {
+        return Ok(Html(format!(
+            r#"<h2>{date} 训练记录</h2>
+            <p>这一天没有训练记录</p>
+            <p><a href="/history">返回历史回顾</a></p>"#
+        )));
+    }
+
+    // 表格行：动作名（链到动作详情，下钻第 3 层）| 重量 | 组×次 | 休息
+    //   | 1RM(Epley) | 感受 | 策略 | 要领
+    //   1RM 无效（公式返回 0）→ 显示 "-"（calc.rs 的边界约定）
+    let rows = all_records_that_day
+        .iter()
+        .map(|(rec, rm)| {
+            let name = all_exercises
+                .get(&rec.exercise_id)
+                .map(|s| s.as_str())
+                .unwrap_or("未知动作");
+            let rm_text = if *rm <= 0.0
+            {
+                "-".to_string()
+            }
+            else
+            {
+                format!("{rm:.1}")
+            };
+            format!(
+                r#"<tr>
+                <td><a href="/exercises/{ex_id}/stats">{name}</a></td>
+                <td>{weight}kg</td>
+                <td>{sets}组 × {reps}次</td>
+                <td>{rest}秒</td>
+                <td>{rm_text}</td>
+                <td>{feeling}</td>
+                <td>{strategy}</td>
+                <td>{key_points}</td>
+                </tr>"#,
+                ex_id = rec.exercise_id,
+                name = name,
+                weight = rec.weight,
+                sets = rec.sets,
+                reps = rec.reps,
+                rest = rec.rest,
+                rm_text = rm_text,
+                feeling = rec.feeling,
+                strategy = rec.strategy,
+                key_points = rec.key_points,
+            )
+        })
+        .collect::<String>();
+
+    Ok(Html(format!(
+        r#"<h2>{date} 训练记录</h2>
+        <table border="1">
+        <tr><th>动作</th><th>重量</th><th>组×次</th><th>休息</th>
+        <th>1RM(Epley)</th><th>感受</th><th>策略</th><th>要领</th></tr>
+        {rows}
+        </table>
+        <p><a href="/history">返回历史回顾</a></p>"#
+    )))
 }
 
 // ============================================================
