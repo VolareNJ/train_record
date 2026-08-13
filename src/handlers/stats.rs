@@ -37,6 +37,7 @@ use axum::{
     extract::{Path, State},
     response::Html,
 };
+use serde_json::json;
 use sqlx::SqlitePool;
 
 use crate::{
@@ -388,5 +389,161 @@ pub async fn exercise_stats(
     Path(id): Path<i64>,
 ) -> Result<Html<String>, AppError>
 {
-    todo!("M5 第 4 步：实现动作详情页（历史表格 + Chart.js 折线图）")
+    // ① 数据隔离纪律：先验证动作存在且属于当前用户
+    //    （同时拿到动作名，渲染页面标题用——查询结果别丢）
+    let exercise =
+        sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE id = ? AND user_id = ?")
+            .bind(&id)
+            .bind(&user.id)
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(AppError::Database)?
+            .ok_or_else(|| AppError::NotFound("No such exercise in your profile".to_string()))?;
+    let all_records = sqlx::query_as::<_, Record>(
+        "SELECT * FROM records WHERE exercise_id = ? ORDER BY record_date ASC, id",
+    )
+    .bind(&id)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(AppError::Database)?
+    .into_iter()
+    .map(|rec| {
+        let one_rm = epley_1rm(rec.weight, rec.reps);
+        let two_rm = if rec.reps > 2 && wathan_mrm(one_rm, 2) > rec.weight
+        {
+            wathan_mrm(one_rm, 2)
+        }
+        else
+        {
+            rec.weight
+        };
+        let three_rm = if rec.reps > 3 && wathan_mrm(one_rm, 3) > rec.weight
+        {
+            wathan_mrm(one_rm, 3)
+        }
+        else
+        {
+            rec.weight
+        };
+        (rec, one_rm, two_rm, three_rm)
+    })
+    .collect::<Vec<(Record, f64, f64, f64)>>();
+
+    // —— 以下为渲染部分（HTML/JS 拼接，老师代写）——
+    // 【教学：M4_bugfix_notes §6 约定——前端 DOM/Chart.js 部分 vibe coding 不补课。
+    //   你写的后端逻辑（归属验证 + 查询 + 1RM/2RM/3RM 计算）到这里为止。】
+
+    // 空态：一条记录都没有
+    if all_records.is_empty()
+    {
+        return Ok(Html(format!(
+            r#"<h2>{name} 的历史记录</h2>
+            <p>这个动作还没有记录</p>
+            <p><a href="/exercises">返回动作库</a></p>"#,
+            name = exercise.name,
+        )));
+    }
+
+    // 表格行：日期 | 重量 | 组*次 | 1RM | 2RM | 3RM | 感受 | 策略
+    //   （按日期升序展示，最新在最后，和折线图顺序一致）
+    //   {v:.1} = 保留 1 位小数；无效记录（1RM=0）显示 "-"
+    let rows = all_records
+        .iter()
+        .map(|(rec, one_rm, two_rm, three_rm)| {
+            let fmt = |v: &f64| {
+                if *v <= 0.0
+                {
+                    "-".to_string()
+                }
+                else
+                {
+                    format!("{v:.1}")
+                }
+            };
+            format!(
+                r#"<tr>
+                <td>{date}</td>
+                <td>{weight}kg</td>
+                <td>{sets}组 * {reps}次</td>
+                <td>{one}</td>
+                <td>{two}</td>
+                <td>{three}</td>
+                <td>{feeling}</td>
+                <td>{strategy}</td>
+                </tr>"#,
+                date = rec.record_date,
+                weight = rec.weight,
+                sets = rec.sets,
+                reps = rec.reps,
+                one = fmt(one_rm),
+                two = fmt(two_rm),
+                three = fmt(three_rm),
+                feeling = rec.feeling,
+                strategy = rec.strategy,
+            )
+        })
+        .collect::<String>();
+
+    // 折线图数据：三条线（重量 / 1RM / 2RM）+ 日期标签
+    //   serde_json::to_string 序列化 → 注入页面 JS 变量 CHART_POINTS
+    //   （M4 §10.3 模式：数据单一来源，机器生成合法 JSON）
+    let labels: Vec<String> = all_records
+        .iter()
+        .map(|(rec, ..)| rec.record_date.clone())
+        .collect();
+    let weights: Vec<f64> = all_records.iter().map(|(rec, ..)| rec.weight).collect();
+    let one_rms: Vec<f64> = all_records.iter().map(|(_, rm, ..)| *rm).collect();
+    let two_rms: Vec<f64> = all_records.iter().map(|(_, _, rm, _)| *rm).collect();
+
+    let chart_json = serde_json::to_string(&json!({
+        "labels": labels,
+        "weight": weights,
+        "one_rm": one_rms,
+        "two_rm": two_rms,
+    }))
+    .map_err(|e| AppError::Other(e.to_string()))?;
+
+    // 记录数 < 2 → 不渲染图表，只给提示（空 canvas 画不出趋势线）
+    let chart_section = if all_records.len() < 2
+    {
+        "<p>记录太少，攒几次训练再看趋势</p>".to_string()
+    }
+    else
+    {
+        format!(
+            r#"<div style="max-width:700px;margin:16px auto">
+            <canvas id="trendChart"></canvas></div>
+            <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+            <script>
+            const CHART_POINTS = {chart_json};
+            new Chart(document.getElementById('trendChart'), {{
+                type: 'line',
+                data: {{
+                    labels: CHART_POINTS.labels,
+                    datasets: [
+                        {{ label: '重量(kg)', data: CHART_POINTS.weight,
+                           borderColor: '#2196f3', tension: 0.2 }},
+                        {{ label: '1RM(Epley)', data: CHART_POINTS.one_rm,
+                           borderColor: '#e91e63', tension: 0.2 }},
+                        {{ label: '2RM(Wathan)', data: CHART_POINTS.two_rm,
+                           borderColor: '#4caf50', tension: 0.2 }}
+                    ]
+                }},
+                options: {{ responsive: true }}
+            }});
+            </script>"#
+        )
+    };
+
+    Ok(Html(format!(
+        r#"<h2>{name} 的历史记录</h2>
+        <table border="1">
+        <tr><th>日期</th><th>重量</th><th>组*次</th><th>1RM</th><th>2RM</th><th>3RM</th>
+        <th>感受</th><th>策略</th></tr>
+        {rows}
+        </table>
+        {chart_section}
+        <p><a href="/exercises">返回动作库</a> | <a href="/history">返回历史回顾</a></p>"#,
+        name = exercise.name,
+    )))
 }
