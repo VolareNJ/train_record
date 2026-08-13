@@ -310,7 +310,7 @@ pub async fn history_day(
                 r#"<tr>
                 <td><a href="/exercises/{ex_id}/stats">{name}</a></td>
                 <td>{weight}kg</td>
-                <td>{sets}组 × {reps}次</td>
+                <td>{sets}组 * {reps}次</td>
                 <td>{rest}秒</td>
                 <td>{rm_text}</td>
                 <td>{feeling}</td>
@@ -334,7 +334,7 @@ pub async fn history_day(
     Ok(Html(format!(
         r#"<h2>{date} 训练记录</h2>
         <table border="1">
-        <tr><th>动作</th><th>重量</th><th>组×次</th><th>休息</th>
+        <tr><th>动作</th><th>重量</th><th>组*次</th><th>休息</th>
         <th>1RM(Epley)</th><th>感受</th><th>策略</th><th>要领</th></tr>
         {rows}
         </table>

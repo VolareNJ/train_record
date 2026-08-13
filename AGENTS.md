@@ -58,3 +58,8 @@ description: Describe when these instructions should be loaded by the agent base
 
 - `template_items.sort_order` / `plan_items.sort_order`：**实际字段**（`enumerate()` 生成，决定动作顺序）
 - `templates.sort_order`：**预留字段**（暂恒为 0），模板间排序是未来待办 → `docs/todo.md` §1.1
+
+### 前端文案约定
+
+- 组数×次数等**乘号统一用 ASCII `*`**（如 `2组 * 15次`），
+  不用 `×`（U+00D7）——部分设备/字体渲染不一致
