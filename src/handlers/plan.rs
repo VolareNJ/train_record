@@ -378,13 +378,18 @@ pub async fn template_create(
             .fetch_optional(&state.pool)
             .await
             .map_err(AppError::Database)?
-            .ok_or_else(|| AppError::NotFound("No such phase or not your phase".to_string()))?;
+            .ok_or_else(|| AppError::NotFound("No such phase in your profile".to_string()))?;
 
     if target_phase.archived
     {
         return Err(AppError::Forbidden(
             "Can not edit archived phase".to_string(),
         ));
+    }
+
+    if form.exercise_ids().is_empty()
+    {
+        return Err(AppError::Validation("至少选择一个动作".to_string()));
     }
 
     let mut tx = state.pool.begin().await.map_err(AppError::Database)?;
@@ -774,6 +779,11 @@ pub async fn template_update(
         return Err(AppError::Forbidden(
             "Can not edit archived phase".to_string(),
         ));
+    }
+
+    if form.exercise_ids().is_empty()
+    {
+        return Err(AppError::Validation("至少选择一个动作".to_string()));
     }
 
     // ③ 开事务：三步"先删后插"要么全成要么全败
@@ -1260,7 +1270,10 @@ pub async fn plan_create(
     //   ② 没选模板 → 用 form.exercise_ids()（手动勾选）
     // 校验：template_id 为 None 且 exercise_ids() 为空 → Validation"至少选择一个动作"。
     // ⚠️ 放在 ④ 事务 begin 之前，避免空动作也开事务插一条空壳计划。
-    // 提示：先拿 ex_ids，再 if form.template_id.is_none() && ex_ids.is_empty() 判断。
+    if form.template_id.is_none() && form.exercise_ids().is_empty()
+    {
+        return Err(AppError::Validation("至少选择一个动作".to_string()));
+    }
 
     // ④ 事务：写两张表（plans 父 + plan_items 子）要么全成要么全败
     let mut tx = state.pool.begin().await.map_err(AppError::Database)?;
