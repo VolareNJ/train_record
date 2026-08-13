@@ -455,7 +455,11 @@ async fn ensure_admin(state: &AppState)
         .await
         .expect("创建管理员失败");
 
-    tracing::info!("已自动创建管理员: {}", state.config.admin_username);
+    tracing::info!(
+        "已自动创建管理员: {}\n初始密码: {}",
+        state.config.admin_username,
+        state.config.admin_password
+    );
 }
 
 // ============================================================

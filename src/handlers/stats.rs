@@ -484,55 +484,14 @@ pub async fn exercise_stats(
         })
         .collect::<String>();
 
-    // 折线图数据：三条线（重量 / 1RM / 2RM）+ 日期标签
-    //   serde_json::to_string 序列化 → 注入页面 JS 变量 CHART_POINTS
-    //   （M4 §10.3 模式：数据单一来源，机器生成合法 JSON）
-    let labels: Vec<String> = all_records
-        .iter()
-        .map(|(rec, ..)| rec.record_date.clone())
-        .collect();
-    let weights: Vec<f64> = all_records.iter().map(|(rec, ..)| rec.weight).collect();
-    let one_rms: Vec<f64> = all_records.iter().map(|(_, rm, ..)| *rm).collect();
-    let two_rms: Vec<f64> = all_records.iter().map(|(_, _, rm, _)| *rm).collect();
-
-    let chart_json = serde_json::to_string(&json!({
-        "labels": labels,
-        "weight": weights,
-        "one_rm": one_rms,
-        "two_rm": two_rms,
-    }))
-    .map_err(|e| AppError::Other(e.to_string()))?;
-
-    // 记录数 < 2 → 不渲染图表，只给提示（空 canvas 画不出趋势线）
-    let chart_section = if all_records.len() < 2
+    // 【M5 修订：图表抽取公共函数 exercise_chart_html（三个页面复用）】
+    // 原内联的 labels/weights/one_rms/two_rms + serde_json 注入代码
+    // 抽到文件底部的公共函数，时间范围改为最近 180 天。
+    // None（记录 < 2 条）→ 显示提示文案。
+    let chart_section = match exercise_chart_html(&state.pool, id).await?
     {
-        "<p>记录太少，攒几次训练再看趋势</p>".to_string()
-    }
-    else
-    {
-        format!(
-            r#"<div style="max-width:700px;margin:16px auto">
-            <canvas id="trendChart"></canvas></div>
-            <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-            <script>
-            const CHART_POINTS = {chart_json};
-            new Chart(document.getElementById('trendChart'), {{
-                type: 'line',
-                data: {{
-                    labels: CHART_POINTS.labels,
-                    datasets: [
-                        {{ label: '重量(kg)', data: CHART_POINTS.weight,
-                           borderColor: '#2196f3', tension: 0.2 }},
-                        {{ label: '1RM(Epley)', data: CHART_POINTS.one_rm,
-                           borderColor: '#e91e63', tension: 0.2 }},
-                        {{ label: '2RM(Wathan)', data: CHART_POINTS.two_rm,
-                           borderColor: '#4caf50', tension: 0.2 }}
-                    ]
-                }},
-                options: {{ responsive: true }}
-            }});
-            </script>"#
-        )
+        Some(html) => html,
+        None => "<p>记录太少，攒几次训练再看趋势</p>".to_string(),
     };
 
     Ok(Html(format!(
@@ -545,5 +504,107 @@ pub async fn exercise_stats(
         {chart_section}
         <p><a href="/exercises">返回动作库</a> | <a href="/history">返回历史回顾</a></p>"#,
         name = exercise.name,
+    )))
+}
+
+// ============================================================
+// 【M5 修订：公共图表函数 —— 三个页面复用】
+// ============================================================
+/// 生成某动作最近 180 天的"重量 / 1RM / 2RM"三折线图 HTML
+/// （Chart.js CDN + serde_json 注入；records < 2 条 → 返回 None）
+///
+/// 【教学：为什么抽公共函数？】
+/// 需求是三个页面显示同一张图：动作详情 / 记录表单 / 动作编辑表单。
+/// 如果复制粘贴三份，改图表样式（颜色/线宽/时间范围）就要改三处，
+/// 必然漂移（补课笔记 §10.3：数据/样式单一来源）。
+/// 抽一个函数，三处调用——这就是"单一事实来源"的代码版。
+///
+/// 【教学：canvas id 唯一性】
+/// 图表 JS 靠 getElementById 找 canvas，同一页面只有一个 canvas，
+/// 固定 id 即可（本函数生成的图永远叫 trendChart）。
+///
+/// 时间范围：最近 180 天
+///   WHERE record_date >= date('now', 'localtime', '-180 days')
+///   边界含 180 天前当天（SQLite 日期运算，不引入 chrono）。
+///
+/// 返回：
+///   - Some(html)：>= 2 条记录，返回完整图表 HTML
+///   - None：< 2 条记录（或查询出错前），由调用方决定显示什么提示
+pub async fn exercise_chart_html(
+    pool: &SqlitePool,
+    exercise_id: i64,
+) -> Result<Option<String>, AppError>
+{
+    // 查最近 180 天记录（日期升序，折线图时间轴）
+    let records = sqlx::query_as::<_, Record>(
+        "SELECT * FROM records
+        WHERE exercise_id = ?
+        AND record_date >= date('now', 'localtime', '-180 days')
+        ORDER BY record_date ASC, id",
+    )
+    .bind(exercise_id)
+    .fetch_all(pool)
+    .await
+    .map_err(AppError::Database)?;
+
+    // < 2 条 → 无趋势可画，返回 None
+    if records.len() < 2
+    {
+        return Ok(None);
+    }
+
+    // 图表数据：三条线 + 日期标签（函数式提取，与 exercise_stats 旧逻辑一致）
+    let labels: Vec<String> = records.iter().map(|rec| rec.record_date.clone()).collect();
+    let weights: Vec<f64> = records.iter().map(|rec| rec.weight).collect();
+    let one_rms: Vec<f64> = records
+        .iter()
+        .map(|rec| epley_1rm(rec.weight, rec.reps))
+        .collect();
+    let two_rms: Vec<f64> = records
+        .iter()
+        .map(|rec| {
+            let one_rm = epley_1rm(rec.weight, rec.reps);
+            // 与 exercise_stats 同款钳制：估算 2RM 低于实际重量 → 用实际值
+            if rec.reps > 2 && wathan_mrm(one_rm, 2) > rec.weight
+            {
+                wathan_mrm(one_rm, 2)
+            }
+            else
+            {
+                rec.weight
+            }
+        })
+        .collect();
+
+    let chart_json = serde_json::to_string(&json!({
+        "labels": labels,
+        "weight": weights,
+        "one_rm": one_rms,
+        "two_rm": two_rms,
+    }))
+    .map_err(|e| AppError::Other(e.to_string()))?;
+
+    Ok(Some(format!(
+        r#"<div style="max-width:700px;margin:16px auto">
+        <canvas id="trendChart"></canvas></div>
+        <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+        <script>
+        const CHART_POINTS = {chart_json};
+        new Chart(document.getElementById('trendChart'), {{
+            type: 'line',
+            data: {{
+                labels: CHART_POINTS.labels,
+                datasets: [
+                    {{ label: '重量(kg)', data: CHART_POINTS.weight,
+                       borderColor: '#2196f3', tension: 0.2 }},
+                    {{ label: '1RM(Epley)', data: CHART_POINTS.one_rm,
+                       borderColor: '#e91e63', tension: 0.2 }},
+                    {{ label: '2RM(Wathan)', data: CHART_POINTS.two_rm,
+                       borderColor: '#4caf50', tension: 0.2 }}
+                ]
+            }},
+            options: {{ responsive: true }}
+        }});
+        </script>"#
     )))
 }

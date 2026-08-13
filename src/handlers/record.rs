@@ -601,12 +601,21 @@ pub async fn record_form(
     //     所以 JS 字符串用命名参数 {javascript} 单独传入，
     //     避免 format! 把 JS 的 {} 当占位符。
     //     body 挂 data-bar-weight（换算器读初始杆重）。
+    // 【M5 修订：记录页嵌入最近 180 天趋势图（stats.rs 公共函数复用）】
+    //     位置：动作名称下面、上次参考上面。
+    //     None（< 2 条记录）→ 表单页不放"记录太少"文案，静默省略图。
+    let chart_section =
+        match crate::handlers::stats::exercise_chart_html(&state.pool, exercise_details.id).await?
+        {
+            Some(html) => html,
+            None => String::new(),
+        };
     Ok(Html(format!(
         r#"<!DOCTYPE html>
         <html lang="zh">
         <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>记录：{ex_name}</title></head>
         <body data-bar-weight="{bar_weight}">
-        <h2>记录：{ex_name}</h2>        {plan_note_block}{action_note_block}<p>计划值：{plan_sets}组 * {plan_reps}次{plan_weight_text}</p>
+        <h2>记录：{ex_name}</h2>        {plan_note_block}{action_note_block}{chart_section}<p>计划值：{plan_sets}组 * {plan_reps}次{plan_weight_text}</p>
         <p>上次参考：{last_ref}</p>
 
         <form method="post" action="/plans/{plan_id}/record/{item_id}/save">
@@ -674,6 +683,7 @@ pub async fn record_form(
         ex_name = exercise_details.name,
         bar_weight = prefill_bar_weight,
         prefill_body_weight = prefill_body_weight,
+        chart_section = chart_section,
         // 【M5 修订：展示计划备注（plans.note）作为训练提醒】
         // 用户建计划时可以写"xxkg晋级赛"、"加深动作行程"这类提醒，
         // 训练时应在记录页看到。有内容才渲染该行，空备注不占位。

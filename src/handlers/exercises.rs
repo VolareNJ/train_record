@@ -617,10 +617,21 @@ pub async fn edit_form(
             .map_err(AppError::Database)?
             .ok_or_else(|| AppError::NotFound("Record not found".to_string()))?;
 
+    // 【M5 修订：编辑页嵌入最近 180 天趋势图（stats.rs 公共函数复用）】
+    //     位置：编辑训练动作标题下面、动作名称上面。
+    //     None（< 2 条记录）→ 编辑页不放"记录太少"文案，静默省略图。
+    let chart_section = match crate::handlers::stats::exercise_chart_html(&state.pool, exercise_id)
+        .await?
+    {
+        Some(html) => html,
+        None => String::new(),
+    };
+
     Ok(Html(format!(
         r#"
         <head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
         <h1>编辑训练动作</h1>
+        {chart_section}
         <form method="post" action="/exercises/{exercise_id}/edit">
             <label>动作名称
                 <input name="name" required value="{current_name}">
@@ -658,6 +669,7 @@ pub async fn edit_form(
             {javascript}
         </script>
         "#,
+        chart_section = chart_section,
         exercise_id = exercise_id,
         current_name = record_to_edit.name,
         current_sets = record_to_edit.default_sets,
