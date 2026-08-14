@@ -38,6 +38,52 @@ use crate::{
 };
 
 // ============================================================
+// 【M5 修订：计重模式展示串 —— 计划值/上次参考共用】
+// ============================================================
+/// 杆重规格 → 显示名（bar 模式括号里用）
+fn bar_name(bar_weight: f64) -> &'static str
+{
+    match bar_weight
+    {
+        20.0 => "Olympic",
+        11.3 => "Smith",
+        10.0 => "Short",
+        _ => "Dual", // 0kg 双边
+    }
+}
+
+/// 计重模式展示串：`模式(参数, 观测强度)`
+///
+/// 【教学：观测强度从"实际强度"逆换算】
+/// 训练时用户在器械上看到的是**片重/支撑量**（"每边 20kg"），
+/// 显示实际总重（60kg）反而不直观——用户要的是器械上的读数。
+/// 与 weight_converter.js 的 inverseConvert 同逻辑：
+///   bar     → 片重 = (总重 - 杆重) / 2
+///   support → 支撑量 = 体重 - 总重
+///   std     → 片重 = 总重
+/// ⚠️ 已知取舍：support 用当前体重逆换算，改体重后历史记录的
+///   观测强度会跟着变——与旧 Python 版行为一致，接受。
+fn mode_display(mode: &str, weight: f64, bar_weight: f64, body_weight: Option<f64>) -> String
+{
+    match mode
+    {
+        "bar" =>
+        {
+            let plate = ((weight - bar_weight) / 2.0).max(0.0);
+            format!("bar({}, {plate}kg)", bar_name(bar_weight))
+        },
+        "support" =>
+        {
+            let body = body_weight.unwrap_or(0.0);
+            let support = (body - weight).max(0.0);
+            format!("Support({body}kg - {support}kg)")
+        },
+        // std + 老数据 lb2kg → 同一显示（观测强度 = 总重）
+        _ => format!("std({weight}kg)"),
+    }
+}
+
+// ============================================================
 // 【教学：从"计划"到"记录"的跨越 —— 本阶段核心】
 // ============================================================
 // M3 管的是"训练前"：把动作排成计划。
@@ -160,8 +206,19 @@ pub async fn today(
         .iter()
         // 【M4 修订：索引扩展成 (动作名, 身体部位) 元组】
         // today 页要按 body_part 分组，所以索引不再只存名字
-        .map(|e| (e.id, (e.name.clone(), e.body_part.clone())))
-        .collect::<HashMap<i64, (String, String)>>();
+        // 【M5 修订：再加 (默认模式, 默认杆重) —— 计划值展示需要】
+        .map(|e| {
+            (
+                e.id,
+                (
+                    e.name.clone(),
+                    e.body_part.clone(),
+                    e.default_mode.clone(),
+                    e.bar_weight,
+                ),
+            )
+        })
+        .collect::<HashMap<i64, (String, String, String, f64)>>();
     // 6. 每个计划项查"最近一条记录"判断状态 + 上次策略：
     //    SELECT * FROM records WHERE plan_item_id = ?
     //    ORDER BY record_date DESC, id DESC LIMIT 1
@@ -209,19 +266,41 @@ pub async fn today(
     let mut groups: Vec<(String, String)> = Vec::new();
     for (item, last) in &items_with_records
     {
-        // 动作名 + 部位：从索引取（查不到显示 "?" / "未分组"，理论不发生）
-        let (ex_name, body_part) = id_to_ex
-            .get(&item.exercise_id)
-            .cloned()
-            .unwrap_or_else(|| ("?".to_string(), "未分组".to_string()));
-        // 计划值：组×次，重量有就带括号（None → "-"）
-        let plan_value = format!(
-            "{}组 * {}次{}",
-            item.plan_sets.map_or("-".to_string(), |v| v.to_string()),
-            item.plan_reps.map_or("-".to_string(), |v| v.to_string()),
-            item.plan_weight
-                .map_or(String::new(), |v| format!("({v}kg)")),
-        );
+        // 动作名 + 部位 + 默认计重：从索引取（查不到显示 "?" / "未分组"，理论不发生）
+        let (ex_name, body_part, ex_default_mode, ex_default_bar) =
+            id_to_ex.get(&item.exercise_id).cloned().unwrap_or_else(|| {
+                (
+                    "?".to_string(),
+                    "未分组".to_string(),
+                    "std".to_string(),
+                    0.0,
+                )
+            });
+        let ex_defaults = (ex_default_mode, ex_default_bar);
+        // 计划值：模式(参数,观测强度), sets*reps
+        // 【M5 修订：计重模式展示串（mode_display 辅助函数）】
+        // plan_weight/plan_mode/plan_bar_weight 是计划预设（可空），
+        // 空 → 回退动作库默认（动作没预设就用 default_mode/bar_weight）
+        // body_weight 从 AuthUser 拿（support 逆换算用）
+        let plan_value = {
+            let plan_weight = item.plan_weight;
+            let plan_mode = item
+                .plan_mode
+                .clone()
+                .unwrap_or_else(|| ex_defaults.0.clone());
+            let plan_bar = item.plan_bar_weight.unwrap_or(ex_defaults.1);
+            format!(
+                "{mode}, {sets}*{reps}",
+                mode = mode_display(
+                    &plan_mode,
+                    plan_weight.unwrap_or(0.0),
+                    plan_bar,
+                    user.body_weight
+                ),
+                sets = item.plan_sets.map_or("-".to_string(), |v| v.to_string()),
+                reps = item.plan_reps.map_or("-".to_string(), |v| v.to_string()),
+            )
+        };
         // 整行状态色 + 上次策略提示
         // 【M5 修订：整行填色替代状态列（信息更直观、少一列更紧凑）】
         //   None                → 灰色   #dddddd（未训练）
@@ -412,16 +491,21 @@ pub async fn record_form(
 
     // 6a. 上次记录参考（Option → HTML 行，None → 提示"还没有记录"）
     //     【教学：map + unwrap_or_default 链——处理 Option 不用 if】
-    //     Some → 拼一行"上次 {日期}：{重量}kg × {组}组 × {次}次，感受：…，策略：…"
+    //     【M5 修订：格式对齐计划值 —— 模式(参数,观测强度), sets*reps】
     //     None → "还没有记录，这是第一次！"
     let last_ref = most_recent_record
         .as_ref()
         .map(|r| {
             format!(
-                "上次 {date}: {weight}kg * {sets}组 * {reps}次<br>\
+                "上次 {date}: {mode_disp}, {sets}*{reps}<br>\
                  感受：{feeling}<br>策略：{strategy}",
                 date = r.record_date,
-                weight = r.weight,
+                mode_disp = mode_display(
+                    &r.mode,
+                    r.weight,
+                    exercise_details.bar_weight,
+                    user.body_weight
+                ),
                 sets = r.sets,
                 reps = r.reps,
                 feeling = if r.feeling.is_empty()
@@ -611,7 +695,7 @@ pub async fn record_form(
         <html lang="zh">
         <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>记录：{ex_name}</title></head>
         <body data-bar-weight="{bar_weight}">
-        <h2>记录：{ex_name}</h2>        {plan_note_block}{action_note_block}{chart_section}<p>计划值：{plan_sets}组 * {plan_reps}次{plan_weight_text}</p>
+        <h2>记录：{ex_name}</h2>        {plan_note_block}{action_note_block}{chart_section}<p>计划值：{plan_value_display}</p>
         <p>上次参考：{last_ref}</p>
 
         <form method="post" action="/plans/{plan_id}/record/{item_id}/save">
@@ -708,15 +792,26 @@ pub async fn record_form(
                 )
             })
             .unwrap_or_default(),
-        plan_sets = plan_item
-            .plan_sets
-            .map_or("-".to_string(), |v| v.to_string()),
-        plan_reps = plan_item
-            .plan_reps
-            .map_or("-".to_string(), |v| v.to_string()),
-        plan_weight_text = plan_item
-            .plan_weight
-            .map_or(String::new(), |v| format!("（{v}kg）"),),
+        plan_value_display = format!(
+            "{mode}, {sets}*{reps}",
+            mode = mode_display(
+                &plan_item
+                    .plan_mode
+                    .clone()
+                    .unwrap_or_else(|| exercise_details.default_mode.clone()),
+                plan_item.plan_weight.unwrap_or(0.0),
+                plan_item
+                    .plan_bar_weight
+                    .unwrap_or(exercise_details.bar_weight),
+                user.body_weight,
+            ),
+            sets = plan_item
+                .plan_sets
+                .map_or("-".to_string(), |v| v.to_string()),
+            reps = plan_item
+                .plan_reps
+                .map_or("-".to_string(), |v| v.to_string()),
+        ),
         last_ref = last_ref,
         plan_id = current_plan.id,
         item_id = plan_item.id,

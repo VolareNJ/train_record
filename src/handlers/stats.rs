@@ -401,7 +401,7 @@ pub async fn history_day(
                 r#"<tr>
                 <td><a href="/exercises/{ex_id}/stats">{name}</a></td>
                 <td>{weight}kg</td>
-                <td>{sets}组 * {reps}次</td>
+                <td>{sets}组*{reps}次</td>
                 <td>{rest}秒</td>
                 <td>{rm_text}</td>
                 <td>{feeling}</td>
@@ -556,7 +556,7 @@ pub async fn exercise_stats(
                 r#"<tr>
                 <td>{date}</td>
                 <td>{weight}kg</td>
-                <td>{sets}组 * {reps}次</td>
+                <td>{sets}组*{reps}次</td>
                 <td>{one}</td>
                 <td>{two}</td>
                 <td>{three}</td>
