@@ -6,6 +6,17 @@
 
 ---
 
+## 〇、阶段路线（2026-08-14 更新）
+
+- ✅ M0-M5 全部完成（M5 含理解验证，2026-08-14 收官）
+- **M6 备份与体验**（原计划：数据备份/导出）
+- **M7 打磨**（原计划：todo §1.1/§1.3/§1.4 等收尾）
+- **M8 REST API 层**（新增）：给 train_record 加 JSON API，为 iced GUI 客户端铺路
+  - 详见 `docs/learning_path/M5_roadmap_notes.md` §3 路线图与"GUI 技术栈决策"
+  - 阶段文档 `docs/learning_path/M8.md` 待写（明天开工）
+
+---
+
 ## 一、待解决事项（按优先级）
 
 ### 1.1 模板间排序：`templates.sort_order` 真值分配 🔴
