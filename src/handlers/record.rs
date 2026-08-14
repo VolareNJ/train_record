@@ -229,15 +229,12 @@ pub async fn today(
         //   None                → ⬜未训练
         let (badge, strategy_hint) = match last
         {
-            Some(rec) if rec.completed => (
-                "✅已完成".to_string(),
-                format!("上次策略：{}", rec.strategy),
-            ),
-            Some(rec) => (
-                "⬜已记录未完成".to_string(),
-                format!("上次策略：{}", rec.strategy),
-            ),
-            None => ("⬜未训练".to_string(), String::new()),
+            Some(rec) if rec.completed =>
+            {
+                ("√已完成".to_string(), format!("上次策略：{}", rec.strategy))
+            },
+            Some(rec) => ("•已记录未完成".to_string(), rec.strategy.to_string()),
+            None => ("×未训练".to_string(), String::new()),
         };
         let row = format!(
             "<tr><td>{ex_name}</td><td>{plan_value}</td><td>{badge}</td>\

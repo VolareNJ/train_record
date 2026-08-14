@@ -63,3 +63,6 @@ description: Describe when these instructions should be loaded by the agent base
 
 - 组数×次数等**乘号统一用 ASCII `*`**（如 `2组 * 15次`），
   不用 `×`（U+00D7）——部分设备/字体渲染不一致
+- 每个 HTML 页面**必须带移动端 viewport head**（手机浏览器训练场景）：
+  `<head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>`
+  拼 HTML 时第一行就写，别忘

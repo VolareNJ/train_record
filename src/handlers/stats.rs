@@ -114,6 +114,54 @@ pub async fn history(
         .filter(|dt| dt.starts_with(&current_month))
         .collect::<Vec<&String>>();
 
+    // 【M5 修订：两个新查询——按动作查看 + 年/月筛选选项】
+    // 1. 全部动作（id + 名字 + 部位）："按动作查看历史"区块
+    // 2. 年份选项：从训练日集合去重（如 ["2026"]），供年/月筛选下拉
+    let all_exercises = sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE user_id = ?")
+        .bind(&user.id)
+        .fetch_all(&state.pool)
+        .await
+        .map_err(AppError::Database)?;
+    // 部位下拉选项（去重 + 排序，"全部"用空串）
+    let mut part_list: Vec<String> = all_exercises
+        .iter()
+        .map(|ex| ex.body_part.clone())
+        .collect::<std::collections::HashSet<String>>()
+        .into_iter()
+        .collect();
+    part_list.sort();
+    let ex_part_options = part_list
+        .iter()
+        .map(|p| format!(r#"<option value="{p}">{p}</option>"#, p = p))
+        .collect::<Vec<String>>()
+        .join("\n");
+    // 动作列表：每个动作一个链接（data-part 供 JS 部位筛选）
+    let ex_links = all_exercises
+        .iter()
+        .map(|ex| {
+            format!(
+                r#"<div class="ex-row" data-part="{part}"><a href="/exercises/{id}/stats">{name}</a></div>"#,
+                part = ex.body_part,
+                id = ex.id,
+                name = ex.name,
+            )
+        })
+        .collect::<Vec<String>>()
+        .join("\n");
+    // 年份选项：从训练日提取前 4 位去重（倒序，新年前）
+    let mut year_list: Vec<String> = non_empty_train_dts
+        .iter()
+        .map(|dt| dt[..4].to_string())
+        .collect::<std::collections::HashSet<String>>()
+        .into_iter()
+        .collect();
+    year_list.sort_by(|a, b| b.cmp(a));
+    let year_options = year_list
+        .iter()
+        .map(|y| format!(r#"<option value="{y}">{y}</option>"#, y = y))
+        .collect::<Vec<String>>()
+        .join("\n");
+
     // —— 以下为渲染部分（HTML 拼接）——
     // 【教学：M4_bugfix_notes §6 约定——前端 DOM/HTML 部分 vibe coding 不补课，
     //   所以这半段老师代写。你写的后端逻辑到上面为止都是对的。】
@@ -123,7 +171,8 @@ pub async fn history(
     if non_empty_train_dts.is_empty()
     {
         return Ok(Html(
-            r#"<h2>历史回顾</h2>
+            r#"<head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+            <h2>历史回顾</h2>
             <p>还没有训练记录，去<a href="/today">今日页</a>开始第一次训练吧</p>
             <p><a href="/">返回首页</a></p>"#
                 .to_string(),
@@ -174,21 +223,82 @@ pub async fn history(
         .collect::<String>();
 
     // 训练日列表：全部记录日倒序，每天一个链接
+    //   data-year/data-month：供 JS 年/月筛选（YYYY / YYYY-MM）
     let date_links = non_empty_train_dts
         .iter()
-        .map(|dt| format!(r#"<li><a href="/history/{dt}">{dt}</a></li>"#))
+        .map(|dt| {
+            format!(
+                r#"<li class="date-row" data-year="{y}" data-month="{m}"><a href="/history/{dt}">{dt}</a></li>"#,
+                y = &dt[..4],
+                m = &dt[..7],
+                dt = dt,
+            )
+        })
         .collect::<String>();
 
+    // 【M5 修订：按动作查看区块 + 年月筛选控件 + 对应 JS】
+    //   - 动作列表：部位下拉筛选（ex-row 容器级显隐，M4_bugfix_notes §2 模式）
+    //   - 年月筛选：年/月两个下拉 + 列表行显隐（date-row 同类）
+    //   月份选项：01~12（年选了具体年份才生效——年筛选影响可见月份，
+    //   简化实现：月份下拉始终 01-12，JS 里年份过滤与月份过滤叠加）
+    let month_options = (1..=12)
+        .map(|m| format!(r#"<option value="{m:02}">{m:02}月</option>"#))
+        .collect::<Vec<String>>()
+        .join("\n");
+
     Ok(Html(format!(
-        r#"<h2>历史回顾</h2>
+        r#"<head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+        <h2>历史回顾</h2>
         <h3>{current_month} 日历（● = 有记录）</h3>
         <table border="1">
         <tr><th>一</th><th>二</th><th>三</th><th>四</th><th>五</th><th>六</th><th>日</th></tr>
         <tr>{cells}</tr>
         </table>
+        <h3>按动作查看</h3>
+        <p>部位：
+        <select id="ex-part-filter" onchange="filterExByPart()">
+            <option value="">全部</option>
+            {ex_part_options}
+        </select></p>
+        <div id="ex-list">{ex_links}</div>
         <h3>全部训练日</h3>
-        <ul>{date_links}</ul>
-        <p><a href="/">返回首页</a></p>"#
+        <p>年份：
+        <select id="year-filter" onchange="filterDates()">
+            <option value="">全部</option>
+            {year_options}
+        </select>
+        月份：
+        <select id="month-filter" onchange="filterDates()">
+            <option value="">全部</option>
+            {month_options}
+        </select></p>
+        <ul id="date-list">{date_links}</ul>
+        <p><a href="/">返回首页</a></p>
+        <script>
+            {javascript}
+        </script>"#,
+        current_month = current_month,
+        cells = cells,
+        date_links = date_links,
+        ex_part_options = ex_part_options,
+        ex_links = ex_links,
+        year_options = year_options,
+        month_options = month_options,
+        javascript = r#"function filterExByPart(){
+            var part = document.getElementById('ex-part-filter').value;
+            document.querySelectorAll('#ex-list .ex-row').forEach(function(row){
+                row.style.display = (part === '' || row.getAttribute('data-part') === part) ? '' : 'none';
+            });
+        }
+        function filterDates(){
+            var year = document.getElementById('year-filter').value;
+            var month = document.getElementById('month-filter').value;
+            document.querySelectorAll('#date-list .date-row').forEach(function(row){
+                var okYear = (year === '' || row.getAttribute('data-year') === year);
+                var okMonth = (month === '' || row.getAttribute('data-month').slice(5) === month);
+                row.style.display = (okYear && okMonth) ? '' : 'none';
+            });
+        }"#,
     )))
 }
 
@@ -283,7 +393,8 @@ pub async fn history_day(
     if all_records_that_day.is_empty()
     {
         return Ok(Html(format!(
-            r#"<h2>{date} 训练记录</h2>
+            r#"<head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+            <h2>{date} 训练记录</h2>
             <p>这一天没有训练记录</p>
             <p><a href="/history">返回历史回顾</a></p>"#
         )));
@@ -333,7 +444,8 @@ pub async fn history_day(
         .collect::<String>();
 
     Ok(Html(format!(
-        r#"<h2>{date} 训练记录</h2>
+        r#"<head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+        <h2>{date} 训练记录</h2>
         <table border="1">
         <tr><th>动作</th><th>重量</th><th>组*次</th><th>休息</th>
         <th>1RM(Epley)</th><th>感受</th><th>策略</th><th>要领</th></tr>
@@ -437,7 +549,8 @@ pub async fn exercise_stats(
     if all_records.is_empty()
     {
         return Ok(Html(format!(
-            r#"<h2>{name} 的历史记录</h2>
+            r#"<head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+            <h2>{name} 的历史记录</h2>
             <p>这个动作还没有记录</p>
             <p><a href="/exercises">返回动作库</a></p>"#,
             name = exercise.name,
@@ -495,7 +608,8 @@ pub async fn exercise_stats(
     };
 
     Ok(Html(format!(
-        r#"<h2>{name} 的历史记录</h2>
+        r#"<head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+        <h2>{name} 的历史记录</h2>
         <table border="1">
         <tr><th>日期</th><th>重量</th><th>组*次</th><th>1RM</th><th>2RM</th><th>3RM</th>
         <th>感受</th><th>策略</th></tr>
