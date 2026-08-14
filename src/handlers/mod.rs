@@ -16,6 +16,7 @@
 // ============================================================
 
 pub mod auth;
+pub mod backup;
 pub mod exercises;
 pub mod phases;
 pub mod plan;

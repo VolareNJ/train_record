@@ -1,0 +1,8 @@
+﻿{
+    "name": "训练记录",
+    "short_name": "训练",
+    "start_url": "/today",
+    "display": "standalone",
+    "background_color": "#ffffff",
+    "theme_color": "#2196f3"
+}

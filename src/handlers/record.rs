@@ -382,13 +382,22 @@ pub async fn today(
         .join("\n");
 
     // 7d. 拼整页（风格与 M3 一致：h2 + 分组小节 + 返回链接）
+    // 【M6：PWA 注入 —— manifest + Service Worker 注册】
     Ok(Html(format!(
         r#"
-        <head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+        <head>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <link rel="manifest" href="/static/manifest.json">
+        </head>
         <h2>今日训练({today_dt})</h2>
         <p>阶段：{phase_name} | 已坚持 {persist_days} 天</p>
         {grouped_html}
         <p><a href="/">返回首页</a></p>
+        <script>
+            if ('serviceWorker' in navigator) {{
+                navigator.serviceWorker.register('/static/sw.js');
+            }}
+        </script>
         "#,
         today_dt = today_dt,
         phase_name = current_phase.name,

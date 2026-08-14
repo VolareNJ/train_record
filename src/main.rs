@@ -295,6 +295,23 @@ async fn main()
             "/admin/users",
             get(handlers::auth::admin_users).post(handlers::auth::admin_create_user),
         )
+        // ----------------------------------------------------------
+        // M6 新增：数据备份（下载 .db / 上传恢复 / CSV+JSON 导出）
+        // 教学注释见 src/handlers/backup.rs 顶部
+        // ----------------------------------------------------------
+        .route("/admin/backup", get(handlers::backup::backup_page))
+        .route(
+            "/admin/backup/download",
+            get(handlers::backup::backup_download),
+        )
+        .route(
+            "/admin/backup/upload",
+            post(handlers::backup::backup_upload),
+        )
+        .route(
+            "/admin/backup/export",
+            get(handlers::backup::export_records),
+        )
         // 【M5 修订：全局体重维护（首页账户区表单提交）】
         // 用户问题 0：体重是"一个地方维护的通用变量"，
         // record_form/plan_detail 的 support 模式自动获取。
@@ -815,7 +832,7 @@ async fn home(State(state): State<AppState>, headers: HeaderMap) -> Result<Respo
     // 管理员专属入口（首页只对管理员显示"用户管理"链接）
     let admin_link = if user.is_admin
     {
-        r#"<a href="/admin/users">用户管理</a>"#
+        r#"<a href="/admin/users">用户管理</a> | <a href="/admin/backup">数据备份</a>"#
     }
     else
     {
@@ -852,7 +869,10 @@ async fn home(State(state): State<AppState>, headers: HeaderMap) -> Result<Respo
     // 模板/计划同时保留在阶段列表每行里（见 phases.rs list 的注释）——
     // 首页只放"当前进行中阶段"的直达入口，其余阶段仍从阶段列表进入，避免首页堆满链接。
     Ok(Html(format!(
-        r#"<head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+        r#"<head>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <link rel="manifest" href="/static/manifest.json">
+        </head>
         <h1>训练记录系统</h1>
         <p>欢迎回来，{username}！</p>
         <h2>数据概览</h2>
@@ -879,6 +899,11 @@ async fn home(State(state): State<AppState>, headers: HeaderMap) -> Result<Respo
             <button type="submit">保存</button>
         </form>
         <p style="color:#888;font-size:0.9em">用于支撑（自重）类动作的重量换算，记录页自动获取。</p>
+        <script>
+            if ('serviceWorker' in navigator) {{
+                navigator.serviceWorker.register('/static/sw.js');
+            }}
+        </script>
         "#,
         username = user.username,
         phase_count = phase_count,
