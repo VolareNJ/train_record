@@ -114,6 +114,9 @@ pub struct ExerciseForm
     name: String,
     body_part: String,
     default_mode: String,
+    /// 【M5 修订：默认计重单位 kg/lb】
+    /// 只影响观测强度下拉预填与展示串，不影响实际强度（始终存 kg）。
+    default_unit: String,
     bar_weight: String,   // 表单层 String，入库前 parse 成 f64
     default_sets: String, // 表单层 String，入库前 parse 成 i64
     default_reps: String, // 表单层 String，入库前 parse 成 i64
@@ -373,6 +376,12 @@ pub async fn create_form(
                     <option value="std">标准</option>
                 </select>
             </label><br>
+            <label>默认计重单位
+                <select name="default_unit">
+                    <option value="kg" selected>kg</option>
+                    <option value="lb">lb</option>
+                </select>
+            </label><br>
             <div id="bar_weight_row">
                 <label>杠铃重量
                     <select name="bar_weight">
@@ -502,12 +511,13 @@ pub async fn create(
     // INSERT（10 列）。create 不需要 rows_affected：
     // INSERT 成功必然影响 1 行，execute() 的结果直接丢弃。
     sqlx::query(
-        "INSERT INTO exercises (user_id, name, body_part, default_mode, bar_weight, default_sets, default_reps, key_points, sort_order) VALUES (?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO exercises (user_id, name, body_part, default_mode, default_unit, bar_weight, default_sets, default_reps, key_points, sort_order) VALUES (?,?,?,?,?,?,?,?,?,?)",
     )
     .bind(user.id)
     .bind(name)
     .bind(&form.body_part)
     .bind(&form.default_mode)
+    .bind(&form.default_unit)
     .bind(bar_weight)
     .bind(default_sets)
     .bind(default_reps)
@@ -646,6 +656,11 @@ pub async fn edit_form(
                     {mode_options}
                 </select>
             </label><br>
+            <label>默认计重单位
+                <select name="default_unit">
+                    {unit_options}
+                </select>
+            </label><br>
             <div id="bar_weight_row">
                 <label>杠铃重量
                     <select name="bar_weight">
@@ -721,6 +736,23 @@ pub async fn edit_form(
                         "std" => "标准",
                         _ => *mode,
                     }
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        unit_options = ["kg", "lb"]
+            .iter()
+            .map(|u| {
+                format!(
+                    r#"<option value="{u}"{sel}>{u}</option>"#,
+                    sel = if *u == record_to_edit.default_unit
+                    {
+                        " selected"
+                    }
+                    else
+                    {
+                        ""
+                    },
                 )
             })
             .collect::<Vec<_>>()
@@ -815,13 +847,14 @@ pub async fn update(
     // 教训：SQL 的 ? 数 = bind 数，必须一一对应（数一遍再跑）。
     //   （phases 的 update 注释里也提过这个坑，这里复习一遍。）
     let ext_ret = sqlx::query(
-        "UPDATE exercises SET name = ?, body_part = ?, default_mode = ?,
+        "UPDATE exercises SET name = ?, body_part = ?, default_mode = ?, default_unit = ?,
           bar_weight = ?, default_sets = ?, default_reps = ?, key_points = ?
           WHERE id = ? AND user_id = ?",
     )
     .bind(form.name)
     .bind(form.body_part)
     .bind(form.default_mode)
+    .bind(form.default_unit)
     .bind(
         form.bar_weight
             .parse::<f64>()

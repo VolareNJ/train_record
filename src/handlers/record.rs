@@ -48,7 +48,7 @@ fn bar_name(bar_weight: f64) -> &'static str
         20.0 => "Olympic",
         11.3 => "Smith",
         10.0 => "Short",
-        _ => "Dual", // 0kg 双边
+        _ => "dual", // 0kg 双边（M5 修订：小写）
     }
 }
 
@@ -61,25 +61,45 @@ fn bar_name(bar_weight: f64) -> &'static str
 ///   bar     → 片重 = (总重 - 杆重) / 2
 ///   support → 支撑量 = 体重 - 总重
 ///   std     → 片重 = 总重
+/// 【M5 修订：unit 参数 —— 观测强度单位（kg/lb）】
+///   lb 单位 → 观测强度显示值 = kg 值 ÷ 0.4536（与换算器互逆）。
+///   实际强度始终是 kg（weight 字段），只有观测强度换单位。
 /// ⚠️ 已知取舍：support 用当前体重逆换算，改体重后历史记录的
 ///   观测强度会跟着变——与旧 Python 版行为一致，接受。
-fn mode_display(mode: &str, weight: f64, bar_weight: f64, body_weight: Option<f64>) -> String
+fn mode_display(
+    mode: &str,
+    weight: f64,
+    bar_weight: f64,
+    body_weight: Option<f64>,
+    unit: &str,
+) -> String
 {
+    // kg → 显示单位（lb 时 ÷0.4536，与 weight_converter.js 互逆）
+    let disp = |kg: f64| {
+        if unit == "lb"
+        {
+            format!("{:.0}lb", (kg / 0.4536).round())
+        }
+        else
+        {
+            format!("{kg}kg")
+        }
+    };
     match mode
     {
         "bar" =>
         {
             let plate = ((weight - bar_weight) / 2.0).max(0.0);
-            format!("bar({}, {plate}kg)", bar_name(bar_weight))
+            format!("bar({}, {})", bar_name(bar_weight), disp(plate))
         },
         "support" =>
         {
             let body = body_weight.unwrap_or(0.0);
             let support = (body - weight).max(0.0);
-            format!("Support({body}kg - {support}kg)")
+            format!("support({body}kg - {})", disp(support))
         },
         // std + 老数据 lb2kg → 同一显示（观测强度 = 总重）
-        _ => format!("std({weight}kg)"),
+        _ => format!("std({})", disp(weight)),
     }
 }
 
@@ -206,7 +226,7 @@ pub async fn today(
         .iter()
         // 【M4 修订：索引扩展成 (动作名, 身体部位) 元组】
         // today 页要按 body_part 分组，所以索引不再只存名字
-        // 【M5 修订：再加 (默认模式, 默认杆重) —— 计划值展示需要】
+        // 【M5 修订：再加 (默认模式, 默认杆重, 默认单位) —— 计划值展示需要】
         .map(|e| {
             (
                 e.id,
@@ -215,10 +235,11 @@ pub async fn today(
                     e.body_part.clone(),
                     e.default_mode.clone(),
                     e.bar_weight,
+                    e.default_unit.clone(),
                 ),
             )
         })
-        .collect::<HashMap<i64, (String, String, String, f64)>>();
+        .collect::<HashMap<i64, (String, String, String, f64, String)>>();
     // 6. 每个计划项查"最近一条记录"判断状态 + 上次策略：
     //    SELECT * FROM records WHERE plan_item_id = ?
     //    ORDER BY record_date DESC, id DESC LIMIT 1
@@ -267,35 +288,49 @@ pub async fn today(
     for (item, last) in &items_with_records
     {
         // 动作名 + 部位 + 默认计重：从索引取（查不到显示 "?" / "未分组"，理论不发生）
-        let (ex_name, body_part, ex_default_mode, ex_default_bar) =
+        let (ex_name, body_part, ex_default_mode, ex_default_bar, ex_default_unit) =
             id_to_ex.get(&item.exercise_id).cloned().unwrap_or_else(|| {
                 (
                     "?".to_string(),
                     "未分组".to_string(),
                     "std".to_string(),
                     0.0,
+                    "kg".to_string(),
                 )
             });
-        let ex_defaults = (ex_default_mode, ex_default_bar);
+        let ex_defaults = (ex_default_mode, ex_default_bar, ex_default_unit);
         // 计划值：模式(参数,观测强度), sets*reps
         // 【M5 修订：计重模式展示串（mode_display 辅助函数）】
         // plan_weight/plan_mode/plan_bar_weight 是计划预设（可空），
-        // 空 → 回退动作库默认（动作没预设就用 default_mode/bar_weight）
+        // 空 → 回退动作库默认（动作没预设就用 default_mode/bar_weight/unit）
         // body_weight 从 AuthUser 拿（support 逆换算用）
         let plan_value = {
-            let plan_weight = item.plan_weight;
             let plan_mode = item
                 .plan_mode
                 .clone()
                 .unwrap_or_else(|| ex_defaults.0.clone());
+            // 【M5 修订：support 无重量 → 回退体重（自重动作）】
+            // 引体向上等自重动作不填计划重量 = "无辅助引体"，
+            // 实际负重 = 体重、支撑 = 0。None 当 0 会显示"支撑 90kg"（错）。
+            let plan_weight = item.plan_weight.unwrap_or_else(|| {
+                if plan_mode == "support"
+                {
+                    user.body_weight.unwrap_or(0.0)
+                }
+                else
+                {
+                    0.0
+                }
+            });
             let plan_bar = item.plan_bar_weight.unwrap_or(ex_defaults.1);
             format!(
                 "{mode}, {sets}*{reps}",
                 mode = mode_display(
                     &plan_mode,
-                    plan_weight.unwrap_or(0.0),
+                    plan_weight,
                     plan_bar,
-                    user.body_weight
+                    user.body_weight,
+                    &ex_defaults.2,
                 ),
                 sets = item.plan_sets.map_or("-".to_string(), |v| v.to_string()),
                 reps = item.plan_reps.map_or("-".to_string(), |v| v.to_string()),
@@ -504,7 +539,8 @@ pub async fn record_form(
                     &r.mode,
                     r.weight,
                     exercise_details.bar_weight,
-                    user.body_weight
+                    user.body_weight,
+                    &exercise_details.default_unit,
                 ),
                 sets = r.sets,
                 reps = r.reps,
@@ -727,8 +763,7 @@ pub async fn record_form(
             <label>观测强度
                 <input id="plate-input" type="number" step="0.5" value="">
                 <select id="unit-select">
-                    <option value="kg" selected>kg</option>
-                    <option value="lb">lb</option>
+                    {unit_options}
                 </select>
             </label>
             <span id="result"></span><br>
@@ -799,11 +834,26 @@ pub async fn record_form(
                     .plan_mode
                     .clone()
                     .unwrap_or_else(|| exercise_details.default_mode.clone()),
-                plan_item.plan_weight.unwrap_or(0.0),
+                // 【M5 修订：support 无重量 → 回退体重（自重动作）】
+                plan_item.plan_weight.unwrap_or_else(|| {
+                    if plan_item
+                        .plan_mode
+                        .as_deref()
+                        .unwrap_or(&exercise_details.default_mode)
+                        == "support"
+                    {
+                        user.body_weight.unwrap_or(0.0)
+                    }
+                    else
+                    {
+                        0.0
+                    }
+                }),
                 plan_item
                     .plan_bar_weight
                     .unwrap_or(exercise_details.bar_weight),
                 user.body_weight,
+                &exercise_details.default_unit,
             ),
             sets = plan_item
                 .plan_sets
@@ -812,6 +862,26 @@ pub async fn record_form(
                 .plan_reps
                 .map_or("-".to_string(), |v| v.to_string()),
         ),
+        // 【M5 修订：单位下拉预填 —— 动作 default_unit 决定初始选中】
+        // 动作默认 lb（如美式器械）→ 下拉默认 lb；默认 kg → kg。
+        // localStorage 偏好（用户手动切换）仍会覆盖此预填（JS 层处理）。
+        unit_options = ["kg", "lb"]
+            .iter()
+            .map(|u| {
+                format!(
+                    r#"<option value="{u}"{sel}>{u}</option>"#,
+                    sel = if *u == exercise_details.default_unit
+                    {
+                        " selected"
+                    }
+                    else
+                    {
+                        ""
+                    },
+                )
+            })
+            .collect::<Vec<String>>()
+            .join("\n"),
         last_ref = last_ref,
         plan_id = current_plan.id,
         item_id = plan_item.id,

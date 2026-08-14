@@ -78,6 +78,9 @@ pub struct Exercise
     pub default_mode: String,
     /// 默认杆重（bar 模式用）
     pub bar_weight: f64,
+    /// 默认计重单位 kg/lb（M5 修订：只影响观测强度下拉预填与展示串，
+    /// 不影响实际强度——实际强度始终存 kg）
+    pub default_unit: String,
     /// 默认组数（建计划时预填）
     pub default_sets: i64,
     /// 默认次数（建计划时预填）

@@ -1505,6 +1505,7 @@ pub async fn plan_detail(
                     "default_reps": ex.default_reps,
                     "default_mode": mode,
                     "bar_weight": ex.bar_weight,
+                    "default_unit": ex.default_unit,
                     "key_points": ex.key_points,
                 }),
             )
@@ -1565,6 +1566,18 @@ pub async fn plan_detail(
             let bar_weight = item
                 .plan_bar_weight
                 .unwrap_or(ex.map_or(0.0, |e| e.bar_weight));
+            // 【M5 修订：单位回显 —— 动作 default_unit 决定观测强度下拉预填】
+            let unit = ex.map_or("kg".to_string(), |e| e.default_unit.clone());
+            let unit_options = ["kg", "lb"]
+                .iter()
+                .map(|u| {
+                    format!(
+                        r#"<option value="{u}"{sel}>{u}</option>"#,
+                        sel = if *u == unit { " selected" } else { "" },
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
             let rest = item
                 .plan_rest
                 .map_or(String::new(), |v| v.to_string());
@@ -1667,7 +1680,7 @@ pub async fn plan_detail(
                 <td><select name="mode_{ex_id}" id="mode-{ex_id}" class="mode-select" data-ex="{ex_id}">{mode_options}</select></td>
                 {bar_body_cell}
                 <td><input id="plate-{ex_id}" type="number" step="0.5" value="">
-                    <select id="unit-{ex_id}"><option value="kg" selected>kg</option><option value="lb">lb</option></select>
+                    <select id="unit-{ex_id}">{unit_options}</select>
                     <span id="result-{ex_id}"></span></td>
                 <td><input name="sets_{ex_id}" type="number" step="1" value="{sets}"></td>
                 <td><input name="reps_{ex_id}" type="number" step="1" value="{reps}"></td>
@@ -1688,6 +1701,7 @@ pub async fn plan_detail(
                 reps = reps,
                 weight = weight,
                 mode_options = mode_options,
+                unit_options = unit_options,
                 rest = rest,
                 key_points = key_points,
                 note = note,
@@ -1822,7 +1836,7 @@ pub async fn plan_detail(
                 '<span id="bar-body-na-' + id + '" style="color:#999">N/A</span>' +
                 '</td>' +
                 '<td><input id="plate-' + id + '" type="number" step="0.5" value="">' +
-                '<select id="unit-' + id + '"><option value="kg" selected>kg</option><option value="lb">lb</option></select>' +
+                '<select id="unit-' + id + '"><option value="kg"' + (ex.default_unit === 'kg' ? ' selected' : '') + '>kg</option><option value="lb"' + (ex.default_unit === 'lb' ? ' selected' : '') + '>lb</option></select>' +
                 '<span id="result-' + id + '"></span></td>' +
                 '<td><input name="sets_' + id + '" type="number" step="1" value="' + ex.default_sets + '"></td>' +
                 '<td><input name="reps_' + id + '" type="number" step="1" value="' + ex.default_reps + '"></td>' +
