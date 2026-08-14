@@ -222,27 +222,27 @@ pub async fn today(
             item.plan_weight
                 .map_or(String::new(), |v| format!("({v}kg)")),
         );
-        // 状态徽标 + 上次策略提示
-        // 【M4 修订：只有 records.completed = 1 才算"已完成"】
-        //   Some(rec) 且 completed → ✅已完成
-        //   Some(rec) 但未勾选  → ⬜已记录未完成（练了但没做完/没勾）
-        //   None                → ⬜未训练
-        let (badge, strategy_hint) = match last
+        // 状态色 + 上次策略提示
+        // 【M5 修订：状态列从文字改为颜色填充（无文字）】
+        //   None                → 灰色   #ddd（未训练）
+        //   Some(rec) 未勾选    → 黄色   #ffe08a（已记录未完成）
+        //   Some(rec) completed → 绿色   #b7e4b0（已完成）
+        //   单元格用 &nbsp; 占位（不产生位移：td 始终存在，只变色）
+        // 【M5 修订：策略去掉"上次策略："前缀——列头已表明含义】
+        let (status_color, strategy_hint) = match last
         {
-            Some(rec) if rec.completed =>
-            {
-                ("√已完成".to_string(), format!("上次策略：{}", rec.strategy))
-            },
-            Some(rec) => ("•已记录未完成".to_string(), rec.strategy.to_string()),
-            None => ("×未训练".to_string(), String::new()),
+            Some(rec) if rec.completed => ("#b7e4b0", rec.strategy.clone()),
+            Some(rec) => ("#ffe08a", rec.strategy.clone()),
+            None => ("#dddddd", String::new()),
         };
         let row = format!(
-            "<tr><td>{ex_name}</td><td>{plan_value}</td><td>{badge}</td>\
+            "<tr><td>{ex_name}</td><td>{plan_value}</td>\
+             <td style=\"background-color:{status_color}\">&nbsp;</td>\
              <td>{strategy_hint}</td>\
              <td><a href=\"/plans/{plan_id}/record/{item_id}\">记录/编辑</a></td></tr>",
             ex_name = ex_name,
             plan_value = plan_value,
-            badge = badge,
+            status_color = status_color,
             strategy_hint = strategy_hint,
             plan_id = today_plan.id,
             item_id = item.id,

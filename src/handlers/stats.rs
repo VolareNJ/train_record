@@ -34,9 +34,10 @@
 use std::collections::HashMap;
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     response::Html,
 };
+use serde::Deserialize;
 use serde_json::json;
 use sqlx::SqlitePool;
 
@@ -64,33 +65,24 @@ use crate::{
 // ============================================================
 // 第一部分：历史首页（GET /history）
 // ============================================================
-/// 历史首页：当月日历（有记录的日子有标记）+ 全部训练日列表
+/// 历史首页：年月导航日历（有记录的日子有标记）+ 按动作查看（勾选项）
 ///
 /// 【教学：页面结构】
-///   上半部分：当月月历（7 列网格），有记录的日子显示可点击链接
-///   下半部分：全部训练日列表（倒序），每个日期 → /history/{date}
+///   年月下拉（默认当前年月）→ 日历（7 列网格，有记录的日子 ● 链接）
+///   勾选"按动作查看"→ 部位筛选 + 动作列表（链接到动作详情）
 ///
 /// 实现步骤：
-/// 1. 签名：State + AuthUser
-/// 2. 查当前用户全部非空训练日（倒序，最新在前）：
-///    SELECT DISTINCT record_date FROM records
-///    WHERE user_id = ? ORDER BY record_date DESC
-///    （DISTINCT：同一天练多个动作会产生多行记录，去重后每天一行）
-/// 3. 查"今天所在月"有记录的日期集合（用于日历标记）：
-///    - 先拿当月前缀：SELECT strftime('%Y-%m', date('now','localtime'))
-///      （如 '2026-08'）
-///    - 再查：SELECT DISTINCT record_date FROM records
-///      WHERE user_id = ? AND record_date LIKE '2026-08%'
-///      （日期是零填充字符串 '2026-08-03'，LIKE '2026-08%' 能精确匹配当月）
-/// 4. 渲染日历：7 列表格（周一~周日），
-///    把当月 1~31 号排进格子，有记录的日期显示 <a> 链接
-///    （简化：第一天固定从第一格开始，不必按真实星期对齐；
-///     想对齐的话用 strftime('%w', ...) 拿星期偏移——选做）
-/// 5. 渲染训练日列表：遍历第 2 步的结果，每天一个链接
-/// 6. 空态：一条记录都没有 → 提示"还没有训练记录，去今日页开始第一次训练吧"
+/// 1. 签名：State + AuthUser + Query（?year=2026&month=08，均可空）
+/// 2. 查当前用户全部非空训练日（倒序）
+/// 3. 目标年月：query 传了就按 query（校验），没传用当前年月
+/// 4. 查目标月天数（SQLite 日期运算）+ 当月有记录的日期集合
+/// 5. 渲染日历：有记录的日子 ● 链接；年月下拉 selected 目标值
+/// 6. 按动作查看：checkbox 控制显隐（默认收起）+ 部位筛选
+/// 7. 空态：一条记录都没有 → 引导去今日页
 pub async fn history(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
+    Query(query): Query<CalQuery>,
 ) -> Result<Html<String>, AppError>
 {
     let non_empty_train_dts = sqlx::query_scalar::<_, String>(
@@ -103,20 +95,38 @@ pub async fn history(
     .await
     .map_err(AppError::Database)?;
 
-    let current_month =
+    // 空态：一条记录都没有 → 引导去今日页
+    if non_empty_train_dts.is_empty()
+    {
+        return Ok(Html(
+            r#"<head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+            <h2>历史回顾</h2>
+            <p>还没有训练记录，去<a href="/today">今日页</a>开始第一次训练吧</p>
+            <p><a href="/">返回首页</a></p>"#
+                .to_string(),
+        ));
+    }
+
+    // 【M5 修订：目标年月 —— query 参数优先，默认当前年月】
+    //   ?year=2025&month=03 → 看 2025-03 的日历（导航历史）
+    //   无参数 → 当前年月（默认视图）
+    //   月份固定两位：format!("{m:02}") 保证 "03" 而非 "3"
+    let now_ym =
         sqlx::query_scalar::<_, String>("SELECT strftime('%Y-%m', date('now','localtime'))")
             .fetch_one(&state.pool)
             .await
             .map_err(AppError::Database)?;
+    let target_year = query
+        .year
+        .clone()
+        .unwrap_or_else(|| now_ym[..4].to_string());
+    let target_month = query
+        .month
+        .clone()
+        .unwrap_or_else(|| now_ym[5..7].to_string());
+    let target_ym = format!("{target_year}-{target_month}");
 
-    let current_month_train_dts = non_empty_train_dts
-        .iter()
-        .filter(|dt| dt.starts_with(&current_month))
-        .collect::<Vec<&String>>();
-
-    // 【M5 修订：两个新查询——按动作查看 + 年/月筛选选项】
-    // 1. 全部动作（id + 名字 + 部位）："按动作查看历史"区块
-    // 2. 年份选项：从训练日集合去重（如 ["2026"]），供年/月筛选下拉
+    // 【M5 修订：按动作查看 —— 全部动作（id + 名字 + 部位）】
     let all_exercises = sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE user_id = ?")
         .bind(&user.id)
         .fetch_all(&state.pool)
@@ -148,60 +158,57 @@ pub async fn history(
         })
         .collect::<Vec<String>>()
         .join("\n");
-    // 年份选项：从训练日提取前 4 位去重（倒序，新年前）
-    let mut year_list: Vec<String> = non_empty_train_dts
+
+    // 【M5 修订：年份选项 —— 训练日年份去重 + 目标年兜底】
+    //   跳历史年份时目标年可能不在训练日集合里 → 手动并入（insert 天然去重）
+    let mut year_set: std::collections::HashSet<String> = non_empty_train_dts
         .iter()
         .map(|dt| dt[..4].to_string())
-        .collect::<std::collections::HashSet<String>>()
-        .into_iter()
         .collect();
+    year_set.insert(target_year.clone());
+    let mut year_list: Vec<String> = year_set.into_iter().collect();
     year_list.sort_by(|a, b| b.cmp(a));
     let year_options = year_list
         .iter()
-        .map(|y| format!(r#"<option value="{y}">{y}</option>"#, y = y))
+        .map(|y| {
+            format!(
+                r#"<option value="{y}"{sel}>{y}</option>"#,
+                sel = if *y == target_year { " selected" } else { "" },
+            )
+        })
+        .collect::<Vec<String>>()
+        .join("\n");
+    // 月份选项：01-12，selected 目标月
+    let month_options = (1..=12)
+        .map(|m| {
+            let mm = format!("{m:02}");
+            format!(
+                r#"<option value="{mm}"{sel}>{mm}月</option>"#,
+                sel = if mm == target_month { " selected" } else { "" },
+            )
+        })
         .collect::<Vec<String>>()
         .join("\n");
 
-    // —— 以下为渲染部分（HTML 拼接）——
-    // 【教学：M4_bugfix_notes §6 约定——前端 DOM/HTML 部分 vibe coding 不补课，
-    //   所以这半段老师代写。你写的后端逻辑到上面为止都是对的。】
-    // 但注意：渲染前还有最后一点"后端逻辑"——当月天数。
-
-    // 空态：一条记录都没有 → 引导去今日页
-    if non_empty_train_dts.is_empty()
-    {
-        return Ok(Html(
-            r#"<head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
-            <h2>历史回顾</h2>
-            <p>还没有训练记录，去<a href="/today">今日页</a>开始第一次训练吧</p>
-            <p><a href="/">返回首页</a></p>"#
-                .to_string(),
-        ));
-    }
-
-    // 【教学：当月天数也让 SQLite 算——日期纪律】
-    // 链式日期运算：本月 1 号 → +1 月 → -1 天 = 当月最后一天，
+    // 【教学：目标月天数也让 SQLite 算——日期纪律】
+    // 链式日期运算：目标月 1 号 → +1 月 → -1 天 = 目标月最后一天，
     // 再 strftime('%d') 取"日"，CAST 转整数 → 31/30/28/29
-    // 不引入 chrono、不让 Rust 手算闰年（M5.md 常见坑第 1 条）
     let days_in_month = sqlx::query_scalar::<_, i64>(
-        "SELECT CAST(strftime('%d', date('now', 'localtime',
-        'start of month', '+1 month', '-1 day')) AS INTEGER)",
+        "SELECT CAST(strftime('%d', date(?, '+1 month', '-1 day')) AS INTEGER)",
     )
+    .bind(format!("{target_ym}-01"))
     .fetch_one(&state.pool)
     .await
     .map_err(AppError::Database)?;
 
-    // 日历单元格：1..=当月天数，每 7 格换一行
+    // 日历单元格：1..=目标月天数，每 7 格换一行
     //   - 有记录的日子 → ● 标记 + 链接到 /history/{date}
     //   - 无记录 → 纯文本日号
-    // 简化：第一天固定从第一格开始，不做真实星期对齐（M5.md 已说明）
     // {day:02} = 零填充两位数（08-03 的"03"）
     let cells = (1..=days_in_month)
         .map(|day| {
-            let date_str = format!("{}-{day:02}", current_month);
-            let is_train_day = current_month_train_dts
-                .iter()
-                .any(|dt| dt.as_str() == date_str);
+            let date_str = format!("{target_ym}-{day:02}");
+            let is_train_day = non_empty_train_dts.iter().any(|dt| dt == &date_str);
             let cell = if is_train_day
             {
                 format!(r#"<td><a href="/history/{date_str}">●{day}</a></td>"#)
@@ -222,82 +229,58 @@ pub async fn history(
         })
         .collect::<String>();
 
-    // 训练日列表：全部记录日倒序，每天一个链接
-    //   data-year/data-month：供 JS 年/月筛选（YYYY / YYYY-MM）
-    let date_links = non_empty_train_dts
-        .iter()
-        .map(|dt| {
-            format!(
-                r#"<li class="date-row" data-year="{y}" data-month="{m}"><a href="/history/{dt}">{dt}</a></li>"#,
-                y = &dt[..4],
-                m = &dt[..7],
-                dt = dt,
-            )
-        })
-        .collect::<String>();
-
-    // 【M5 修订：按动作查看区块 + 年月筛选控件 + 对应 JS】
-    //   - 动作列表：部位下拉筛选（ex-row 容器级显隐，M4_bugfix_notes §2 模式）
-    //   - 年月筛选：年/月两个下拉 + 列表行显隐（date-row 同类）
-    //   月份选项：01~12（年选了具体年份才生效——年筛选影响可见月份，
-    //   简化实现：月份下拉始终 01-12，JS 里年份过滤与月份过滤叠加）
-    let month_options = (1..=12)
-        .map(|m| format!(r#"<option value="{m:02}">{m:02}月</option>"#))
-        .collect::<Vec<String>>()
-        .join("\n");
-
+    // 【M5 修订：按动作查看区块 —— checkbox 控制显隐（默认收起）】
+    //   原"全部训练日"区块移除：日历已覆盖训练日信息（还能看到"哪天没练"），
+    //   加年月导航后日历完全替代列表——避免页面过长（动作多时列表在底部）。
+    //   勾选"按动作查看"才展开动作列表（label 包 checkbox + JS 显隐）。
     Ok(Html(format!(
         r#"<head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
         <h2>历史回顾</h2>
-        <h3>{current_month} 日历（● = 有记录）</h3>
+        <p>年份：
+        <select id="cal-year-filter" onchange="changeCalMonth()">
+            {year_options}
+        </select>
+        月份：
+        <select id="cal-month-filter" onchange="changeCalMonth()">
+            {month_options}
+        </select></p>
+        <h3>日历（● = 有记录）</h3>
         <table border="1">
         <tr><th>一</th><th>二</th><th>三</th><th>四</th><th>五</th><th>六</th><th>日</th></tr>
         <tr>{cells}</tr>
         </table>
-        <h3>按动作查看</h3>
-        <p>部位：
-        <select id="ex-part-filter" onchange="filterExByPart()">
-            <option value="">全部</option>
-            {ex_part_options}
-        </select></p>
-        <div id="ex-list">{ex_links}</div>
-        <h3>全部训练日</h3>
-        <p>年份：
-        <select id="year-filter" onchange="filterDates()">
-            <option value="">全部</option>
-            {year_options}
-        </select>
-        月份：
-        <select id="month-filter" onchange="filterDates()">
-            <option value="">全部</option>
-            {month_options}
-        </select></p>
-        <ul id="date-list">{date_links}</ul>
+        <p><label><input type="checkbox" id="ex-list-toggle" onchange="toggleExList()"> 按动作查看</label></p>
+        <div id="ex-list" style="display:none">
+            <p>部位：
+            <select id="ex-part-filter" onchange="filterExByPart()">
+                <option value="">全部</option>
+                {ex_part_options}
+            </select></p>
+            <div id="ex-list-rows">{ex_links}</div>
+        </div>
         <p><a href="/">返回首页</a></p>
         <script>
             {javascript}
         </script>"#,
-        current_month = current_month,
         cells = cells,
-        date_links = date_links,
         ex_part_options = ex_part_options,
         ex_links = ex_links,
         year_options = year_options,
         month_options = month_options,
-        javascript = r#"function filterExByPart(){
+        javascript = r#"function toggleExList(){
+            var on = document.getElementById('ex-list-toggle').checked;
+            document.getElementById('ex-list').style.display = on ? '' : 'none';
+        }
+        function filterExByPart(){
             var part = document.getElementById('ex-part-filter').value;
-            document.querySelectorAll('#ex-list .ex-row').forEach(function(row){
+            document.querySelectorAll('#ex-list-rows .ex-row').forEach(function(row){
                 row.style.display = (part === '' || row.getAttribute('data-part') === part) ? '' : 'none';
             });
         }
-        function filterDates(){
-            var year = document.getElementById('year-filter').value;
-            var month = document.getElementById('month-filter').value;
-            document.querySelectorAll('#date-list .date-row').forEach(function(row){
-                var okYear = (year === '' || row.getAttribute('data-year') === year);
-                var okMonth = (month === '' || row.getAttribute('data-month').slice(5) === month);
-                row.style.display = (okYear && okMonth) ? '' : 'none';
-            });
+        function changeCalMonth(){
+            var y = document.getElementById('cal-year-filter').value;
+            var m = document.getElementById('cal-month-filter').value;
+            if (y && m) { window.location.href = '/history?year=' + y + '&month=' + m; }
         }"#,
     )))
 }
@@ -552,7 +535,7 @@ pub async fn exercise_stats(
             r#"<head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
             <h2>{name} 的历史记录</h2>
             <p>这个动作还没有记录</p>
-            <p><a href="/exercises">返回动作库</a></p>"#,
+            <p><a href="/history">返回历史回顾</a></p>"#,
             name = exercise.name,
         )));
     }
@@ -616,7 +599,7 @@ pub async fn exercise_stats(
         {rows}
         </table>
         {chart_section}
-        <p><a href="/exercises">返回动作库</a> | <a href="/history">返回历史回顾</a></p>"#,
+        <p><a href="/history">返回历史回顾</a></p>"#,
         name = exercise.name,
     )))
 }
@@ -721,4 +704,18 @@ pub async fn exercise_chart_html(
         }});
         </script>"#
     )))
+}
+
+// ============================================================
+// 【M5 修订：日历导航查询参数】
+// ============================================================
+/// GET /history?year=2026&month=08 —— 跳转查看任意年月的日历
+///
+/// 【教学：Query 提取器 + Option 字段（M2 exercises.rs 同款）】
+/// 查询参数天然可选：不传 → None → 用默认（当前年月）。
+#[derive(Deserialize)]
+pub struct CalQuery
+{
+    pub year: Option<String>,
+    pub month: Option<String>,
 }
