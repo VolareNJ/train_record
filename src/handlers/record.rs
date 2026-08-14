@@ -222,12 +222,12 @@ pub async fn today(
             item.plan_weight
                 .map_or(String::new(), |v| format!("({v}kg)")),
         );
-        // 状态色 + 上次策略提示
-        // 【M5 修订：状态列从文字改为颜色填充（无文字）】
-        //   None                → 灰色   #ddd（未训练）
+        // 整行状态色 + 上次策略提示
+        // 【M5 修订：整行填色替代状态列（信息更直观、少一列更紧凑）】
+        //   None                → 灰色   #dddddd（未训练）
         //   Some(rec) 未勾选    → 黄色   #ffe08a（已记录未完成）
         //   Some(rec) completed → 绿色   #b7e4b0（已完成）
-        //   单元格用 &nbsp; 占位（不产生位移：td 始终存在，只变色）
+        //   tr 加 style 背景色，所有 td 一起变色（无位移风险）
         // 【M5 修订：策略去掉"上次策略："前缀——列头已表明含义】
         let (status_color, strategy_hint) = match last
         {
@@ -236,8 +236,7 @@ pub async fn today(
             None => ("#dddddd", String::new()),
         };
         let row = format!(
-            "<tr><td>{ex_name}</td><td>{plan_value}</td>\
-             <td style=\"background-color:{status_color}\">&nbsp;</td>\
+            "<tr style=\"background-color:{status_color}\"><td>{ex_name}</td><td>{plan_value}</td>\
              <td>{strategy_hint}</td>\
              <td><a href=\"/plans/{plan_id}/record/{item_id}\">记录/编辑</a></td></tr>",
             ex_name = ex_name,
@@ -260,7 +259,7 @@ pub async fn today(
         .iter()
         .map(|(part, rows)| {
             format!(
-                "<h3>{part}</h3>\n<table border=\"1\"><tr><th>动作</th><th>计划值</th><th>状态</th><th>上次策略</th><th>操作</th></tr>\n{rows}\n</table>",
+                "<h3>{part}</h3>\n<table border=\"1\"><tr><th>动作</th><th>计划值</th><th>上次策略</th><th>操作</th></tr>\n{rows}\n</table>",
                 part = part,
                 rows = rows.join("\n"),
             )

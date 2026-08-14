@@ -202,8 +202,9 @@ pub async fn history(
     .map_err(AppError::Database)?;
 
     // 日历单元格：1..=目标月天数，每 7 格换一行
-    //   - 有记录的日子 → ● 标记 + 链接到 /history/{date}
-    //   - 无记录 → 纯文本日号
+    //   【M5 修订：颜色填充替代 ● 标记】
+    //   - 有记录的日子 → 绿色背景 + 链接到 /history/{date}
+    //   - 无记录 → 灰色背景（视觉上"空"更直观）
     // {day:02} = 零填充两位数（08-03 的"03"）
     let cells = (1..=days_in_month)
         .map(|day| {
@@ -211,11 +212,13 @@ pub async fn history(
             let is_train_day = non_empty_train_dts.iter().any(|dt| dt == &date_str);
             let cell = if is_train_day
             {
-                format!(r#"<td><a href="/history/{date_str}">●{day}</a></td>"#)
+                format!(
+                    r#"<td style="background-color:#b7e4b0"><a href="/history/{date_str}">{day}</a></td>"#
+                )
             }
             else
             {
-                format!("<td>{day}</td>")
+                format!(r#"<td style="background-color:#dddddd">{day}</td>"#)
             };
             // 每 7 格换行；最后一天恰好整行时不多插空行
             if day % 7 == 0 && day != days_in_month
@@ -229,10 +232,9 @@ pub async fn history(
         })
         .collect::<String>();
 
-    // 【M5 修订：按动作查看区块 —— checkbox 控制显隐（默认收起）】
-    //   原"全部训练日"区块移除：日历已覆盖训练日信息（还能看到"哪天没练"），
-    //   加年月导航后日历完全替代列表——避免页面过长（动作多时列表在底部）。
-    //   勾选"按动作查看"才展开动作列表（label 包 checkbox + JS 显隐）。
+    // 【M5 修订：按动作查看 —— 直接展示（部位下拉筛选）】
+    //   原 checkbox 勾选是在"有训练日列表"前提下避免页面过长；
+    //   训练日列表已移除，页面只剩日历 + 动作列表，直接展示即可。
     Ok(Html(format!(
         r#"<head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
         <h2>历史回顾</h2>
@@ -244,20 +246,18 @@ pub async fn history(
         <select id="cal-month-filter" onchange="changeCalMonth()">
             {month_options}
         </select></p>
-        <h3>日历（● = 有记录）</h3>
+        <h3>日历</h3>
         <table border="1">
         <tr><th>一</th><th>二</th><th>三</th><th>四</th><th>五</th><th>六</th><th>日</th></tr>
         <tr>{cells}</tr>
         </table>
-        <p><label><input type="checkbox" id="ex-list-toggle" onchange="toggleExList()"> 按动作查看</label></p>
-        <div id="ex-list" style="display:none">
-            <p>部位：
-            <select id="ex-part-filter" onchange="filterExByPart()">
-                <option value="">全部</option>
-                {ex_part_options}
-            </select></p>
-            <div id="ex-list-rows">{ex_links}</div>
-        </div>
+        <h3>按动作查看</h3>
+        <p>部位：
+        <select id="ex-part-filter" onchange="filterExByPart()">
+            <option value="">全部</option>
+            {ex_part_options}
+        </select></p>
+        <div id="ex-list-rows">{ex_links}</div>
         <p><a href="/">返回首页</a></p>
         <script>
             {javascript}
@@ -267,11 +267,7 @@ pub async fn history(
         ex_links = ex_links,
         year_options = year_options,
         month_options = month_options,
-        javascript = r#"function toggleExList(){
-            var on = document.getElementById('ex-list-toggle').checked;
-            document.getElementById('ex-list').style.display = on ? '' : 'none';
-        }
-        function filterExByPart(){
+        javascript = r#"function filterExByPart(){
             var part = document.getElementById('ex-part-filter').value;
             document.querySelectorAll('#ex-list-rows .ex-row').forEach(function(row){
                 row.style.display = (part === '' || row.getAttribute('data-part') === part) ? '' : 'none';
