@@ -46,7 +46,7 @@ use crate::{
     calc::{epley_1rm, wathan_mrm},
     error::AppError,
     handlers::auth::AuthUser,
-    models::{Exercise, Record},
+    models::{Exercise, Record, group_by_body_part},
 };
 
 // ============================================================
@@ -336,23 +336,47 @@ pub async fn history_day(
         },
     }
 
-    let all_records_that_day = sqlx::query_as::<_, Record>(
-        "SELECT r.* FROM records r
-    INNER JOIN exercises e ON r.exercise_id = e.id
-    WHERE e.user_id = ? AND r.record_date = ?
-    ORDER BY e.sort_order ASC",
+    // 【M5 修订：按部位分组 + 观测强度列】
+    // 查询扩展：
+    //   - LEFT JOIN plan_items：拿每条记录的杆重预设（训练时实际配置）
+    //     和动作部位/排序（分组用）
+    //   - COALESCE：孤儿记录（plan_item_id NULL，计划已删）→ 回退动作默认杆重
+    // 返回元组：(记录 id, 动作 id, 模式, 重量, 组, 次, 休息, 感受, 策略, 要领,
+    //            杆重, 单位, 部位)
+    // ORDER BY e.sort_order：同部位内按动作库排序（组内有序）
+    let rows_raw = sqlx::query_as::<
+        _,
+        (
+            i64,
+            i64,
+            String,
+            f64,
+            i64,
+            i64,
+            i64,
+            String,
+            String,
+            String,
+            Option<f64>,
+            String,
+            String,
+        ),
+    >(
+        "SELECT r.id, r.exercise_id, r.mode, r.weight, r.sets, r.reps, r.rest,
+        r.feeling, r.strategy, r.key_points,
+        COALESCE(pi.plan_bar_weight, e.bar_weight) AS bar,
+        e.default_unit, e.body_part
+        FROM records r
+        INNER JOIN exercises e ON r.exercise_id = e.id
+        LEFT JOIN plan_items pi ON r.plan_item_id = pi.id
+        WHERE e.user_id = ? AND r.record_date = ?
+        ORDER BY e.sort_order ASC, r.id",
     )
     .bind(&user.id)
     .bind(&date)
     .fetch_all(&state.pool)
     .await
-    .map_err(AppError::Database)?
-    .into_iter()
-    .map(|rec| {
-        let rm = epley_1rm(rec.weight, rec.reps);
-        (rec, rm)
-    })
-    .collect::<Vec<(Record, f64)>>();
+    .map_err(AppError::Database)?;
 
     let all_exercises = sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE user_id = ?")
         .bind(&user.id)
@@ -369,7 +393,7 @@ pub async fn history_day(
     // 标题用校验解析出的 yyyy/mm/dd——既展示给用户，又"用上"了校验结果。
 
     // 空态：该天没有记录
-    if all_records_that_day.is_empty()
+    if rows_raw.is_empty()
     {
         return Ok(Html(format!(
             r#"<head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
@@ -379,27 +403,46 @@ pub async fn history_day(
         )));
     }
 
-    // 表格行：动作名（链到动作详情，下钻第 3 层）| 重量 | 组×次 | 休息
-    //   | 1RM(Epley) | 感受 | 策略 | 要领
-    //   1RM 无效（公式返回 0）→ 显示 "-"（calc.rs 的边界约定）
-    let rows = all_records_that_day
+    // 表格行（按部位分组，组内按动作 sort_order）：
+    //   动作 | 观测强度 | 重量 | 组*次 | 休息 | 1RM(Epley) | 感受 | 策略 | 要领
+    // 【M5 修订：观测强度列优先于实际重量】
+    //   训练前翻计划看的是"器械上要放多重"（观测强度+计重方式），
+    //   不是实际总重——mode_display 与 today 计划值同款。
+    let rows: Vec<(String, String)> = rows_raw
         .iter()
-        .map(|(rec, rm)| {
-            let name = all_exercises
-                .get(&rec.exercise_id)
-                .map(|s| s.as_str())
-                .unwrap_or("未知动作");
-            let rm_text = if *rm <= 0.0
-            {
-                "-".to_string()
-            }
-            else
-            {
-                format!("{rm:.1}")
-            };
-            format!(
-                r#"<tr>
+        .map(
+            |(
+                _rec_id,
+                ex_id,
+                mode,
+                weight,
+                sets,
+                reps,
+                rest,
+                feeling,
+                strategy,
+                key_points,
+                bar,
+                unit,
+                part,
+            )| {
+                let name = all_exercises
+                    .get(ex_id)
+                    .map(|s| s.as_str())
+                    .unwrap_or("未知动作");
+                let rm = epley_1rm(*weight, *reps);
+                let rm_text = if rm <= 0.0
+                {
+                    "-".to_string()
+                }
+                else
+                {
+                    format!("{rm:.1}")
+                };
+                let row = format!(
+                    r#"<tr>
                 <td><a href="/exercises/{ex_id}/stats">{name}</a></td>
+                <td>{observed}</td>
                 <td>{weight}kg</td>
                 <td>{sets}组*{reps}次</td>
                 <td>{rest}秒</td>
@@ -408,28 +451,47 @@ pub async fn history_day(
                 <td>{strategy}</td>
                 <td>{key_points}</td>
                 </tr>"#,
-                ex_id = rec.exercise_id,
-                name = name,
-                weight = rec.weight,
-                sets = rec.sets,
-                reps = rec.reps,
-                rest = rec.rest,
-                rm_text = rm_text,
-                feeling = rec.feeling,
-                strategy = rec.strategy,
-                key_points = rec.key_points,
+                    ex_id = ex_id,
+                    name = name,
+                    observed = crate::handlers::record::mode_display(
+                        mode,
+                        *weight,
+                        bar.unwrap_or(0.0),
+                        user.body_weight,
+                        unit,
+                    ),
+                    weight = weight,
+                    sets = sets,
+                    reps = reps,
+                    rest = rest,
+                    rm_text = rm_text,
+                    feeling = feeling,
+                    strategy = strategy,
+                    key_points = key_points,
+                );
+                (part.clone(), row)
+            },
+        )
+        .collect();
+
+    // 按部位分组（保序分组 + 组间配置排序，today 页同款模式）
+    let groups = group_by_body_part(rows.into_iter(), &state.config.body_part_order);
+    let grouped_html = groups
+        .iter()
+        .map(|(part, rows)| {
+            format!(
+                "<h3>{part}</h3>\n<table border=\"1\"><tr><th>动作</th><th>观测强度</th><th>重量</th><th>组*次</th><th>休息</th><th>1RM(Epley)</th><th>感受</th><th>策略</th><th>要领</th></tr>\n{rows}\n</table>",
+                part = part,
+                rows = rows.join("\n"),
             )
         })
-        .collect::<String>();
+        .collect::<Vec<String>>()
+        .join("\n");
 
     Ok(Html(format!(
         r#"<head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
         <h2>{date} 训练记录</h2>
-        <table border="1">
-        <tr><th>动作</th><th>重量</th><th>组*次</th><th>休息</th>
-        <th>1RM(Epley)</th><th>感受</th><th>策略</th><th>要领</th></tr>
-        {rows}
-        </table>
+        {grouped_html}
         <p><a href="/history">返回历史回顾</a></p>"#
     )))
 }
@@ -520,6 +582,23 @@ pub async fn exercise_stats(
     })
     .collect::<Vec<(Record, f64, f64, f64)>>();
 
+    // 【M5 修订：观测强度列 —— 需要每条记录的杆重预设】
+    // records 不存杆重，按 plan_item_id LEFT JOIN plan_items 拿
+    // COALESCE：孤儿记录（计划已删）→ 回退动作默认杆重
+    let bar_map: HashMap<i64, f64> = sqlx::query_as::<_, (i64, f64)>(
+        "SELECT r.id, COALESCE(pi.plan_bar_weight, ?) AS bar
+        FROM records r
+        LEFT JOIN plan_items pi ON r.plan_item_id = pi.id
+        WHERE r.exercise_id = ?",
+    )
+    .bind(exercise.bar_weight)
+    .bind(&id)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(AppError::Database)?
+    .into_iter()
+    .collect();
+
     // —— 以下为渲染部分（HTML/JS 拼接，老师代写）——
     // 【教学：M4_bugfix_notes §6 约定——前端 DOM/Chart.js 部分 vibe coding 不补课。
     //   你写的后端逻辑（归属验证 + 查询 + 1RM/2RM/3RM 计算）到这里为止。】
@@ -536,9 +615,10 @@ pub async fn exercise_stats(
         )));
     }
 
-    // 表格行：日期 | 重量 | 组*次 | 1RM | 2RM | 3RM | 感受 | 策略
+    // 表格行：日期 | 观测强度 | 重量 | 组*次 | 1RM | 2RM | 3RM | 感受 | 策略
     //   （按日期升序展示，最新在最后，和折线图顺序一致）
     //   {v:.1} = 保留 1 位小数；无效记录（1RM=0）显示 "-"
+    // 【M5 修订：观测强度列优先于实际重量（mode_display 与 today 同款）】
     let rows = all_records
         .iter()
         .map(|(rec, one_rm, two_rm, three_rm)| {
@@ -555,6 +635,7 @@ pub async fn exercise_stats(
             format!(
                 r#"<tr>
                 <td>{date}</td>
+                <td>{observed}</td>
                 <td>{weight}kg</td>
                 <td>{sets}组*{reps}次</td>
                 <td>{one}</td>
@@ -564,6 +645,13 @@ pub async fn exercise_stats(
                 <td>{strategy}</td>
                 </tr>"#,
                 date = rec.record_date,
+                observed = crate::handlers::record::mode_display(
+                    &rec.mode,
+                    rec.weight,
+                    bar_map.get(&rec.id).copied().unwrap_or(0.0),
+                    user.body_weight,
+                    &exercise.default_unit,
+                ),
                 weight = rec.weight,
                 sets = rec.sets,
                 reps = rec.reps,
@@ -590,7 +678,7 @@ pub async fn exercise_stats(
         r#"<head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
         <h2>{name} 的历史记录</h2>
         <table border="1">
-        <tr><th>日期</th><th>重量</th><th>组*次</th><th>1RM</th><th>2RM</th><th>3RM</th>
+        <tr><th>日期</th><th>观测强度</th><th>重量</th><th>组*次</th><th>1RM</th><th>2RM</th><th>3RM</th>
         <th>感受</th><th>策略</th></tr>
         {rows}
         </table>

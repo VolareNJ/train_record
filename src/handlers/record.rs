@@ -38,10 +38,10 @@ use crate::{
 };
 
 // ============================================================
-// 【M5 修订：计重模式展示串 —— 计划值/上次参考共用】
+// 【M5 修订：计重模式展示串 —— 计划值/上次参考/历史页共用】
 // ============================================================
 /// 杆重规格 → 显示名（bar 模式括号里用）
-fn bar_name(bar_weight: f64) -> &'static str
+pub fn bar_name(bar_weight: f64) -> &'static str
 {
     match bar_weight
     {
@@ -66,7 +66,7 @@ fn bar_name(bar_weight: f64) -> &'static str
 ///   实际强度始终是 kg（weight 字段），只有观测强度换单位。
 /// ⚠️ 已知取舍：support 用当前体重逆换算，改体重后历史记录的
 ///   观测强度会跟着变——与旧 Python 版行为一致，接受。
-fn mode_display(
+pub fn mode_display(
     mode: &str,
     weight: f64,
     bar_weight: f64,
@@ -527,7 +527,15 @@ pub async fn record_form(
     // 6a. 上次记录参考（Option → HTML 行，None → 提示"还没有记录"）
     //     【教学：map + unwrap_or_default 链——处理 Option 不用 if】
     //     【M5 修订：格式对齐计划值 —— 模式(参数,观测强度), sets*reps】
+    //     【M5 修订：杆重来源 = 计划项预设（训练时实际配置）】
+    //      records 表不存 bar_weight，但计划项预设（plan_bar_weight）
+    //      就是用户训练前在计划里配的杆——训练时用的就是它。
+    //      用动作库默认（20）会错：如变式贝叶斯计划预设双边 0kg，
+    //      训练时用双边，显示 Olympic 就错了。
     //     None → "还没有记录，这是第一次！"
+    let ref_bar_weight = plan_item
+        .plan_bar_weight
+        .unwrap_or(exercise_details.bar_weight);
     let last_ref = most_recent_record
         .as_ref()
         .map(|r| {
@@ -538,7 +546,7 @@ pub async fn record_form(
                 mode_disp = mode_display(
                     &r.mode,
                     r.weight,
-                    exercise_details.bar_weight,
+                    ref_bar_weight,
                     user.body_weight,
                     &exercise_details.default_unit,
                 ),
