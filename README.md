@@ -8,19 +8,19 @@
 
 ---
 
-## ✨ 核心特性（规划）
+## ✨ 核心特性
 
 | 特性 | 说明 |
 |------|------|
 | 👥 多用户 | 账号系统，数据互相隔离；**管理员邀请制**注册，避免陌生人注册 |
 | 🗂️ 训练阶段 (Phase) | 一段训练期归档为一个阶段，可只读回看、重新启用 |
 | 📋 计划与模板 | A/B 分化模板绑定阶段，每日人工制定计划 |
-| ✅ 今日页 | 训练动作列表 + 状态徽标，点击任意动作即可查看/编辑 |
+| ✅ 今日页 | 训练动作列表 + 整行状态色（绿=完成/黄=记录未完成/灰=未训练），点击任意动作即可记录/编辑 |
 | ⚡ 即时保存 | 训练记录自动落库，无需"归档"按钮 |
-| 📊 历史回顾 | 日历视图 + 动作详情（表格/折线图/1RM） |
-| 🔁 重量换算 | 界面内置换算器（bar/support/std/lb2kg），杆重按动作可配置 |
-| 🔒 数据安全 | 导出/导入 + CSV/JSON 导出，随时备份 |
-| 📱 移动友好 | 手机浏览器访问（规划 PWA 添加到主屏幕） |
+| 📊 历史回顾 | 年月导航日历 + 按动作查看 + 当天详情（按部位分组）+ 动作详情（1RM/2RM/3RM 表格 + Chart.js 折线图） |
+| 🔁 重量换算 | 界面内置换算器（bar/support/std），观测强度 + 计重方式展示串，杆重/单位按动作可配置 |
+| 🔒 数据安全 | 网页下载 .db 备份 + 上传恢复 + CSV/JSON 导出 |
+| 📱 PWA | 手机可"添加到主屏幕"全屏使用，静态资源离线缓存 |
 
 ---
 
@@ -161,30 +161,47 @@ cargo fmt --check  # 检查是否合规
 
 ```
 train_record/
-├── Cargo.toml              # 依赖清单
+├── Cargo.toml              # 依赖清单（axum 含 multipart）
 ├── rust-toolchain.toml     # 固定 nightly 工具链（rustfmt 需要）
 ├── rustfmt.toml            # 格式化配置（大括号换行）
-├── migrations/
-│   └── 0001_init.sql       # 数据库表结构（7 张表，自动迁移）
+├── migrations/             # SQLite 迁移（自动执行，幂等）
+│   ├── 0001_init.sql       # 8 张基础表
+│   ├── 0002_sessions.sql   # 会话表
+│   ├── 0003_plan_items_metadata.sql  # 计划项计重元数据
+│   ├── 0004_plan_items_note.sql      # 计划项备注
+│   ├── 0005_exercises_sort_order_records_completed.sql
+│   ├── 0006_users_body_weight.sql    # 全局体重
+│   └── 0007_exercises_default_unit.sql  # 默认计重单位
 ├── src/
-│   ├── main.rs             # 入口：组装一切，启动服务器
-│   ├── config.rs           # 配置（端口/数据库路径/密钥）
+│   ├── main.rs             # 入口：路由注册 + 首页
+│   ├── config.rs           # 配置（端口/数据库路径/密钥/部位顺序）
 │   ├── error.rs            # 统一错误类型 → HTTP 状态码
 │   ├── db.rs               # 数据库连接池 + 迁移
 │   ├── models.rs           # 数据模型（User/Phase/Exercise/...）
-│   └── handlers/           # HTTP 处理器（登录/阶段/动作/模板计划）
+│   ├── calc.rs             # 1RM 纯函数（Epley/Wathan）+ 单元测试
+│   └── handlers/
+│       ├── auth.rs         # 登录/登出/用户管理/体重维护
+│       ├── phases.rs       # 阶段管理
+│       ├── exercises.rs    # 动作库 CRUD
+│       ├── plan.rs         # 模板 + 当日计划
+│       ├── record.rs       # 今日页 + 记录表单 + 保存 + 计重展示串
+│       ├── stats.rs        # 历史回顾（日历/当天详情/动作详情/图表）
+│       └── backup.rs       # 备份（下载/上传恢复/CSV+JSON 导出）
+├── static/
+│   ├── manifest.json       # PWA 清单
+│   ├── sw.js               # Service Worker（静态资源离线缓存）
+│   └── weight_converter.js # 重量换算器
 ├── docs/
 │   ├── proposal.md         # 项目背景与动机
 │   ├── structure.md        # 完整设计文档（需求/表结构/页面/计划）
+│   ├── todo.md             # 待办与设计决策（跨会话）
 │   └── learning_path/      # 🗺️ 分阶段开发路径图
-│       ├── M0.md           # M0 脚手架路径图（已完成 ✅）
-│       ├── M1.md           # M1 认证路径图（已完成 ✅，含 M1_ref/ 参考答案）
-│       ├── M2.md           # M2 基础数据路径图（已完成 ✅）
-│       ├── M3.md           # M3 计划路径图（已完成 ✅）
-│       └── M4.md           # M4 训练记录路径图（已完成 ✅，含 M4_ref/ 参考答案）
+│       ├── M0.md ~ M6.md   # 各阶段路径图（M0-M5 ✅，M6 进行中）
+│       ├── M1_ref/ M4_ref/ # 参考答案
+│       ├── M4_bugfix_notes.md      # M4 后 Bug 复盘
+│       └── M5_roadmap_notes.md     # M5 前路线复盘（含 GUI 决策）
 ├── Python_pkg/             # 原 Python 版（历史数据与参考）
 │   ├── sys.py              # 原记录程序
-│   ├── table.xlsx          # 原 Excel 记录表
 │   └── all_data/           # 原 CSV 数据（按训练阶段组织）
 └── train_record.db         # SQLite 数据库（运行时自动生成）
 ```
@@ -197,12 +214,19 @@ train_record/
 |--------|------|------|
 | **M0** | 脚手架：配置/错误/模型/数据库迁移/服务器启动 | ✅ 已完成 |
 | **M1** | 认证：注册/登录/登出、管理员邀请制、路由守卫 | ✅ 已完成（6 项实测通过） |
+## 🗺️ 开发进度
+
+| 里程碑 | 内容 | 状态 |
+|--------|------|------|
+| **M0** | 脚手架：配置/错误/模型/数据库迁移/服务器启动 | ✅ 已完成 |
+| **M1** | 认证：注册/登录/登出、管理员邀请制、路由守卫 | ✅ 已完成（6 项实测通过） |
 | **M2** | 基础数据：阶段管理、动作库、坚持天数 | ✅ 已完成（CRUD + 理解验证通过） |
 | **M3** | 计划：模板（A/B 分化）、按日计划 | ✅ 已完成（模板 + 当日计划 + 理解验证通过） |
 | **M4** | 训练记录：今日页、记录/编辑、重量换算器、即时保存 | ✅ 已完成（Upsert 落库 + 理解验证通过） |
-| **M5** | 历史回顾：日历视图、动作详情、折线图/1RM | ⬜ 未开始 |
-| **M6** | 备份：导出/导入、CSV/JSON 导出、PWA | ⬜ 未开始 |
+| **M5** | 历史回顾：日历导航、当天详情、动作详情折线图/1RM | ✅ 已完成（含理解验证，2026-08-14 收官） |
+| **M6** | 备份与体验：.db 下载/上传恢复、CSV/JSON 导出、PWA | 📝 进行中（骨架已就位，待实现） |
 | **M7** | 打磨：界面美化、响应式、错误处理 | ⬜ 未开始 |
+| **M8** | REST API 层（为 iced GUI 客户端铺路） | ⬜ 未开始 |
 
 > 开发是**边写边学**模式：每个文件都带有【教学注释】，从 [`docs/learning_path/M0.md`](docs/learning_path/M0.md) 开始阅读。
 
@@ -211,12 +235,11 @@ train_record/
 ## 📚 文档导航
 
 - [`docs/proposal.md`](docs/proposal.md) —— 项目背景：为什么重写
-- [`docs/structure.md`](docs/structure.md) —— **设计地基**：完整需求结论、数据库 DDL、页面规格、开发计划（§7 含 systemd 部署模板）
-- [`docs/learning_path/M0.md`](docs/learning_path/M0.md) —— **开发路径图**：文件依赖顺序、M0 里程碑、常见坑
-- [`docs/learning_path/M1.md`](docs/learning_path/M1.md) —— **M1 认证路径图**：已完成（参考实现在 [`M1_ref/`](docs/learning_path/M1_ref/)，完成后对照）
-- [`docs/learning_path/M2.md`](docs/learning_path/M2.md) —— **M2 基础数据路径图**：已完成（阶段 + 动作库 CRUD，含理解验证）
-- [`docs/learning_path/M3.md`](docs/learning_path/M3.md) —— **M3 计划路径图**：已完成（模板 + 当日计划，含理解验证）
-- [`docs/learning_path/M4.md`](docs/learning_path/M4.md) —— **M4 训练记录路径图**：已完成（今日页 + 记录/编辑 + 换算器，参考实现在 [`M4_ref/`](docs/learning_path/M4_ref/))
+- [`docs/structure.md`](docs/structure.md) —— **设计地基**：完整需求结论、数据库 DDL、页面规格、开发计划
+- [`docs/todo.md`](docs/todo.md) —— 待办与设计决策（跨会话备忘）
+- [`docs/learning_path/M0.md`](docs/learning_path/M0.md) ~ [`M6.md`](docs/learning_path/M6.md) —— **分阶段开发路径图**（M0-M5 已完成，M6 进行中）
+- [`docs/learning_path/M4_bugfix_notes.md`](docs/learning_path/M4_bugfix_notes.md) —— M4 后 Bug 修复复盘（iced 必考清单）
+- [`docs/learning_path/M5_roadmap_notes.md`](docs/learning_path/M5_roadmap_notes.md) —— M5 前能力评估与 GUI 技术栈决策
 
 > 💡 部署相关（编译产物取舍、目录位置、后台运行、80/8080 共存）见上方「🚀 快速开始 → 部署（生产环境）」。
 
