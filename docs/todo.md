@@ -19,12 +19,12 @@
 - **注意**：在此之前**不要依赖** `templates.sort_order` 的值，
   也不要因为"全是 0"而改动它。子表 `template_items.sort_order` / `plan_items.sort_order` 从一开始就是真数据（`enumerate()` 生成）。
 
-### 1.2 模板/计划"空动作"校验 ⚠️
+### 1.2 模板/计划"空动作"校验 ✅（M5 第 6 步已解决，8d6434f 之前）
 
-- **现状**：创建模板/计划时，用户一个动作都不勾选，`exercise_ids()` 返回空 Vec，
-  循环插入 0 次 → 生成一个空壳模板/空计划。
-- **计划解决**：**M5 打磨阶段**（M3 先允许，可后续补删）
-- **方案候选**：表单校验 `exercise_ids()` 非空，空则返回 400 提示"至少选一个动作"
+- **解法**：`template_create` / `template_update` / `plan_create` 三处
+  在事务 begin 前校验：`exercise_ids().is_empty()` → 422"至少选择一个动作"
+  （plan_create 只在未选模板时校验——模板自身已有校验）
+- **实测**：curl 空模板/空计划均 422；选模板正常创建不误伤
 
 ### 1.3 HashMap 迭代顺序 ≠ 勾选顺序 🟡
 
