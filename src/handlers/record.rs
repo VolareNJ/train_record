@@ -324,7 +324,7 @@ pub async fn today(
             });
             let plan_bar = item.plan_bar_weight.unwrap_or(ex_defaults.1);
             format!(
-                "{mode}, {sets}*{reps}",
+                "{mode} | {sets}*{reps}",
                 mode = mode_display(
                     &plan_mode,
                     plan_weight,
@@ -521,11 +521,15 @@ pub async fn record_form(
     .fetch_optional(&state.pool)
     .await
     .map_err(AppError::Database)?;
+    // 【M5 修订 bug：上次训练按 exercise_id 查，不按 plan_item_id！】
+    // 计划项会因"先删后插"重建（新 id），历史记录挂旧 id——
+    // 按当前 plan_item_id 查"上一次"→ 跨计划就查不到（显示"第一次训练"）。
+    // 按 exercise_id 查 = "这个动作上次练是什么时候"，跨计划项正确。
     let last_record = sqlx::query_as::<_, Record>(
-        "SELECT * FROM records WHERE plan_item_id = ? AND record_date < date('now','localtime')
+        "SELECT * FROM records WHERE exercise_id = ? AND record_date < date('now','localtime')
         ORDER BY record_date DESC, id DESC LIMIT 1",
     )
-    .bind(&item_id)
+    .bind(&plan_item.exercise_id)
     .fetch_optional(&state.pool)
     .await
     .map_err(AppError::Database)?;
@@ -535,27 +539,24 @@ pub async fn record_form(
 
     // 6a. 上次记录参考（Option → HTML 行，None → 提示"还没有记录"）
     //     【教学：map + unwrap_or_default 链——处理 Option 不用 if】
-    //     【M5 修订：格式对齐计划值 —— 模式(参数,观测强度), sets*reps】
-    //     【M5 修订：杆重来源 = 计划项预设（训练时实际配置）】
-    //      records 表不存 bar_weight，但计划项预设（plan_bar_weight）
-    //      就是用户训练前在计划里配的杆——训练时用的就是它。
-    //      用动作库默认（20）会错：如变式贝叶斯计划预设双边 0kg，
-    //      训练时用双边，显示 Olympic 就错了。
+    //     【M5 修订：格式 —— 上次 {date} | {模式(参数,观测强度)} | {sets}*{reps}】
+    //     【M5 修订：杆重来源 = 动作库默认值（不是计划项预设）】
+    //      records 表不存 bar_weight。训练时实际用的杆无法从记录还原，
+    //     展示口径统一用**动作库当前默认**（用户在动作库里维护的标准配置）。
+    //     用计划项预设的问题是：上次训练可能挂在不同计划项下，
+    //     预设不同 → 同一个动作上次显示 Olympic、这次显示 dual，不一致。
     //     None → "还没有记录，这是第一次！"
-    let ref_bar_weight = plan_item
-        .plan_bar_weight
-        .unwrap_or(exercise_details.bar_weight);
     let last_ref = most_recent_record
         .as_ref()
         .map(|r| {
             format!(
-                "上次 {date}: {mode_disp}, {sets}*{reps}<br>\
+                "{date} | {mode_disp} | {sets}*{reps}<br>\
                  感受：{feeling}<br>策略：{strategy}",
                 date = r.record_date,
                 mode_disp = mode_display(
                     &r.mode,
                     r.weight,
-                    ref_bar_weight,
+                    exercise_details.bar_weight,
                     user.body_weight,
                     &exercise_details.default_unit,
                 ),
@@ -767,7 +768,7 @@ pub async fn record_form(
             </label><br>
             <div id="bar-row">
                 <label>杆重
-                    <select id="bar-input">
+                    <select id="bar-input" name="bar_weight">
                         {bar_weight_options}
                     </select>
                 </label>
@@ -779,7 +780,7 @@ pub async fn record_form(
             </div>
             <label>观测强度
                 <input id="plate-input" type="number" step="0.5" value="">
-                <select id="unit-select">
+                <select id="unit-select" name="unit">
                     {unit_options}
                 </select>
             </label>
@@ -845,7 +846,7 @@ pub async fn record_form(
             })
             .unwrap_or_default(),
         plan_value_display = format!(
-            "{mode}, {sets}*{reps}",
+            "{mode} | {sets}*{reps}",
             mode = mode_display(
                 &plan_item
                     .plan_mode
@@ -1146,6 +1147,26 @@ pub async fn record_save(
             .await
             .map_err(AppError::Database)?;
     }
+    // 6.6 【M6 修订：计重方式/杆重/单位回写动作库】
+    //     record_form 表单里有三个"配置类"字段不存记录表，
+    //     但用户在那里改了就是想要长期生效（动作的标准配置）。
+    //     保存时同步回 exercises：
+    //       - mode（form.mode）→ default_mode
+    //       - 杆重（bar-input，前端提交为 hidden 字段 bar_weight）→ bar_weight
+    //       - 单位（unit-select，前端提交为 hidden 字段 unit）→ default_unit
+    //     ⚠️ 杆重/单位不在 RecordForm 里，需要加字段（见结构体）。
+    sqlx::query(
+        "UPDATE exercises SET default_mode = ?, bar_weight = ?, default_unit = ?
+        WHERE id = ? AND user_id = ?",
+    )
+    .bind(&form.mode)
+    .bind(&form.bar_weight)
+    .bind(&form.unit)
+    .bind(&plan_item.exercise_id)
+    .bind(&user.id)
+    .execute(&state.pool)
+    .await
+    .map_err(AppError::Database)?;
     // 7. 重定向回 /today（今日页刷新后显示 ✅ 已训练）
     Ok(Redirect::to("/today"))
 }
@@ -1183,6 +1204,12 @@ pub struct RecordForm
     pub key_points: String,
     /// 录入时模式（bar/support/std）
     pub mode: String,
+    /// 【M6 修订：杆重（bar-input 的当前值，hidden 提交）】
+    /// 保存时回写动作库 default 杆重（bar_weight）
+    pub bar_weight: String,
+    /// 【M6 修订：观测强度单位（unit-select 的当前值，hidden 提交）】
+    /// 保存时回写动作库 default_unit
+    pub unit: String,
 }
 
 // ============================================================
