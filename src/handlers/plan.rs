@@ -45,7 +45,7 @@ use std::collections::{HashMap, HashSet};
 use crate::{
     AppState,
     error::AppError,
-    handlers::auth::AuthUser,
+    handlers::{auth::AuthUser, stats::CalQuery},
     models::{Exercise, Phase, Plan, PlanItem, Template, TemplateItem, group_by_body_part},
 };
 
@@ -936,6 +936,7 @@ pub async fn list_plans(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
     Path(phase_id): Path<i64>,
+    Query(query): Query<CalQuery>,
 ) -> Result<Html<String>, AppError>
 {
     // ① 两级验证：阶段必须属于当前用户
@@ -957,43 +958,125 @@ pub async fn list_plans(
         ""
     };
 
-    // ③ 查计划列表（日期倒序，最新在前）→ 每行：日期 + 备注 + 操作
-    //    删除必须用表单 POST（路由只注册了 post，GET 链接会 405）
-    let plan_ret =
-        sqlx::query_as::<_, Plan>("SELECT * FROM plans WHERE phase_id = ? ORDER BY date DESC")
+    // ③ 【M6 修订：日历模式（与 history 同款）——取消列表显示】
+    //    有计划的日期 → 绿色可点击；无计划 → 灰色。
+    //    批量查"日期 → 计划 id"映射（一次查询，避免逐日 N+1）。
+    let plan_date_map: HashMap<String, i64> =
+        sqlx::query_as::<_, (String, i64)>("SELECT date, id FROM plans WHERE phase_id = ?")
             .bind(&phase_ret.id)
             .fetch_all(&state.pool)
             .await
             .map_err(AppError::Database)?
-            .iter()
-            .map(|item| {
-                format!(
-                    r#"<tr><td>{plan_dt}</td><td>{plan_note}</td>
-                    <td><a href="/plans/{plan_id}">详情/编辑</a>
-                    <form method="post" action="/plans/{plan_id}/delete"
-                    style="display:inline"><button type="submit">删除</button></form></td></tr>"#,
-                    plan_id = item.id,
-                    plan_dt = item.date,
-                    plan_note = item.note
-                )
-            })
-            .collect::<Vec<String>>()
-            .join("\n");
+            .into_iter()
+            .collect();
 
-    // ④ 拼页面
+    // 目标年月：query 参数优先，默认当前年月（与 history 同款）
+    let now_ym =
+        sqlx::query_scalar::<_, String>("SELECT strftime('%Y-%m', date('now','localtime'))")
+            .fetch_one(&state.pool)
+            .await
+            .map_err(AppError::Database)?;
+    let target_ym = match (query.year, query.month)
+    {
+        (Some(y), Some(m)) => format!("{y}-{m}"),
+        _ => now_ym.clone(),
+    };
+    let target_year = target_ym[..4].to_string();
+    let target_month = target_ym[5..7].to_string();
+
+    // 年份选项（从计划日期去重 + 目标年兜底）
+    let mut year_set: HashSet<String> =
+        plan_date_map.keys().map(|dt| dt[..4].to_string()).collect();
+    year_set.insert(target_year.clone());
+    let mut year_list: Vec<String> = year_set.into_iter().collect();
+    year_list.sort_by(|a, b| b.cmp(a));
+    let year_options = year_list
+        .iter()
+        .map(|y| {
+            format!(
+                r#"<option value="{y}"{sel}>{y}</option>"#,
+                sel = if *y == target_year { " selected" } else { "" },
+            )
+        })
+        .collect::<Vec<String>>()
+        .join("\n");
+    // 月份选项 01-12，selected 目标月
+    let month_options = (1..=12)
+        .map(|m| {
+            let mm = format!("{m:02}");
+            format!(
+                r#"<option value="{mm}"{sel}>{mm}月</option>"#,
+                sel = if mm == target_month { " selected" } else { "" },
+            )
+        })
+        .collect::<Vec<String>>()
+        .join("\n");
+
+    // 目标月天数（SQLite 日期运算，与 history 同款）
+    let days_in_month = sqlx::query_scalar::<_, i64>(
+        "SELECT CAST(strftime('%d', date(?, '+1 month', '-1 day')) AS INTEGER)",
+    )
+    .bind(format!("{target_ym}-01"))
+    .fetch_one(&state.pool)
+    .await
+    .map_err(AppError::Database)?;
+
+    // 日历单元格：有计划的日期 → 绿色链接到 plan_detail；否则灰色
+    // 【M6 修订：删除按钮移到 plan_detail 下方（PRG 回训练计划）】
+    let cells = (1..=days_in_month)
+        .map(|day| {
+            let date_str = format!("{target_ym}-{day:02}");
+            let cell = match plan_date_map.get(&date_str)
+            {
+                Some(pid) => format!(
+                    r#"<td style="background-color:#b7e4b0"><a href="/plans/{pid}">{day}</a></td>"#
+                ),
+                None => format!(r#"<td style="background-color:#dddddd">{day}</td>"#),
+            };
+            if day % 7 == 0 && day != days_in_month
+            {
+                format!("{cell}</tr><tr>")
+            }
+            else
+            {
+                cell
+            }
+        })
+        .collect::<String>();
+
+    // ④ 拼页面（日历 + 年月导航 + 创建入口）
     Ok(Html(format!(
         r#"
         <head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
         <h2>训练计划</h2>
         {archived_note}
-        <table border="1"><tr><th>日期</th><th>备注</th><th>操作</th></tr>
-            {content}
+        <p>年份：
+        <select id="cal-year-filter" onchange="changeCalMonth()">
+            {year_options}
+        </select>
+        月份：
+        <select id="cal-month-filter" onchange="changeCalMonth()">
+            {month_options}
+        </select></p>
+        <h3>日历（绿色 = 有计划）</h3>
+        <table border="1">
+        <tr><th>一</th><th>二</th><th>三</th><th>四</th><th>五</th><th>六</th><th>日</th></tr>
+        <tr>{cells}</tr>
         </table>
         <p><a href="/phases/{phase_id}/plans/new">创建当日计划</a></p>
         <p><a href="/">返回首页</a></p>
+        <script>
+            function changeCalMonth(){{
+                var y = document.getElementById('cal-year-filter').value;
+                var m = document.getElementById('cal-month-filter').value;
+                if (y && m) {{ window.location.href = '/phases/{phase_id}/plans?year=' + y + '&month=' + m; }}
+            }}
+        </script>
         "#,
         archived_note = archived_note,
-        content = plan_ret,
+        year_options = year_options,
+        month_options = month_options,
+        cells = cells,
         phase_id = phase_ret.id
     )))
 }
@@ -1557,15 +1640,20 @@ pub async fn plan_detail(
             let weight = item
                 .plan_weight
                 .map_or(String::new(), |v| v.to_string());
-            // 计重方式回显：计划项预设 → 动作库默认（lb2kg 老数据归一化成 std）
-            let mode = item
-                .plan_mode
-                .clone()
-                .unwrap_or_else(|| ex.map_or("std".to_string(), |e| e.default_mode.clone()));
-            let mode = if mode == "lb2kg" { "std".to_string() } else { mode };
-            let bar_weight = item
-                .plan_bar_weight
-                .unwrap_or(ex.map_or(0.0, |e| e.bar_weight));
+            // 计重方式回显：【M6 修订】直接取动作库默认（lb2kg 老数据归一化成 std）
+            // plan_mode 已废弃——计划项不再维护计重方式，单一事实来源 = 动作库。
+            let mode = ex.map_or("std".to_string(), |e| {
+                if e.default_mode == "lb2kg"
+                {
+                    "std".to_string()
+                }
+                else
+                {
+                    e.default_mode.clone()
+                }
+            });
+            // 【M6 修订】杆重回显：直接取动作库默认 bar_weight
+            let bar_weight = ex.map_or(0.0, |e| e.bar_weight);
             // 【M5 修订：单位回显 —— 动作 default_unit 决定观测强度下拉预填】
             let unit = ex.map_or("kg".to_string(), |e| e.default_unit.clone());
             let unit_options = ["kg", "lb"]
@@ -1755,6 +1843,11 @@ pub async fn plan_detail(
             <button type="button" onclick="addRow()">添加</button>
         </p>
         <p><a href="/phases/{phase_id}/plans">返回计划列表</a></p>
+        <hr>
+        <form method="post" action="/plans/{plan_id}/delete"
+            onsubmit="return confirm('确定删除该计划？训练记录会保留（解除关联）')">
+            <button type="submit" style="color:#c00">删除本计划</button>
+        </form>
         <script>
             {javascript}
         </script>
@@ -2153,11 +2246,12 @@ pub async fn plan_update(
                 base_order + new_idx
             },
         };
+        // 【M6 修订：不再插入 plan_mode/plan_bar_weight（已废弃，保持 NULL）】
         let result = sqlx::query(
             "INSERT INTO plan_items
             (plan_id, exercise_id, sort_order, plan_sets, plan_reps, plan_weight,
-            plan_mode, plan_bar_weight, plan_rest, plan_key_points, plan_note)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            plan_rest, plan_key_points, plan_note)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&plan_id)
         .bind(ex_id)
@@ -2165,8 +2259,6 @@ pub async fn plan_update(
         .bind(form.plan_sets(ex_id))
         .bind(form.plan_reps(ex_id))
         .bind(form.plan_weight(ex_id))
-        .bind(form.plan_mode(ex_id))
-        .bind(form.plan_bar_weight(ex_id))
         .bind(form.plan_rest(ex_id))
         .bind(form.plan_key_points(ex_id))
         .bind(form.plan_note(ex_id))

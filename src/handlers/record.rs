@@ -300,15 +300,11 @@ pub async fn today(
             });
         let ex_defaults = (ex_default_mode, ex_default_bar, ex_default_unit);
         // 计划值：模式(参数,观测强度), sets*reps
-        // 【M5 修订：计重模式展示串（mode_display 辅助函数）】
-        // plan_weight/plan_mode/plan_bar_weight 是计划预设（可空），
-        // 空 → 回退动作库默认（动作没预设就用 default_mode/bar_weight/unit）
-        // body_weight 从 AuthUser 拿（support 逆换算用）
+        // 【M6 修订：计重方式/杆重/单位统一取 exercise 默认】
+        // plan_mode/plan_bar_weight 已废弃（models.rs），
+        // 计划项不再维护计重配置——单一事实来源 = 动作库。
         let plan_value = {
-            let plan_mode = item
-                .plan_mode
-                .clone()
-                .unwrap_or_else(|| ex_defaults.0.clone());
+            let plan_mode = ex_defaults.0.clone();
             // 【M5 修订：support 无重量 → 回退体重（自重动作）】
             // 引体向上等自重动作不填计划重量 = "无辅助引体"，
             // 实际负重 = 体重、支撑 = 0。None 当 0 会显示"支撑 90kg"（错）。
@@ -322,7 +318,7 @@ pub async fn today(
                     0.0
                 }
             });
-            let plan_bar = item.plan_bar_weight.unwrap_or(ex_defaults.1);
+            let plan_bar = ex_defaults.1;
             format!(
                 "{mode} | {sets}*{reps}",
                 mode = mode_display(
@@ -633,10 +629,12 @@ pub async fn record_form(
         .or_else(|| plan_item.plan_key_points.clone())
         .or_else(|| last_record.as_ref().map(|r| r.key_points.clone()))
         .unwrap_or_else(|| exercise_details.key_points.clone());
+    // 【M6 修订：mode 预填链 —— 当日记录 → 动作默认（PlanItem 不再维护）】
+    // plan_mode 已废弃：训练中改过（today_record.mode）→ 回显今天的；
+    // 没改过 → 动作库 default_mode。
     let prefill_mode = today_record
         .as_ref()
         .map(|r| r.mode.clone())
-        .or_else(|| plan_item.plan_mode.clone())
         .or_else(|| last_record.as_ref().map(|r| r.mode.clone()))
         .unwrap_or_else(|| exercise_details.default_mode.clone());
 
@@ -683,16 +681,12 @@ pub async fn record_form(
     // 6c-1. 杆重下拉框选项（四种杠铃规格枚举，与 exercises.rs 的 bar_weight 同款）
     //     【教学：杆重不是随便填的数字，是健身房四种杠铃规格之一】
     //     Olympic(20kg) / Smith(11.3kg) / 短杠(10kg) / 双边(0kg) 四选一，
-    //     ⚠️ 预填链：plan_item.plan_bar_weight（计划预设）→ 动作 bar_weight（默认）。
-    //     为什么优先计划预设？用户编辑计划时可能为某动作指定"今天用 Smith 杆"，
-    //     换算器初始杆重应该跟着计划的预设走，而不是动作库的通用默认。
+    //     【M6 修订：预填直接取动作库默认 bar_weight（PlanItem 不再维护）】
     //     select 的 value 就是选中 option 的 value（数字字符串），
     //     换算器 JS 里 Number(barInput.value) 照常解析（"0" → 0）。
     //     双边(0kg)：倒蹲等无杆动作，两边放片但轴本身不称重，
     //     总重 = 0 + 2 × 片重（和 Olympic 同公式，只是杆重为 0）。
-    let prefill_bar_weight = plan_item
-        .plan_bar_weight
-        .unwrap_or(exercise_details.bar_weight);
+    let prefill_bar_weight = exercise_details.bar_weight;
     let bar_weight_options = ["20", "11.3", "10", "0"]
         .iter()
         .map(|bar_weight| {
@@ -848,17 +842,11 @@ pub async fn record_form(
         plan_value_display = format!(
             "{mode} | {sets}*{reps}",
             mode = mode_display(
-                &plan_item
-                    .plan_mode
-                    .clone()
-                    .unwrap_or_else(|| exercise_details.default_mode.clone()),
+                // 【M6 修订：计重三字段直接取 exercise 默认（PlanItem 不再维护）】
+                &exercise_details.default_mode,
                 // 【M5 修订：support 无重量 → 回退体重（自重动作）】
                 plan_item.plan_weight.unwrap_or_else(|| {
-                    if plan_item
-                        .plan_mode
-                        .as_deref()
-                        .unwrap_or(&exercise_details.default_mode)
-                        == "support"
+                    if exercise_details.default_mode == "support"
                     {
                         user.body_weight.unwrap_or(0.0)
                     }
@@ -867,9 +855,7 @@ pub async fn record_form(
                         0.0
                     }
                 }),
-                plan_item
-                    .plan_bar_weight
-                    .unwrap_or(exercise_details.bar_weight),
+                exercise_details.bar_weight,
                 user.body_weight,
                 &exercise_details.default_unit,
             ),
@@ -931,8 +917,35 @@ pub async fn record_form(
                 (mode === 'bar') ? '' : 'none';
             document.getElementById('body-row').style.display =
                 (mode === 'support') ? '' : 'none';
+            // M6 修订：计重配置选择即同步动作库。
+            // 用户改模式/杆重/单位 → 立即 POST 到 /exercises/{id}/config
+            // 不用等保存记录——改了就生效（单一事实来源 = 动作库）。
+            var cfg = new URLSearchParams();
+            cfg.set('mode', mode);
+            cfg.set('bar_weight', document.getElementById('bar-input').value);
+            cfg.set('unit', document.getElementById('unit-select').value);
+            fetch('/exercises/{ex_id}/config', {{
+                method: 'POST',
+                headers: {{ 'Content-Type': 'application/x-www-form-urlencoded' }},
+                body: cfg.toString()
+            }});
         }
-        toggleBarWeight();",
+        function syncUnit() {
+            var cfg = new URLSearchParams();
+            cfg.set('mode', document.getElementById('mode-select').value);
+            cfg.set('bar_weight', document.getElementById('bar-input').value);
+            cfg.set('unit', document.getElementById('unit-select').value);
+            fetch('/exercises/{ex_id}/config', {{
+                method: 'POST',
+                headers: {{ 'Content-Type': 'application/x-www-form-urlencoded' }},
+                body: cfg.toString()
+            }});
+        }
+        document.getElementById('bar-input').addEventListener('input', toggleBarWeight);
+        document.getElementById('unit-select').addEventListener('input', syncUnit);
+        document.getElementById('mode-select').addEventListener('input', toggleBarWeight);
+        toggleBarWeight();"
+            .replace("{ex_id}", &exercise_details.id.to_string()),
     )))
 }
 

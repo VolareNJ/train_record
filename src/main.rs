@@ -338,6 +338,11 @@ async fn main()
             get(handlers::exercises::edit_form).post(handlers::exercises::update),
         )
         .route("/exercises/{id}/delete", post(handlers::exercises::delete))
+        // 【M6 修订：计重配置即时同步（record_form 选择即保存）】
+        .route(
+            "/exercises/{id}/config",
+            post(handlers::exercises::update_config),
+        )
         // ----------------------------------------------------------
         // M3 新增：模板（Template）+ 当日计划（Plan）路由
         // 教学注释见 src/handlers/plan.rs 顶部

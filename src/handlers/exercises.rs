@@ -33,6 +33,8 @@
 //   Form    → 请求体：表单字段              → PhaseForm/ExerciseForm
 // 三者的共同点：都是"axum 帮我们从请求里拆出数据装进结构体"。
 // 区别只是**数据在请求的哪个位置**。
+use std::collections::HashMap;
+
 use axum::{
     extract::{Form, Path, Query, State},
     response::{Html, Redirect},
@@ -201,6 +203,24 @@ pub async fn list(
     // 查不到任何动作 → 表格消失。必须把空串过滤成"不筛选"。
     let part_filter = query.body_part.as_deref().filter(|p| !p.is_empty());
 
+    // 【M6 修订：最后训练时间 + 距今几天】
+    // 每个动作查最近一条记录日期（一次 GROUP BY 查询，避免逐动作 N+1）：
+    //   last_date：MAX(record_date)（最近训练日）
+    //   days_ago：julianday 差（今天 - 最近训练日）
+    let last_train_map: HashMap<i64, (String, i64)> = sqlx::query_as::<_, (i64, String, i64)>(
+        "SELECT exercise_id,
+         MAX(record_date) AS last_date,
+         CAST(julianday('now','localtime') - julianday(MAX(record_date)) AS INTEGER) AS days_ago
+         FROM records
+         GROUP BY exercise_id",
+    )
+    .fetch_all(&state.pool)
+    .await
+    .map_err(AppError::Database)?
+    .into_iter()
+    .map(|(ex_id, last_date, days_ago)| (ex_id, (last_date, days_ago)))
+    .collect();
+
     Ok(Html(format!(
         r#"
         <head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
@@ -213,7 +233,7 @@ pub async fn list(
             </select>
         </form>
         <table border="1">
-            <tr><th>名称</th><th>部位</th><th>模式</th><th>组数</th><th>次数</th><th>操作</th></tr>
+            <tr><th>名称</th><th>部位</th><th>模式</th><th>组数</th><th>次数</th><th>最后训练</th><th>距今(天)</th><th>操作</th></tr>
             {query_ret_rows}
         </table>
         <p><a href="/exercises/new">创建动作</a></p>
@@ -240,8 +260,26 @@ pub async fn list(
     .map_err(AppError::Database)?
     .iter()
     .map(|e| {
+        // 【M6 修订：最后训练两列】无记录 → "-"
+        let (last_date, days_ago) = last_train_map
+            .get(&e.id)
+            .cloned()
+            .unwrap_or_else(|| ("-".to_string(), -1));
+        let days_text = if days_ago < 0
+        {
+            "-".to_string()
+        }
+        else if days_ago == 0
+        {
+            "今天".to_string()
+        }
+        else
+        {
+            format!("{days_ago}")
+        };
         format!(
             "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td>\
+             <td>{}</td><td>{}</td>\
              <td><a href=\"/exercises/{}/edit\">编辑</a>\
              <form method=\"post\" action=\"/exercises/{}/delete\" style=\"display:inline\">\
              <button type=\"submit\">删除</button></form></td></tr>",
@@ -258,6 +296,8 @@ pub async fn list(
             },
             e.default_sets,
             e.default_reps,
+            last_date,
+            days_text,
             e.id,
             e.id
         )
@@ -882,6 +922,62 @@ pub async fn update(
         return Err(AppError::NotFound("查无此动作".to_string()));
     }
     Ok(Redirect::to("/exercises"))
+}
+
+// ============================================================
+// 【M6 修订：计重配置即时同步（POST /exercises/{id}/config）】
+// ============================================================
+/// record_form 里修改计重方式/杆重/单位 → 选择即同步动作库
+///
+/// 【教学：为什么单独一个端点？】
+/// update 是全量表单（改名/部位/组次/要领一起提交）；
+/// record_form 只想改计重三字段（mode/bar_weight/unit），
+/// 全量 update 需要所有字段，前端凑不齐（没有 body_part 等）。
+/// 所以开轻量端点：只收三个字段，只改三列。
+///
+/// 【教学：返回什么？】
+/// 前端 fetch 不关心响应内容（fire-and-forget），
+/// 返回空 200（axum 的 () 转空响应）即可；
+/// 失败（归属验证不过）→ 404/403 照常走 AppError。
+#[derive(Deserialize)]
+pub struct ConfigForm
+{
+    pub mode: String,
+    pub bar_weight: String,
+    pub unit: String,
+}
+
+/// 计重配置即时同步（record_form 的 mode/bar/unit 选择即保存）
+pub async fn update_config(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(exercise_id): Path<i64>,
+    Form(form): Form<ConfigForm>,
+) -> Result<(), AppError>
+{
+    // 归属验证 + 更新三列（数据隔离纪律：id + user_id 双条件）
+    let ret = sqlx::query(
+        "UPDATE exercises SET default_mode = ?, bar_weight = ?, default_unit = ?
+        WHERE id = ? AND user_id = ?",
+    )
+    .bind(&form.mode)
+    .bind(
+        form.bar_weight
+            .parse::<f64>()
+            .map_err(|_| AppError::Validation("杆重必须是数字".to_string()))?,
+    )
+    .bind(&form.unit)
+    .bind(exercise_id)
+    .bind(user.id)
+    .execute(&state.pool)
+    .await
+    .map_err(AppError::Database)?;
+
+    if ret.rows_affected() == 0
+    {
+        return Err(AppError::NotFound("查无此动作".to_string()));
+    }
+    Ok(())
 }
 
 // ============================================================

@@ -150,11 +150,12 @@ pub struct PlanItem
     pub plan_reps: Option<i64>,
     /// 计划重量（总重 kg，可空）
     pub plan_weight: Option<f64>,
-    /// 计划计重方式（bar/support/std；空 = 未预设，record_form 落回动作默认）
-    /// 历史值 lb2kg（标准lb）已并入 std：lb 单位移到观测强度旁选择（M4 修订）
-    pub plan_mode: Option<String>,
-    /// 计划杆重规格（20/11.3/10/0；空 = 用动作默认）
-    pub plan_bar_weight: Option<f64>,
+    // ⚠️【M6 修订：plan_mode/plan_bar_weight 已废弃】
+    // 计重方式/杆重不再由计划项维护——统一引用 exercises 的
+    // default_mode/bar_weight（单一事实来源）。
+    // 数据库列仍在（迁移不回滚），但代码不再读写：
+    //   plan_detail/record_form 回显直接取 exercise；
+    //   plan_update 插入不再绑定这两列（保持 NULL）。
     /// 计划休息秒（空 = 未预设）
     pub plan_rest: Option<i64>,
     /// 计划要领（空 = record_form 落回动作库 key_points）
