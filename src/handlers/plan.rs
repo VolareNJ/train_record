@@ -1569,15 +1569,8 @@ pub async fn plan_detail(
     let ex_data_map: serde_json::Map<String, serde_json::Value> = all_exercises
         .iter()
         .map(|ex| {
-            // 【M4 修订：lb2kg 模式移除 → JSON 里直接归一化成 std】
-            let mode = if ex.default_mode == "lb2kg"
-            {
-                "std".to_string()
-            }
-            else
-            {
-                ex.default_mode.clone()
-            };
+            // （M6 清理：lb2kg 历史值已迁移归正，无需归一化）
+            let mode = ex.default_mode.clone();
             (
                 ex.id.to_string(),
                 serde_json::json!({
@@ -1640,18 +1633,8 @@ pub async fn plan_detail(
             let weight = item
                 .plan_weight
                 .map_or(String::new(), |v| v.to_string());
-            // 计重方式回显：【M6 修订】直接取动作库默认（lb2kg 老数据归一化成 std）
-            // plan_mode 已废弃——计划项不再维护计重方式，单一事实来源 = 动作库。
-            let mode = ex.map_or("std".to_string(), |e| {
-                if e.default_mode == "lb2kg"
-                {
-                    "std".to_string()
-                }
-                else
-                {
-                    e.default_mode.clone()
-                }
-            });
+            // 计重方式回显：【M6 修订】直接取动作库默认（历史值已归正，无需归一化）
+            let mode = ex.map_or("std".to_string(), |e| e.default_mode.clone());
             // 【M6 修订】杆重回显：直接取动作库默认 bar_weight
             let bar_weight = ex.map_or(0.0, |e| e.bar_weight);
             // 【M5 修订：单位回显 —— 动作 default_unit 决定观测强度下拉预填】
@@ -2823,30 +2806,10 @@ impl PlanEditForm
         self.plan_value("weight", ex_id)
     }
 
-    /// 计重方式（键 mode_{id}；空字符串 → None）
-    /// 【教学：下拉框必须显式提交一个值】
-    /// <select> 没有"空"概念：要么选了 option，要么第一个 option 被选中。
-    /// 编辑页第一个 option 是 ""（未预设），所以用户不改时提交的就是 "" → None。
-    pub fn plan_mode(&self, ex_id: i64) -> Option<String>
-    {
-        self.rest.get(&format!("mode_{ex_id}")).and_then(|v| {
-            let v = v.trim();
-            if v.is_empty()
-            {
-                None
-            }
-            else
-            {
-                Some(v.to_string())
-            }
-        })
-    }
-
-    /// 杆重规格（键 bar_weight_{id}；空字符串 → None）
-    pub fn plan_bar_weight(&self, ex_id: i64) -> Option<f64>
-    {
-        self.plan_value("bar_weight", ex_id)
-    }
+    // ⚠️【M6 清理：plan_mode()/plan_bar_weight() 已删除】
+    // 计重方式/杆重不再由计划项维护（单一事实来源 = exercises），
+    // 这两个解析方法已无调用方。表单里的 mode_{id}/bar_weight_{id}
+    // 键仍会提交，但后端不再读取（plan_detail 的计重回显直取动作库）。
 
     /// 休息秒（键 rest_{id}；空字符串 → None）
     pub fn plan_rest(&self, ex_id: i64) -> Option<i64>

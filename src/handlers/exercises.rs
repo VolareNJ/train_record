@@ -285,13 +285,12 @@ pub async fn list(
              <button type=\"submit\">删除</button></form></td></tr>",
             e.name,
             e.body_part,
-            // 【M4 修订：显示中文；lb2kg 老数据归一化成"标准"】
+            // 显示中文（M6 清理：lb2kg 历史值已迁移归正，不再需要兜底）
             match e.default_mode.as_str()
             {
                 "bar" => "杠铃",
                 "support" => "支撑",
                 "std" => "标准",
-                "lb2kg" => "标准",
                 other => other,
             },
             e.default_sets,
@@ -752,16 +751,8 @@ pub async fn edit_form(
             .map(|mode| {
                 format!(
                     r#"<option value="{mode}"{sel}>{mode_name}</option>"#,
-                    // 【M4 修订：老数据 default_mode=lb2kg → 归一化成 std 选中】
-                    sel = if *mode
-                        == if record_to_edit.default_mode == "lb2kg"
-                        {
-                            "std"
-                        }
-                        else
-                        {
-                            record_to_edit.default_mode.as_str()
-                        }
+                    // （M6 清理：lb2kg 历史值已迁移归正，无需归一化）
+                    sel = if *mode == record_to_edit.default_mode.as_str()
                     {
                         " selected"
                     }
@@ -1077,13 +1068,11 @@ pub async fn detail(
         "#,
         name = exercise.name,
         body_part = exercise.body_part,
-        // 【M4 修订：显示中文；lb2kg 老数据归一化成"标准"】
         default_mode = match exercise.default_mode.as_str()
         {
             "bar" => "杠铃",
             "support" => "支撑",
             "std" => "标准",
-            "lb2kg" => "标准",
             other => other,
         },
         bar_weight = exercise.bar_weight,

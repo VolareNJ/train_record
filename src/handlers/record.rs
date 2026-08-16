@@ -98,7 +98,7 @@ pub fn mode_display(
             let support = (body - weight).max(0.0);
             format!("support({body}kg - {})", disp(support))
         },
-        // std + 老数据 lb2kg → 同一显示（观测强度 = 总重）
+        // std（M6 清理：lb2kg 历史值已迁移归正，观测强度 = 总重）
         _ => format!("std({})", disp(weight)),
     }
 }
@@ -640,19 +640,7 @@ pub async fn record_form(
 
     // 6c. 模式下拉框选项（当前模式 selected，其余普通）
     //     【教学：select 的 selected 由后端决定】
-    //     和 M3 exercises.rs 的 mode_options 完全同款：
-    //     遍历 3 种模式，当前模式加 " selected"，其余空串。
-    //     【M4 修订："标准lb"(lb2kg) 模式移除，lb 单位移到观测强度旁】
-    //     老数据兜底：库里已有 lb2kg 值（default_mode/plan_mode/records.mode）
-    //     → 归一化成 std 显示（lb 的换算交给观测强度单位选择）。
-    let prefill_mode = if prefill_mode == "lb2kg"
-    {
-        "std".to_string()
-    }
-    else
-    {
-        prefill_mode
-    };
+    //     （M6 清理：lb2kg 历史值已迁移归正，直接使用）
     let mode_options = ["bar", "support", "std"]
         .iter()
         .map(|mode| {
