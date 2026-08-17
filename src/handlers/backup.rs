@@ -1,4 +1,4 @@
-﻿// ============================================================
+// ============================================================
 // handlers/backup.rs —— 数据备份（导出/导入 + CSV/JSON 导出）
 // ============================================================
 // 【教学说明】
@@ -28,7 +28,7 @@
 use axum::{
     extract::{Multipart, Query, State},
     http::{HeaderMap, header},
-    response::{Html, Response},
+    response::{Html, IntoResponse, Response},
 };
 use serde::Deserialize;
 use sqlx::SqlitePool;
@@ -76,7 +76,39 @@ pub async fn backup_page(
     AuthUser(user): AuthUser,
 ) -> Result<Html<String>, AppError>
 {
-    todo!("M6 第 1 步：备份管理页（管理员守卫 + 下载/上传/导出入口）")
+    if !user.is_admin
+    {
+        return Err(AppError::Forbidden("此界面要求管理员".to_string()));
+    }
+    // 【HTML 约定（AGENTS.md）】
+    //   - 移动端 viewport head（手机浏览器备份场景）
+    //   - 乘号用 ASCII *、不带空格（本页无乘号，但约定通用）
+    Ok(Html(
+        r#"<!DOCTYPE html>
+        <html lang="zh">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>数据备份</title>
+        </head>
+        <body>
+            <h1>数据备份</h1>
+            <h2>下载备份</h2>
+            <p><a href="/admin/backup/download">下载完整数据库（.db）</a></p>
+            <h2>上传恢复</h2>
+            <form method="post" action="/admin/backup/upload" enctype="multipart/form-data">
+                <label>选择 .db 文件：<input type="file" name="db_file" accept=".db" required></label><br>
+                <button type="submit">上传并恢复</button>
+            </form>
+            <p>上传后需重启服务生效，恢复前会自动备份当前数据库。</p>
+            <h2>导出记录</h2>
+            <p><a href="/admin/backup/export?format=csv">导出 CSV</a> |
+               <a href="/admin/backup/export?format=json">导出 JSON</a></p>
+            <p><a href="/">返回首页</a></p>
+        </body>
+        </html>"#
+        .to_string(),
+    ))
 }
 
 // ============================================================
@@ -109,7 +141,48 @@ pub async fn backup_download(
     AuthUser(user): AuthUser,
 ) -> Result<Response, AppError>
 {
-    todo!("M6 第 1 步：下载数据库文件（Content-Disposition 头）")
+    if !user.is_admin
+    {
+        return Err(AppError::Forbidden("此界面要求管理员".to_string()));
+    }
+
+    let today_dt = sqlx::query_scalar::<_, String>("SELECT date('now', 'localtime')")
+        .fetch_one(&state.pool)
+        .await
+        .map_err(AppError::Database)?;
+
+    let db_filehead = tokio::fs::read(&state.config.database_path)
+        .await
+        .map_err(|_| AppError::NotFound("No database file".to_string()))?;
+    if !db_filehead.starts_with(b"SQLite format 3\0")
+    {
+        return Err(AppError::Validation(
+            "Not a valid database file".to_string(),
+        ));
+    }
+
+    // 【教学：拼"响应头"而不是拼 HTML】
+    // 下载不是页面——返回的是 Response，由两部分组成：
+    //   1. Content-Disposition: attachment; filename="train_record_2026-08-15.db"
+    //      attachment → 浏览器弹出"保存"对话框（而不是在页面里打开）
+    //      filename  → 浏览器默认保存的文件名
+    //   2. 文件字节（db_filehead，整个 .db 的二进制）
+    // (HeaderMap, Vec<u8>) 元组实现了 IntoResponse，axum 自动转成 HTTP 响应
+    let filename = format!("train_record_{today_dt}.db");
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CONTENT_DISPOSITION,
+        format!("attachment; filename=\"{filename}\"")
+            .parse()
+            .map_err(|_| AppError::Other("Content-Disposition 头构造失败".to_string()))?,
+    );
+    headers.insert(
+        header::CONTENT_TYPE,
+        "application/octet-stream"
+            .parse()
+            .map_err(|_| AppError::Other("Content-Type 头构造失败".to_string()))?,
+    );
+    Ok((headers, db_filehead).into_response())
 }
 
 // ============================================================
@@ -147,7 +220,104 @@ pub async fn backup_upload(
     mut multipart: Multipart,
 ) -> Result<Html<String>, AppError>
 {
-    todo!("M6 第 1 步：上传恢复（魔数校验 + 先备份再覆盖）")
+    if !user.is_admin
+    {
+        return Err(AppError::Forbidden("此界面要求管理员".to_string()));
+    }
+
+    let db_file = loop
+    {
+        match multipart
+            .next_field()
+            .await
+            .map_err(|e| AppError::Other(e.to_string()))?
+        {
+            Some(field) if field.name() == Some("db_file") => break Some(field),
+            Some(_) => continue,
+            None => break None,
+        }
+    };
+
+    let Some(db_file) = db_file
+    else
+    {
+        return Err(AppError::Validation("没有收到文件".to_string()));
+    };
+    let file_name = db_file.file_name().unwrap_or_default().to_string();
+
+    // 【教学：魔数校验 —— Field::bytes() 是异步的】
+    // db_file.bytes() 返回 Future<Output = Result<Bytes, MultipartError>>，
+    // 必须先 .await 拿到 Bytes（axum::body::Bytes）。
+    // Bytes 实现了 Deref<Target = [u8]>，所以可以直接 .starts_with()，
+    // 不需要 iter().take().collect().join() 那一串——
+    // 那串是"逐字节搬进新容器"，而 Bytes 本身就是字节切片。
+    let upload_bytes = db_file
+        .bytes()
+        .await
+        .map_err(|e| AppError::Other(e.to_string()))?;
+    if !upload_bytes.starts_with(b"SQLite format 3\0")
+    {
+        return Err(AppError::Validation(
+            "Not a valid database file".to_string(),
+        ));
+    }
+
+    // 【教学：第 6 步 —— 备份当前库，需要两个函数】
+    //   a) 拿时间戳（项目一贯纪律：用 SQLite，不引入 chrono）：
+    //      sqlx::query_scalar::<_, String>(
+    //          "SELECT strftime('%Y%m%d-%H%M%S', 'now', 'localtime')")
+    //      .fetch_one(&state.pool).await.map_err(AppError::Database)?
+    //   b) 重命名 = 移动（同文件系统内 rename 就是移动）：
+    //      tokio::fs::rename(&state.config.database_path, &backup_path).await
+    //      backup_path = format!("{}.bak-{}", state.config.database_path, ts)
+    //      ⚠️ 若想放进独立备份文件夹：先 create_dir_all(&备份目录)，
+    //         再把备份目录拼进 backup_path（跨目录 rename 也 OK）
+    //      ⚠️ rename 失败（源不存在/权限）→ AppError::Database（原样转）
+    //      注：与部署纪律一致——同目录 .bak-时间戳，出错能回退
+
+    let now =
+        sqlx::query_scalar::<_, String>("SELECT strftime('%Y%m%d-%H%M%S', 'now', 'localtime')")
+            .fetch_one(&state.pool)
+            .await
+            .map_err(AppError::Database)?;
+
+    tokio::fs::create_dir_all("/backup")
+        .await
+        .map_err(|e| AppError::Other(e.to_string()))?;
+    // ⚠️ 修复：database_path 是完整路径，不能直接拼进文件名！
+    // 用 Path::file_name() 只取文件名部分，再拼到 /backup 下
+    let db_name = std::path::Path::new(&state.config.database_path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("train_record.db");
+    let backup_path = format!("/backup/{db_name}-{now}.bak");
+    tokio::fs::rename(&state.config.database_path, &backup_path)
+        .await
+        .map_err(|e| AppError::Other(e.to_string()))?;
+
+    tokio::fs::write(&state.config.database_path, upload_bytes)
+        .await
+        .map_err(|e| AppError::Other(e.to_string()))?;
+
+    // 【教学：最后一步 —— 返回 HTML 提示页（不是 Redirect）】
+    // 教学注释要求"返回提示页：恢复成功，请重启服务生效"，
+    // 函数签名是 Result<Html<String>, AppError>，所以拼提示页。
+    Ok(Html(
+        r#"<!DOCTYPE html>
+        <html lang="zh">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>恢复完成</title>
+        </head>
+        <body>
+            <h1>恢复成功</h1>
+            <p>数据库已恢复，请重启服务生效。</p>
+            <p><a href="/admin/backup">返回备份页</a> | <a href="/">返回首页</a></p>
+        </body>
+        </html>"#
+            .to_string(),
+    ))
 }
 
 // ============================================================
