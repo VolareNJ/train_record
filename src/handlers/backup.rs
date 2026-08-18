@@ -31,9 +31,8 @@ use axum::{
     response::{Html, IntoResponse, Response},
 };
 use serde::Deserialize;
-use sqlx::SqlitePool;
 
-use crate::{AppState, error::AppError, handlers::auth::AuthUser};
+use crate::{AppState, error::AppError, handlers::auth::AuthUser, models};
 
 // ============================================================
 // 【教学：M6 核心认知 —— SQLite 单文件 = 备份就是复制】
@@ -362,7 +361,125 @@ pub async fn export_records(
     Query(query): Query<ExportQuery>,
 ) -> Result<Response, AppError>
 {
-    todo!("M6 第 1 步：CSV/JSON 导出（转义 + serde_json）")
+    if !user.is_admin
+    {
+        return Err(AppError::Forbidden("此界面要求管理员".to_string()));
+    }
+
+    let all_records = sqlx::query_as::<_, models::Record>(
+        "SELECT * FROM records WHERE user_id = ? ORDER BY record_date DESC",
+    )
+    .bind(&user.id)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(AppError::Database)?;
+
+    let exercise_names =
+        sqlx::query_as::<_, models::Exercise>("SELECT * FROM exercises WHERE user_id = ?")
+            .bind(&user.id)
+            .fetch_all(&state.pool)
+            .await
+            .map_err(AppError::Database)?
+            .iter()
+            .map(|e| (e.id, e.name.clone()))
+            .collect::<std::collections::HashMap<i64, String>>();
+
+    // 取今天日期（文件名用，项目一贯纪律：SQLite localtime）
+    let today_dt = sqlx::query_scalar::<_, String>("SELECT date('now', 'localtime')")
+        .fetch_one(&state.pool)
+        .await
+        .map_err(AppError::Database)?;
+
+    // format 参数：不传默认 csv
+    let format = query.format.as_deref().unwrap_or("csv");
+
+    // 【教学：按 format 分支 —— 两套拼法，返回类型统一为 String】
+    // csv 分支和 json 分支最后都产出 String 文本 + Content-Type 头，
+    // 所以先各自算出 (mime, body)，再统一走"下载头 + 返回"。
+    let (mime, body) = match format
+    {
+        "csv" =>
+        {
+            // 列名行 + 数据行。每个字段单独转义再 join(",")——
+            // 不能把整行当一列转义（那会把逗号全变成引号内的字面逗号）
+            let header = "exercise_id,name,record_date,completed,weight,sets,reps,rest,feeling,strategy,key_points";
+            let rows = all_records
+                .iter()
+                .map(|r| {
+                    vec![
+                        escape_csv(&r.exercise_id.to_string()),
+                        escape_csv(
+                            exercise_names
+                                .get(&r.exercise_id)
+                                .map(String::as_str)
+                                .unwrap_or(""),
+                        ),
+                        escape_csv(&r.record_date),
+                        escape_csv(&r.completed.to_string()),
+                        escape_csv(&r.weight.to_string()),
+                        escape_csv(&r.sets.to_string()),
+                        escape_csv(&r.reps.to_string()),
+                        escape_csv(&r.rest.to_string()),
+                        escape_csv(&r.feeling),
+                        escape_csv(&r.strategy),
+                        escape_csv(&r.key_points),
+                    ]
+                    .join(",")
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            ("text/csv; charset=utf-8", format!("{header}\n{rows}"))
+        },
+        "json" =>
+        {
+            // 【教学：serde_json::json! 宏 —— 机器生成合法 JSON】
+            // 每行记录 → 一个 json!({...}) 对象，collect 成 Vec，
+            // serde_json::to_string 自动转义、自动合法，不用手工拼。
+            let rows = all_records
+                .iter()
+                .map(|r| {
+                    serde_json::json!({
+                        "exercise_id": r.exercise_id,
+                        "name": exercise_names.get(&r.exercise_id).map(String::as_str).unwrap_or(""),
+                        "record_date": r.record_date,
+                        "completed": r.completed,
+                        "weight": r.weight,
+                        "sets": r.sets,
+                        "reps": r.reps,
+                        "rest": r.rest,
+                        "feeling": r.feeling,
+                        "strategy": r.strategy,
+                        "key_points": r.key_points,
+                    })
+                })
+                .collect::<Vec<_>>();
+            let body = serde_json::to_string(&rows).map_err(|e| AppError::Other(e.to_string()))?;
+            ("application/json", body)
+        },
+        other =>
+        {
+            return Err(AppError::Validation(format!(
+                "format 只支持 csv/json，收到: {other}"
+            )));
+        },
+    };
+
+    // 【教学：下载头 —— 和 backup_download 同款】
+    // Content-Disposition 决定浏览器"保存对话框"，文件名带日期
+    let filename = format!("records_{today_dt}.{format}");
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CONTENT_DISPOSITION,
+        format!("attachment; filename=\"{filename}\"")
+            .parse()
+            .map_err(|_| AppError::Other("Content-Disposition 头构造失败".to_string()))?,
+    );
+    headers.insert(
+        header::CONTENT_TYPE,
+        mime.parse()
+            .map_err(|_| AppError::Other("Content-Type 头构造失败".to_string()))?,
+    );
+    Ok((headers, body).into_response())
 }
 
 // ============================================================
@@ -385,5 +502,12 @@ pub struct ExportQuery
 /// 实现：if 值包含 , 或 " 或 \n → 包裹 + replace，否则原样
 fn escape_csv(s: &str) -> String
 {
-    todo!("M6 第 1 步：CSV 转义（纯函数，含单元测试）")
+    if s.contains("\"") || s.contains(",") || s.contains("\n")
+    {
+        format!(r#""{}""#, s.replace('"', r#""""#))
+    }
+    else
+    {
+        s.to_string()
+    }
 }
