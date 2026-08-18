@@ -280,14 +280,30 @@ pub async fn backup_upload(
             .await
             .map_err(AppError::Database)?;
 
-    // 【M7 bugfix：备份文件放数据库同目录，不放 /backup 根目录】
-    // 旧版拼到 /backup/（文件系统根目录）——用户找不到，且跨目录
-    // rename 依赖 /backup 可写（生产可能没这目录/权限）。
-    // 改为和部署纪律一致的"同目录 .bak-时间戳"：
-    //   database_path = /var/lib/train_record/train_record.db
-    //   backup_path   = /var/lib/train_record/train_record.db.bak-20260818-112734
-    // 数据库在哪，备份就在哪，用户一眼能找到，回退也直观。
-    let backup_path = format!("{}.bak-{now}", state.config.database_path);
+    // 【M8 调整：备份放进"数据库同目录下的 backup/ 子目录"】
+    // 演进：
+    //   v1 写死 /backup/（根目录）→ 用户找不到，跨目录 rename 依赖权限
+    //   v2 同目录 {db}.bak-时间戳 → 能找到，但备份文件和工作文件混在一起
+    //   v3（现在）：数据库在哪，backup/ 就在哪——
+    //     开发：train_record.db → ./backup/train_record.db.bak-时间戳
+    //     生产：/var/lib/train_record/train_record.db
+    //          → /var/lib/train_record/backup/train_record.db.bak-时间戳
+    // 部署纪律同款"出错能回退"，且备份集中、目录清晰。
+    let db_parent = std::path::Path::new(&state.config.database_path)
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|| ".".to_string());
+    let backup_dir = format!("{db_parent}/backup");
+    tokio::fs::create_dir_all(&backup_dir)
+        .await
+        .map_err(|e| AppError::Other(e.to_string()))?;
+
+    let db_file = std::path::Path::new(&state.config.database_path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("train_record.db");
+    let backup_path = format!("{backup_dir}/{db_file}.bak-{now}");
     tokio::fs::rename(&state.config.database_path, &backup_path)
         .await
         .map_err(|e| AppError::Other(e.to_string()))?;
