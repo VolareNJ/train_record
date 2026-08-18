@@ -616,12 +616,14 @@ pub async fn record_form(
     let prefill_feeling = today_record
         .as_ref()
         .map(|r| r.feeling.clone())
-        .or_else(|| last_record.as_ref().map(|r| r.feeling.clone()))
         .unwrap_or_default();
+    // 【M7 bugfix：策略/感受不再从 last_record 预填】
+    // 今天还没训练时（today_record = None），上次的感受/策略是"上次训练"的
+    // 旧内容——预填会让用户误以为今天填过。这两个字段只回显当日值，
+    // 没填过就是空白，由用户当次输入。
     let prefill_strategy = today_record
         .as_ref()
         .map(|r| r.strategy.clone())
-        .or_else(|| last_record.as_ref().map(|r| r.strategy.clone()))
         .unwrap_or_default();
     let prefill_key_points = today_record
         .as_ref()
@@ -877,12 +879,10 @@ pub async fn record_form(
         last_ref = last_ref,
         plan_id = current_plan.id,
         item_id = plan_item.id,
-        // 【M4 修订：已完成勾选框预填最近记录状态】
-        // 编辑旧记录时回显上次勾选；新记录默认未勾选
-        completed_checked = if most_recent_record
-            .as_ref()
-            .map(|r| r.completed)
-            .unwrap_or(false)
+        // 【M7 bugfix：已完成勾选框只回显当日值】
+        // 今天还没训练（today_record = None）时不再从 last_record 预填——
+        // 上次训练勾没勾跟今天无关，新记录默认未勾选。
+        completed_checked = if today_record.as_ref().map(|r| r.completed).unwrap_or(false)
         {
             " checked"
         }
