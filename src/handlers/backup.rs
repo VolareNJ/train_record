@@ -280,16 +280,14 @@ pub async fn backup_upload(
             .await
             .map_err(AppError::Database)?;
 
-    tokio::fs::create_dir_all("/backup")
-        .await
-        .map_err(|e| AppError::Other(e.to_string()))?;
-    // ⚠️ 修复：database_path 是完整路径，不能直接拼进文件名！
-    // 用 Path::file_name() 只取文件名部分，再拼到 /backup 下
-    let db_name = std::path::Path::new(&state.config.database_path)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("train_record.db");
-    let backup_path = format!("/backup/{db_name}-{now}.bak");
+    // 【M7 bugfix：备份文件放数据库同目录，不放 /backup 根目录】
+    // 旧版拼到 /backup/（文件系统根目录）——用户找不到，且跨目录
+    // rename 依赖 /backup 可写（生产可能没这目录/权限）。
+    // 改为和部署纪律一致的"同目录 .bak-时间戳"：
+    //   database_path = /var/lib/train_record/train_record.db
+    //   backup_path   = /var/lib/train_record/train_record.db.bak-20260818-112734
+    // 数据库在哪，备份就在哪，用户一眼能找到，回退也直观。
+    let backup_path = format!("{}.bak-{now}", state.config.database_path);
     tokio::fs::rename(&state.config.database_path, &backup_path)
         .await
         .map_err(|e| AppError::Other(e.to_string()))?;
