@@ -366,8 +366,15 @@ pub async fn export_records(
         return Err(AppError::Forbidden("此界面要求管理员".to_string()));
     }
 
+    // 【教学：records 没有 user_id 列 —— 通过 exercises 关联过滤】
+    // records 表只有 phase_id/exercise_id，用户隔离要走 JOIN：
+    //   INNER JOIN exercises e ON r.exercise_id = e.id
+    //   WHERE e.user_id = ?
     let all_records = sqlx::query_as::<_, models::Record>(
-        "SELECT * FROM records WHERE user_id = ? ORDER BY record_date DESC",
+        "SELECT r.* FROM records r
+         INNER JOIN exercises e ON r.exercise_id = e.id
+         WHERE e.user_id = ?
+         ORDER BY r.record_date DESC, r.id",
     )
     .bind(&user.id)
     .fetch_all(&state.pool)
