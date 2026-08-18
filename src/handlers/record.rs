@@ -28,7 +28,6 @@ use axum::{
     response::{Html, Redirect},
 };
 use serde::Deserialize;
-use sqlx::SqlitePool;
 
 use crate::{
     AppState,
@@ -391,7 +390,8 @@ pub async fn today(
         <p><a href="/">返回首页</a></p>
         <script>
             if ('serviceWorker' in navigator) {{
-                navigator.serviceWorker.register('/static/sw.js');
+                // 【M6 PWA：sw.js 在根目录 → 默认作用域 / 全站接管】
+                navigator.serviceWorker.register('/sw.js');
             }}
         </script>
         "#,

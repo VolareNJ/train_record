@@ -52,12 +52,12 @@ use axum::{
     extract::State,
     http::HeaderMap,
     response::{Html, IntoResponse, Redirect, Response},
-    routing::{get, post},
+    routing::{get, get_service, post},
 };
 use config::AppConfig;
 use error::AppError;
 use sqlx::SqlitePool;
-use tower_http::services::ServeDir;
+use tower_http::services::{ServeDir, ServeFile};
 
 // ============================================================
 // 【教学：应用状态 (AppState)】★ 重点概念，多看几遍
@@ -316,6 +316,15 @@ async fn main()
         // 用户问题 0：体重是"一个地方维护的通用变量"，
         // record_form/plan_detail 的 support 模式自动获取。
         .route("/profile/weight", post(handlers::auth::update_body_weight))
+        // 【M6 PWA：Service Worker 必须放站点根目录 /sw.js】
+        // ⚠️ 实测踩坑：SW 放 /static/sw.js 时默认作用域是 /static/，
+        //    register 里写 { scope: '/' } 也不行——浏览器安全限制：
+        //    "scope '/' 不在最大允许作用域 /static/ 内"，
+        //    必须加 Service-Worker-Allowed 头才能越级。
+        // 解法（PWA 官方最佳实践）：把 sw.js 放根目录 → 默认作用域就是 /，
+        //    不用 scope 参数、不用特殊响应头，一行注册全站接管。
+        // 生产部署时根目录的 sw.js 要和二进制一起拷。
+        .route("/sw.js", get_service(ServeFile::new("sw.js")))
         .nest_service("/static", ServeDir::new("static")) // 已有
         .route(
             "/phases",
@@ -906,7 +915,9 @@ async fn home(State(state): State<AppState>, headers: HeaderMap) -> Result<Respo
         <p style="color:#888;font-size:0.9em">用于支撑（自重）类动作的重量换算，记录页自动获取。</p>
         <script>
             if ('serviceWorker' in navigator) {{
-                navigator.serviceWorker.register('/static/sw.js');
+                // 【M6 PWA：sw.js 放根目录后默认作用域就是 /，无需 scope 参数】
+                // （放 /static/ 下会被限制作用域，必须 Service-Worker-Allowed 头）
+                navigator.serviceWorker.register('/sw.js');
             }}
         </script>
         "#,
