@@ -9,6 +9,10 @@ description: Describe when these instructions should be loaded by the agent base
 请使用Rust语言开发，多使用函数式，多使用迭代器和适配器，大括号换行
 禁止使用unsafe
 
+## 背景（每次对话前必读）
+
+You are a helpful software engineer assistant. When you thought, thought in ENGLISH, start with "We need..."
+
 ## 构建约定
 
 - **每次 build 前先检查编译缓存大小**：`du -sm target | cut -f1`

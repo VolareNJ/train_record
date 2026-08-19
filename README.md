@@ -191,12 +191,13 @@ train_record/
 │   ├── manifest.json       # PWA 清单
 │   ├── sw.js               # Service Worker（静态资源离线缓存）
 │   └── weight_converter.js # 重量换算器
+├── sw.js                   # Service Worker（M6 移到根目录，作用域才覆盖全站）
 ├── docs/
 │   ├── proposal.md         # 项目背景与动机
 │   ├── structure.md        # 完整设计文档（需求/表结构/页面/计划）
 │   ├── todo.md             # 待办与设计决策（跨会话）
 │   └── learning_path/      # 🗺️ 分阶段开发路径图
-│       ├── M0.md ~ M6.md   # 各阶段路径图（M0-M5 ✅，M6 进行中）
+│       ├── M0.md ~ M7.md   # 各阶段路径图（M0-M6 ✅，M7 待实现）
 │       ├── M1_ref/ M4_ref/ # 参考答案
 │       ├── M4_bugfix_notes.md      # M4 后 Bug 复盘
 │       └── M5_roadmap_notes.md     # M5 前路线复盘（含 GUI 决策）
@@ -224,8 +225,8 @@ train_record/
 | **M3** | 计划：模板（A/B 分化）、按日计划 | ✅ 已完成（模板 + 当日计划 + 理解验证通过） |
 | **M4** | 训练记录：今日页、记录/编辑、重量换算器、即时保存 | ✅ 已完成（Upsert 落库 + 理解验证通过） |
 | **M5** | 历史回顾：日历导航、当天详情、动作详情折线图/1RM | ✅ 已完成（含理解验证，2026-08-14 收官） |
-| **M6** | 备份与体验：.db 下载/上传恢复、CSV/JSON 导出、PWA | 📝 进行中（骨架已就位，待实现） |
-| **M7** | 打磨：界面美化、响应式、错误处理 | ⬜ 未开始 |
+| **M6** | 备份与体验：.db 下载/上传恢复、CSV/JSON 导出、PWA | ✅ 已完成（含理解验证，2026-08-18 收官） |
+| **M7** | 打磨：热替换连接池、未登录跳转、排序、美化、离线、部署 | 📝 定义完成，待实现 |
 | **M8** | REST API 层（为 iced GUI 客户端铺路） | ⬜ 未开始 |
 
 > 开发是**边写边学**模式：每个文件都带有【教学注释】，从 [`docs/learning_path/M0.md`](docs/learning_path/M0.md) 开始阅读。
@@ -237,7 +238,7 @@ train_record/
 - [`docs/proposal.md`](docs/proposal.md) —— 项目背景：为什么重写
 - [`docs/structure.md`](docs/structure.md) —— **设计地基**：完整需求结论、数据库 DDL、页面规格、开发计划
 - [`docs/todo.md`](docs/todo.md) —— 待办与设计决策（跨会话备忘）
-- [`docs/learning_path/M0.md`](docs/learning_path/M0.md) ~ [`M6.md`](docs/learning_path/M6.md) —— **分阶段开发路径图**（M0-M5 已完成，M6 进行中）
+- [`docs/learning_path/M0.md`](docs/learning_path/M0.md) ~ [`M7.md`](docs/learning_path/M7.md) —— **分阶段开发路径图**（M0-M6 已完成，M7 待实现）
 - [`docs/learning_path/M4_bugfix_notes.md`](docs/learning_path/M4_bugfix_notes.md) —— M4 后 Bug 修复复盘（iced 必考清单）
 - [`docs/learning_path/M5_roadmap_notes.md`](docs/learning_path/M5_roadmap_notes.md) —— M5 前能力评估与 GUI 技术栈决策
 

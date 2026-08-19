@@ -1519,22 +1519,24 @@ pub async fn plan_detail(
     //    （渐进超负荷：本次计划重量应比上次实际强度略高；
     //     最近策略提示上次怎么安排的 —— 用户诉求 2）
     //    ⚠️ 数据隔离：JOIN exercises 过滤 user_id
-    let last_record_map: HashMap<i64, (f64, String)> = sqlx::query_as::<_, (i64, f64, String)>(
-        "SELECT r.exercise_id AS \"_1\", r.weight AS \"_2\", r.strategy AS \"_3\" FROM records r
-         JOIN exercises e ON r.exercise_id = e.id AND e.user_id = ?
-         JOIN (
-             SELECT exercise_id, MAX(record_date || '#' || printf('%010d', id)) AS k
-             FROM records GROUP BY exercise_id
-         ) latest ON r.exercise_id = latest.exercise_id
-         WHERE (r.record_date || '#' || printf('%010d', r.id)) = latest.k",
-    )
-    .bind(&user.id)
-    .fetch_all(&state.pool)
-    .await
-    .map_err(AppError::Database)?
-    .into_iter()
-    .map(|(ex_id, w, s)| (ex_id, (w, s)))
-    .collect();
+    //    【M7 修订：查询扩展取 r.mode —— "上次观测"逆换算需要上次计重模式】
+    let last_record_map: HashMap<i64, (f64, String, String)> =
+        sqlx::query_as::<_, (i64, f64, String, String)>(
+            "SELECT r.exercise_id AS \"_1\", r.weight AS \"_2\", r.strategy AS \"_3\", r.mode AS \"_4\" FROM records r
+             JOIN exercises e ON r.exercise_id = e.id AND e.user_id = ?
+             JOIN (
+                 SELECT exercise_id, MAX(record_date || '#' || printf('%010d', id)) AS k
+                 FROM records GROUP BY exercise_id
+             ) latest ON r.exercise_id = latest.exercise_id
+             WHERE (r.record_date || '#' || printf('%010d', r.id)) = latest.k",
+        )
+        .bind(&user.id)
+        .fetch_all(&state.pool)
+        .await
+        .map_err(AppError::Database)?
+        .into_iter()
+        .map(|(ex_id, w, s, m)| (ex_id, (w, s, m)))
+        .collect();
 
     // ③b 部位下拉框选项（从动作列表去重，动态生成）
     let mut part_list: Vec<String> = all_exercises
@@ -1707,7 +1709,7 @@ pub async fn plan_detail(
             //     参考它决定这次怎么调，和上次实际强度一样是渐进超负荷参照物。
             let last_actual_ref = last_record_map
                 .get(&item.exercise_id)
-                .map(|(w, _)| {
+                .map(|(w, _, _)| {
                     format!(
                         r#"<span style="color:#888">（上次实际：{w}kg）</span>"#,
                         w = w
@@ -1716,12 +1718,36 @@ pub async fn plan_detail(
                 .unwrap_or_default();
             let last_strategy_ref = last_record_map
                 .get(&item.exercise_id)
-                .map(|(_, s)| s.clone())
+                .map(|(_, s, _)| s.clone())
                 .filter(|s| !s.is_empty())
                 .map(|s| {
                     format!(
                         r#"<br><span style="color:#888;font-size:0.85em">上次策略：{s}</span>"#,
                         s = s
+                    )
+                })
+                .unwrap_or_default();
+            // 【M7 修订：观测强度旁的上次参考 —— 反向计算（mode_display 同款逻辑）】
+            // 实际强度列旁已有"上次实际"，观测强度列旁补"上次观测"：
+            // 用上次记录的实际强度 + 上次计重模式 + 动作库杆重/体重/单位
+            // 逆换算成片重/支撑量（与 weight_converter.js 的 inverseConvert 同逻辑）：
+            //   bar     → 片重 = (总重 - 杆重) / 2
+            //   support → 支撑量 = 体重 - 总重
+            //   std     → 片重 = 总重
+            // 单位 lb 时显示值 = kg ÷ 0.4536。
+            // 上次记录不存杆重 → 统一用动作库当前默认（与 record_form 的 last_ref 同口径）。
+            let last_observed_ref = last_record_map
+                .get(&item.exercise_id)
+                .map(|(w, _, m)| {
+                    format!(
+                        r#"<br><span style="color:#888;font-size:0.85em">上次观测：{obs}</span>"#,
+                        obs = crate::handlers::record::mode_display(
+                            m,
+                            *w,
+                            bar_weight,
+                            user.body_weight,
+                            &unit,
+                        ),
                     )
                 })
                 .unwrap_or_default();
@@ -1752,7 +1778,7 @@ pub async fn plan_detail(
                 {bar_body_cell}
                 <td><input id="plate-{ex_id}" type="number" step="0.5" value="">
                     <select id="unit-{ex_id}">{unit_options}</select>
-                    <span id="result-{ex_id}"></span></td>
+                    <span id="result-{ex_id}"></span>{last_observed_ref}</td>
                 <td><input name="sets_{ex_id}" type="number" step="1" value="{sets}"></td>
                 <td><input name="reps_{ex_id}" type="number" step="1" value="{reps}"></td>
                 <td><input name="rest_{ex_id}" type="number" step="1" value="{rest}"></td>
@@ -1778,6 +1804,7 @@ pub async fn plan_detail(
                 note = note,
                 last_actual_ref = last_actual_ref,
                 last_strategy_ref = last_strategy_ref,
+                last_observed_ref = last_observed_ref,
                 bar_body_cell = bar_body_cell,
             );
             (ex_part, row)
