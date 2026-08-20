@@ -172,13 +172,14 @@ pub async fn list(
     Query(query): Query<ListQuery>,
 ) -> Result<Html<String>, AppError>
 {
+    let pool = state.pool.read().await.clone();
     // TODO(M2 第 3 步): 学生实现（步骤见上方注释）
     // 部位筛选下拉框选项：DISTINCT 查询数据库实际部位（动态，含"全部"）
     let part_options = sqlx::query_scalar::<_, String>(
         "SELECT DISTINCT body_part FROM exercises WHERE user_id = ? ORDER BY body_part",
     )
     .bind(&user.id)
-    .fetch_all(&state.pool)
+    .fetch_all(&pool)
     .await
     .map_err(AppError::Database)?
     .iter()
@@ -214,7 +215,7 @@ pub async fn list(
          FROM records
          GROUP BY exercise_id",
     )
-    .fetch_all(&state.pool)
+    .fetch_all(&pool)
     .await
     .map_err(AppError::Database)?
     .into_iter()
@@ -248,13 +249,13 @@ pub async fn list(
             "SELECT * FROM exercises WHERE user_id = ? ORDER BY body_part, sort_order, id",
         )
         .bind(&user.id)
-        .fetch_all(&state.pool),
+        .fetch_all(&pool),
         Some(pt) => sqlx::query_as::<_, Exercise>(
             "SELECT * FROM exercises WHERE user_id = ? AND body_part = ? ORDER BY sort_order, id",
         )
         .bind(&user.id)
         .bind(pt)
-        .fetch_all(&state.pool),
+        .fetch_all(&pool),
     }
     .await
     .map_err(AppError::Database)?
@@ -390,6 +391,7 @@ pub async fn create_form(
     AuthUser(user): AuthUser,
 ) -> Result<Html<String>, AppError>
 {
+    let pool = state.pool.read().await.clone();
     Ok(Html(
         r#"
         <head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
@@ -503,6 +505,8 @@ pub async fn create(
     Form(form): Form<ExerciseForm>,
 ) -> Result<Redirect, AppError>
 {
+    let pool = state.pool.read().await.clone();
+
     // 校验：name 非空（空则立刻返回 422）
     let name = form.name.trim();
     if name.is_empty()
@@ -513,7 +517,7 @@ pub async fn create(
     if sqlx::query_scalar::<_, i64>("SELECT id FROM exercises WHERE user_id = ? AND name = ?")
         .bind(user.id)
         .bind(name)
-        .fetch_optional(&state.pool)
+        .fetch_optional(&pool)
         .await
         .map_err(AppError::Database)?
         .is_some()
@@ -544,7 +548,7 @@ pub async fn create(
     )
     .bind(user.id)
     .bind(&form.body_part)
-    .fetch_one(&state.pool)
+    .fetch_one(&pool)
     .await
     .map_err(AppError::Database)?;
     // INSERT（10 列）。create 不需要 rows_affected：
@@ -562,7 +566,7 @@ pub async fn create(
     .bind(default_reps)
     .bind(&form.key_points)
     .bind(next_sort_order)
-    .execute(&state.pool)
+    .execute(&pool)
     .await
     .map_err(AppError::Database)?;
     Ok(Redirect::to("/exercises"))
@@ -657,11 +661,13 @@ pub async fn edit_form(
     Path(exercise_id): Path<i64>,
 ) -> Result<Html<String>, AppError>
 {
+    let pool = state.pool.read().await.clone();
+
     let record_to_edit =
         sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE id = ? AND user_id = ?")
             .bind(&exercise_id)
             .bind(&user.id)
-            .fetch_optional(&state.pool)
+            .fetch_optional(&pool)
             .await
             .map_err(AppError::Database)?
             .ok_or_else(|| AppError::NotFound("Record not found".to_string()))?;
@@ -669,7 +675,7 @@ pub async fn edit_form(
     // 【M5 修订：编辑页嵌入最近 180 天趋势图（stats.rs 公共函数复用）】
     //     位置：编辑训练动作标题下面、动作名称上面。
     //     None（< 2 条记录）→ 编辑页不放"记录太少"文案，静默省略图。
-    let chart_section = match crate::handlers::stats::exercise_chart_html(&state.pool, exercise_id)
+    let chart_section = match crate::handlers::stats::exercise_chart_html(&pool, exercise_id)
         .await?
     {
         Some(html) => html,
@@ -855,6 +861,8 @@ pub async fn update(
     Form(form): Form<ExerciseForm>,
 ) -> Result<Redirect, AppError>
 {
+    let pool = state.pool.read().await.clone();
+
     if form.name.trim().is_empty()
     {
         return Err(AppError::Validation("动作名称不能为空".to_string()));
@@ -904,7 +912,7 @@ pub async fn update(
     .bind(form.key_points)
     .bind(exercise_id)
     .bind(user.id)
-    .execute(&state.pool)
+    .execute(&pool)
     .await
     .map_err(AppError::Database)?;
 
@@ -946,6 +954,8 @@ pub async fn update_config(
     Form(form): Form<ConfigForm>,
 ) -> Result<(), AppError>
 {
+    let pool = state.pool.read().await.clone();
+
     // 归属验证 + 更新三列（数据隔离纪律：id + user_id 双条件）
     let ret = sqlx::query(
         "UPDATE exercises SET default_mode = ?, bar_weight = ?, default_unit = ?
@@ -960,7 +970,7 @@ pub async fn update_config(
     .bind(&form.unit)
     .bind(exercise_id)
     .bind(user.id)
-    .execute(&state.pool)
+    .execute(&pool)
     .await
     .map_err(AppError::Database)?;
 
@@ -1007,10 +1017,12 @@ pub async fn delete(
     Path(exercise_id): Path<i64>,
 ) -> Result<Redirect, AppError>
 {
+    let pool = state.pool.read().await.clone();
+
     let ext_ret = sqlx::query("DELETE FROM exercises WHERE id = ? AND user_id = ?")
         .bind(exercise_id)
         .bind(user.id)
-        .execute(&state.pool)
+        .execute(&pool)
         .await
         .map_err(AppError::Database)?;
 
@@ -1044,11 +1056,13 @@ pub async fn detail(
     Path(exercise_id): Path<i64>,
 ) -> Result<Html<String>, AppError>
 {
+    let pool = state.pool.read().await.clone();
+
     let exercise =
         sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE id = ? AND user_id = ?")
             .bind(exercise_id)
             .bind(user.id)
-            .fetch_optional(&state.pool)
+            .fetch_optional(&pool)
             .await
             .map_err(AppError::Database)?
             .ok_or_else(|| AppError::NotFound("动作不存在".to_string()))?;

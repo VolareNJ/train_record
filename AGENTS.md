@@ -8,6 +8,7 @@ description: Describe when these instructions should be loaded by the agent base
 当前是一个Ubuntu 24.04环境
 请使用Rust语言开发，多使用函数式，多使用迭代器和适配器，大括号换行
 禁止使用unsafe
+尽量不要使用clone/dyn trait，避免不必要的运行时开销
 
 ## 背景（每次对话前必读）
 

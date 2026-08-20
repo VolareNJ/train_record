@@ -75,6 +75,7 @@ pub async fn backup_page(
     AuthUser(user): AuthUser,
 ) -> Result<Html<String>, AppError>
 {
+    let pool = state.pool.read().await.clone();
     if !user.is_admin
     {
         return Err(AppError::Forbidden("此界面要求管理员".to_string()));
@@ -99,7 +100,7 @@ pub async fn backup_page(
                 <label>选择 .db 文件：<input type="file" name="db_file" accept=".db" required></label><br>
                 <button type="submit">上传并恢复</button>
             </form>
-            <p>上传后需重启服务生效，恢复前会自动备份当前数据库。</p>
+            <p>上传恢复后立即生效（热替换连接池，无需重启），恢复前会自动备份当前数据库。</p>
             <h2>导出记录</h2>
             <p><a href="/admin/backup/export?format=csv">导出 CSV</a> |
                <a href="/admin/backup/export?format=json">导出 JSON</a></p>
@@ -140,13 +141,15 @@ pub async fn backup_download(
     AuthUser(user): AuthUser,
 ) -> Result<Response, AppError>
 {
+    let pool = state.pool.read().await.clone();
+
     if !user.is_admin
     {
         return Err(AppError::Forbidden("此界面要求管理员".to_string()));
     }
 
     let today_dt = sqlx::query_scalar::<_, String>("SELECT date('now', 'localtime')")
-        .fetch_one(&state.pool)
+        .fetch_one(&pool)
         .await
         .map_err(AppError::Database)?;
 
@@ -219,6 +222,8 @@ pub async fn backup_upload(
     mut multipart: Multipart,
 ) -> Result<Html<String>, AppError>
 {
+    let pool = state.pool.read().await.clone();
+
     if !user.is_admin
     {
         return Err(AppError::Forbidden("此界面要求管理员".to_string()));
@@ -265,7 +270,7 @@ pub async fn backup_upload(
     //   a) 拿时间戳（项目一贯纪律：用 SQLite，不引入 chrono）：
     //      sqlx::query_scalar::<_, String>(
     //          "SELECT strftime('%Y%m%d-%H%M%S', 'now', 'localtime')")
-    //      .fetch_one(&state.pool).await.map_err(AppError::Database)?
+    //      .fetch_one(&pool).await.map_err(AppError::Database)?
     //   b) 重命名 = 移动（同文件系统内 rename 就是移动）：
     //      tokio::fs::rename(&state.config.database_path, &backup_path).await
     //      backup_path = format!("{}.bak-{}", state.config.database_path, ts)
@@ -276,7 +281,7 @@ pub async fn backup_upload(
 
     let now =
         sqlx::query_scalar::<_, String>("SELECT strftime('%Y%m%d-%H%M%S', 'now', 'localtime')")
-            .fetch_one(&state.pool)
+            .fetch_one(&pool)
             .await
             .map_err(AppError::Database)?;
 
@@ -308,13 +313,18 @@ pub async fn backup_upload(
         .await
         .map_err(|e| AppError::Other(e.to_string()))?;
 
+    let mut pool = state.pool.write().await;
+    pool.close().await;
+
     tokio::fs::write(&state.config.database_path, upload_bytes)
         .await
         .map_err(|e| AppError::Other(e.to_string()))?;
 
+    *pool = sqlx::SqlitePool::connect(&state.config.database_path).await?;
+
     // 【教学：最后一步 —— 返回 HTML 提示页（不是 Redirect）】
-    // 教学注释要求"返回提示页：恢复成功，请重启服务生效"，
-    // 函数签名是 Result<Html<String>, AppError>，所以拼提示页。
+    // M7 热替换后不再需要重启：写锁内 close 旧池 → 覆盖 → 重连新池，
+    // 一次请求内完成。函数签名是 Result<Html<String>, AppError>，所以拼提示页。
     Ok(Html(
         r#"<!DOCTYPE html>
         <html lang="zh">
@@ -325,7 +335,7 @@ pub async fn backup_upload(
         </head>
         <body>
             <h1>恢复成功</h1>
-            <p>数据库已恢复，请重启服务生效。</p>
+            <p>数据库已恢复，已生效，无需重启。</p>
             <p><a href="/admin/backup">返回备份页</a> | <a href="/">返回首页</a></p>
         </body>
         </html>"#
@@ -375,6 +385,8 @@ pub async fn export_records(
     Query(query): Query<ExportQuery>,
 ) -> Result<Response, AppError>
 {
+    let pool = state.pool.read().await.clone();
+
     if !user.is_admin
     {
         return Err(AppError::Forbidden("此界面要求管理员".to_string()));
@@ -391,14 +403,14 @@ pub async fn export_records(
          ORDER BY r.record_date DESC, r.id",
     )
     .bind(&user.id)
-    .fetch_all(&state.pool)
+    .fetch_all(&pool)
     .await
     .map_err(AppError::Database)?;
 
     let exercise_names =
         sqlx::query_as::<_, models::Exercise>("SELECT * FROM exercises WHERE user_id = ?")
             .bind(&user.id)
-            .fetch_all(&state.pool)
+            .fetch_all(&pool)
             .await
             .map_err(AppError::Database)?
             .iter()
@@ -407,7 +419,7 @@ pub async fn export_records(
 
     // 取今天日期（文件名用，项目一贯纪律：SQLite localtime）
     let today_dt = sqlx::query_scalar::<_, String>("SELECT date('now', 'localtime')")
-        .fetch_one(&state.pool)
+        .fetch_one(&pool)
         .await
         .map_err(AppError::Database)?;
 

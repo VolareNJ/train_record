@@ -70,7 +70,7 @@ use crate::{
 //    直接收 pool——因为它是普通函数，我们自己调用，参数随便写。
 //    handler 是 axum 调用的，只能走提取器通道。
 //
-// 在函数体里取用：let pool = &state.pool;  // 从工具箱里拿扳手
+// 在函数体里取用：let pool = &pool;  // 从工具箱里拿扳手
 //
 // 💡 思考题：require_user 是辅助函数，签名是 state: &AppState
 //   而不是 State<AppState>，为什么？
@@ -239,7 +239,7 @@ pub async fn login_page() -> Html<String>
 ///     → QueryAs<'_, Sqlite, User, _>          ① 查询"构建器"，还没执行
 ///   .bind(&form.username)
 ///     → QueryAs<'_, Sqlite, User, _>          ② 类型不变！bind 只是塞参数
-///   .fetch_optional(&state.pool)
+///   .fetch_optional(&pool)
 ///     → Future<Result<Option<User>, sqlx::Error>>  ③ 进入异步
 ///   .await
 ///     → Result<Option<User>, sqlx::Error>     ④ await 解包 Future → Result
@@ -248,7 +248,7 @@ pub async fn login_page() -> Html<String>
 ///
 /// 查询多行（query_as + fetch_all，admin_users 用）：
 ///   sqlx::query_as::<_, User>("SELECT ... ORDER BY id")
-///     .fetch_all(&state.pool).await
+///     .fetch_all(&pool).await
 ///     → Result<Vec<User>, sqlx::Error>        （Ok 里是 Vec<User>）
 ///
 /// 执行增删改（query + execute，admin_create_user 用）：
@@ -256,7 +256,7 @@ pub async fn login_page() -> Html<String>
 ///     → Query<'_, Sqlite, _>                  ① 构建器
 ///   .bind(...).bind(...).bind(...)
 ///     → Query<'_, Sqlite, _>                  ② 类型不变
-///   .execute(&state.pool).await
+///   .execute(&pool).await
 ///     → Result<SqliteQueryResult, sqlx::Error>  ③ SqliteQueryResult = 受影响行数
 ///
 /// 核心区别：
@@ -320,12 +320,12 @@ pub async fn login_page() -> Html<String>
 /// 1. 查用户：
 ///    sqlx::query_as::<_, User>("SELECT * FROM users WHERE username = ?")
 ///        .bind(&form.username)
-///        .fetch_optional(&state.pool)
+///        .fetch_optional(&pool)
 ///        .await
 ///        .map_err(AppError::Database)?
 /// 2. 用户不存在 → .ok_or_else(|| AppError::Validation("用户名或密码错误".to_string()))?
 /// 3. 校验密码 → 失败返回同样的 Validation 错误
-/// 4. 创建 session：let token = auth::create_session(&state.pool, user.id).await?;
+/// 4. 创建 session：let token = auth::create_session(&pool, user.id).await?;
 /// 5. 组装 cookie：
 ///    format!("session={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000")
 ///    （Max-Age=2592000 秒 = 30 天，与 session 过期一致）
@@ -340,12 +340,11 @@ pub async fn login(
     Form(form): Form<LoginForm>,
 ) -> Result<(HeaderMap, Redirect), AppError>
 {
-    // TODO(M1): 学生实现（步骤见上方注释）
-    // unimplemented!("M1 学生实现：登录")
+    let pool = state.pool.read().await.clone();
 
     let user_op = sqlx::query_as::<_, User>("SELECT * FROM users WHERE username = ?")
         .bind(&form.username)
-        .fetch_optional(&state.pool)
+        .fetch_optional(&pool)
         .await
         .map_err(|e| AppError::Database(e))?;
 
@@ -358,8 +357,8 @@ pub async fn login(
         return Err(AppError::Validation("用户名不存在或密码错误".to_string()));
     }
 
-    // 4. 创建 session：let token = auth::create_session(&state.pool, user.id).await?;
-    let token = auth::create_session(&state.pool, user.id).await?;
+    // 4. 创建 session：let token = auth::create_session(&pool, user.id).await?;
+    let token = auth::create_session(&pool, user.id).await?;
 
     // 5. 组装 cookie：
     //    format!("session={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000")
@@ -441,7 +440,7 @@ pub async fn login(
 /// 【实现步骤】
 /// 1. 从请求头里取 Cookie 头：headers.get(axum::http::header::COOKIE)
 /// 2. 解析出 session=xxx 的 token（可复用下面的 extract_token 辅助函数）
-/// 3. 有 token → auth::destroy_session(&state.pool, token).await?
+/// 3. 有 token → auth::destroy_session(&pool, token).await?
 /// 4. 设置清除 cookie：let cookie = "session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0";
 ///    （Max-Age=0 = 立即过期，浏览器删除这个 cookie）
 /// 5. 返回 (headers, Redirect::to("/login"))
@@ -452,15 +451,14 @@ pub async fn logout(
     headers: HeaderMap,
 ) -> Result<(HeaderMap, Redirect), AppError>
 {
-    // TODO(M1): 学生实现（步骤见上方注释）
-    // unimplemented!("M1 学生实现：登出")
+    let pool = state.pool.read().await.clone();
 
     // 1. 从请求头里取 Cookie 头：headers.get(axum::http::header::COOKIE)
     // 2. 解析出 session=xxx 的 token（可复用下面的 extract_token 辅助函数）
-    // 3. 有 token → auth::destroy_session(&state.pool, token).await?
+    // 3. 有 token → auth::destroy_session(&pool, token).await?
     if let Some(token) = extract_token(&headers)
     {
-        auth::destroy_session(&state.pool, &token).await?;
+        auth::destroy_session(&pool, &token).await?;
     }
     // 4. 设置清除 cookie：let cookie = "session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0";
     //    （Max-Age=0 = 立即过期，浏览器删除这个 cookie）
@@ -589,7 +587,7 @@ fn extract_token(headers: &HeaderMap) -> Option<String>
 ///    ? 没有工作要做，所以直接交付整个 Result。
 ///
 /// 3. 如果用 ? 会怎样？（对比）
-///    let user = auth::get_user_by_session(&state.pool, &token).await?;
+///    let user = auth::get_user_by_session(&pool, &token).await?;
 ///    Ok(user)
 ///    ? 把 Result 解包成 User，最后还得 Ok(user) 再包回去——绕了一圈。
 ///
@@ -599,15 +597,14 @@ fn extract_token(headers: &HeaderMap) -> Option<String>
 ///
 /// 【实现步骤】
 /// 1. let token = extract_token(headers).ok_or(AppError::Unauthorized)?;
-/// 2. auth::get_user_by_session(&state.pool, &token).await
+/// 2. auth::get_user_by_session(&pool, &token).await
 ///    （注意传 &token：get_user_by_session 收 &str，token 是 String，
 ///      必须传引用才能匹配参数类型）
 pub async fn require_user(state: &AppState, headers: &HeaderMap) -> Result<User, AppError>
 {
-    // TODO(M1): 学生实现（步骤见上方注释）
-    // unimplemented!("M1 学生实现：路由守卫")
+    let pool = state.pool.read().await.clone();
     let token = extract_token(headers).ok_or(AppError::Unauthorized)?;
-    auth::get_user_by_session(&state.pool, &token).await
+    auth::get_user_by_session(&pool, &token).await
 }
 
 // ============================================================
@@ -663,7 +660,7 @@ pub async fn require_user(state: &AppState, headers: &HeaderMap) -> Result<User,
 /// 2. 管理员检查：if !user.is_admin { return Err(AppError::Validation("需要管理员权限".to_string())); }
 /// 3. 查所有用户：
 ///    sqlx::query_as::<_, User>("SELECT * FROM users ORDER BY id")
-///        .fetch_all(&state.pool).await.map_err(AppError::Database)?
+///        .fetch_all(&pool).await.map_err(AppError::Database)?
 /// 4. 迭代器拼 HTML 表格行：
 ///    users.iter()
 ///        .map(|u| format!("<tr><td>{}</td><td>{}</td><td>{}</td></tr>",
@@ -675,7 +672,7 @@ pub async fn admin_users(
     headers: HeaderMap,
 ) -> Result<Html<String>, AppError>
 {
-    // TODO(M1): 学生实现（步骤见上方注释）
+    let pool = state.pool.read().await.clone();
     let user = require_user(&state, &headers).await?;
 
     if !user.is_admin
@@ -684,7 +681,7 @@ pub async fn admin_users(
     }
 
     let users = sqlx::query_as::<_, User>("SELECT * FROM users ORDER BY id ASC")
-        .fetch_all(&state.pool)
+        .fetch_all(&pool)
         .await
         .map_err(AppError::Database)?;
 
@@ -779,7 +776,7 @@ pub async fn admin_users(
 /// 【教学：INSERT 语句 + 参数绑定】
 /// sqlx::query("INSERT INTO users (username, password_hash, is_admin) VALUES (?, ?, ?)")
 ///     .bind(&form.username).bind(&password_hash).bind(is_admin)
-///     .execute(&state.pool).await
+///     .execute(&pool).await
 /// ? 占位符依次对应 bind 的参数：username → password_hash → is_admin。
 /// bind 不检查 SQL 类型，只负责"按顺序塞参数"（防 SQL 注入靠占位符机制本身）。
 ///
@@ -791,7 +788,7 @@ pub async fn admin_users(
 /// 5. 插入：
 ///    sqlx::query("INSERT INTO users (username, password_hash, is_admin) VALUES (?, ?, ?)")
 ///        .bind(&form.username).bind(&password_hash).bind(is_admin)
-///        .execute(&state.pool).await.map_err(AppError::Database)?
+///        .execute(&pool).await.map_err(AppError::Database)?
 /// 6. 重定向回管理页：Ok(Redirect::to("/admin/users"))
 /// 返回类型说明：创建成功返回重定向（回到用户管理页）
 ///
@@ -807,7 +804,7 @@ pub async fn admin_create_user(
     Form(form): Form<CreateUserForm>,
 ) -> Result<Redirect, AppError>
 {
-    // TODO(M1): 学生实现（步骤见上方注释）
+    let pool = state.pool.read().await.clone();
     let user = require_user(&state, &headers).await?;
 
     if !user.is_admin
@@ -832,7 +829,7 @@ pub async fn admin_create_user(
         .bind(form.username)
         .bind(password_hash)
         .bind(is_admin)
-        .execute(&state.pool)
+        .execute(&pool)
         .await
         .map_err(AppError::Database)?;
 
@@ -896,7 +893,7 @@ pub async fn admin_create_user(
 //
 // 【教学：复用 vs 重写 —— 提取器只是"换个入口"】
 //   AuthUser 提取器内部做的事，和 require_user 一模一样：
-//     extract_token(&parts.headers) → get_user_by_session(&state.pool, token)
+//     extract_token(&parts.headers) → get_user_by_session(&pool, token)
 //   我们直接复用这两个既有函数，不重新写解析逻辑。
 //   这就是分层的好处：逻辑层（auth.rs）写好一次，
 //   表现层（守卫函数、提取器）想用几次用几次。
@@ -908,7 +905,7 @@ pub async fn admin_create_user(
 //      let token = extract_token(&parts.headers).ok_or(AppError::Unauthorized)?;
 //    （extract_token 收 &HeaderMap，parts.headers 就是 HeaderMap）
 // 2. 查用户：
-//      let user = auth::get_user_by_session(&state.pool, &token).await?;
+//      let user = auth::get_user_by_session(&pool, &token).await?;
 // 3. 包一层返回：
 //      Ok(AuthUser(user))
 //
@@ -994,9 +991,9 @@ impl FromRequestParts<AppState> for AuthUser
         state: &AppState,
     ) -> Result<Self, Self::Rejection>
     {
-        // TODO(M2 第 1 步): 学生实现（步骤见上方注释）
+        let pool = state.pool.read().await.clone();
         let token = extract_token(&parts.headers).ok_or_else(|| AppError::Unauthorized)?;
-        let user = get_user_by_session(&state.pool, &token).await?;
+        let user = get_user_by_session(&pool, &token).await?;
         Ok(AuthUser(user))
         // unimplemented!("M2 学生实现：AuthUser 提取器")
     }
@@ -1027,6 +1024,7 @@ pub async fn update_body_weight(
     Form(form): Form<BodyWeightForm>,
 ) -> Result<Redirect, AppError>
 {
+    let pool = state.pool.read().await.clone();
     // 空串 → 清除体重（None）；否则解析 + 校验
     let weight: Option<f64> = if form.weight.trim().is_empty()
     {
@@ -1049,7 +1047,7 @@ pub async fn update_body_weight(
     sqlx::query("UPDATE users SET body_weight = ? WHERE id = ?")
         .bind(weight)
         .bind(&user.id)
-        .execute(&state.pool)
+        .execute(&pool)
         .await
         .map_err(AppError::Database)?;
 

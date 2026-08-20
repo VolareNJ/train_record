@@ -107,7 +107,7 @@ use crate::{
 //   要么全部成功（commit 提交），要么全部回滚（rollback，像没发生过）
 //
 // 用法：
-//   let mut tx = state.pool.begin().await.map_err(AppError::Database)?;
+//   let mut tx = pool.begin().await.map_err(AppError::Database)?;
 //   // ... 在 tx 上执行多条 SQL（和 pool 用法一样，只是把 pool 换成 &mut *tx）
 //   tx.commit().await.map_err(AppError::Database)?;  // 全成功才提交
 //   出错时提前 return Err(...)，tx 被 drop 自动回滚（不用手动 rollback）
@@ -161,11 +161,12 @@ pub async fn list_templates(
     Path(phase_id): Path<i64>,
 ) -> Result<Html<String>, AppError>
 {
+    let pool = state.pool.read().await.clone();
     // ① 两级验证：阶段必须属于当前用户（数据隔离底线）
     let phase_ret = sqlx::query_as::<_, Phase>("SELECT * FROM phases WHERE id = ? AND user_id = ?")
         .bind(&phase_id)
         .bind(&user.id)
-        .fetch_optional(&state.pool)
+        .fetch_optional(&pool)
         .await
         .map_err(AppError::Database)?
         .ok_or_else(|| AppError::NotFound("No such phase in your profile".to_string()))?;
@@ -189,7 +190,7 @@ pub async fn list_templates(
         "SELECT * FROM templates WHERE phase_id = ? ORDER BY sort_order, id",
     )
     .bind(&phase_ret.id)
-    .fetch_all(&state.pool)
+    .fetch_all(&pool)
     .await
     .map_err(AppError::Database)?
     .iter()
@@ -260,11 +261,13 @@ pub async fn template_create_form(
     Path(phase_id): Path<i64>,
 ) -> Result<Html<String>, AppError>
 {
+    let pool = state.pool.read().await.clone();
+
     // ① 两级验证：阶段必须属于当前用户
     let phase_ret = sqlx::query_as::<_, Phase>("SELECT * FROM phases WHERE id = ? AND user_id = ?")
         .bind(&phase_id)
         .bind(&user.id)
-        .fetch_optional(&state.pool)
+        .fetch_optional(&pool)
         .await
         .map_err(AppError::Database)?
         .ok_or_else(|| AppError::NotFound("No such phase in your profile".to_string()))?;
@@ -272,7 +275,7 @@ pub async fn template_create_form(
     // ② 查全部动作 → checkbox 行（name = 动作 id，value = 1）
     let all_exercises = sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE user_id = ?")
         .bind(&user.id)
-        .fetch_all(&state.pool)
+        .fetch_all(&pool)
         .await
         .map_err(AppError::Database)?;
 
@@ -370,12 +373,14 @@ pub async fn template_create(
     Form(form): Form<TemplateCreateForm>,
 ) -> Result<Redirect, AppError>
 {
+    let pool = state.pool.read().await.clone();
+
     // ① 验证阶段属于当前用户 + 未归档
     let target_phase =
         sqlx::query_as::<_, Phase>("SELECT * FROM phases WHERE id = ? AND user_id = ?")
             .bind(&phase_id)
             .bind(&user.id)
-            .fetch_optional(&state.pool)
+            .fetch_optional(&pool)
             .await
             .map_err(AppError::Database)?
             .ok_or_else(|| AppError::NotFound("No such phase in your profile".to_string()))?;
@@ -392,7 +397,7 @@ pub async fn template_create(
         return Err(AppError::Validation("至少选择一个动作".to_string()));
     }
 
-    let mut tx = state.pool.begin().await.map_err(AppError::Database)?;
+    let mut tx = pool.begin().await.map_err(AppError::Database)?;
 
     let template_id = sqlx::query_scalar::<_, i64>(
         "INSERT INTO templates
@@ -460,6 +465,8 @@ pub async fn template_edit_form(
     Path(template_id): Path<i64>,
 ) -> Result<Html<String>, AppError>
 {
+    let pool = state.pool.read().await.clone();
+
     // ① 查模板 + 验证归属：JOIN phases 一次性把 user_id 也取出来
     //    模板不属于当前用户 → NotFound（数据隔离）
     let current_template = sqlx::query_as::<_, Template>(
@@ -468,7 +475,7 @@ pub async fn template_edit_form(
     )
     .bind(&template_id)
     .bind(&user.id)
-    .fetch_optional(&state.pool)
+    .fetch_optional(&pool)
     .await
     .map_err(AppError::Database)?
     .ok_or_else(|| AppError::NotFound("No template found in such user and phase".to_string()))?;
@@ -478,7 +485,7 @@ pub async fn template_edit_form(
         "SELECT * FROM template_items WHERE template_id = ? ORDER BY sort_order, id",
     )
     .bind(&template_id)
-    .fetch_all(&state.pool)
+    .fetch_all(&pool)
     .await
     .map_err(AppError::Database)?;
     let selected_item_ids: HashSet<i64> = current_items.iter().map(|i| i.exercise_id).collect();
@@ -486,7 +493,7 @@ pub async fn template_edit_form(
     // ③ 查【全部】动作（供下拉框 + 表格行名 + JSON）
     let all_exercises = sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE user_id = ?")
         .bind(&user.id)
-        .fetch_all(&state.pool)
+        .fetch_all(&pool)
         .await
         .map_err(AppError::Database)?;
     let ex_map: HashMap<i64, Exercise> = all_exercises.iter().map(|e| (e.id, e.clone())).collect();
@@ -750,6 +757,8 @@ pub async fn template_update(
     Form(form): Form<TemplateCreateForm>,
 ) -> Result<Redirect, AppError>
 {
+    let pool = state.pool.read().await.clone();
+
     // ① 先查后改：验证模板归属当前用户（JOIN phases 拿 user_id）
     //    顺带拿到 phase_id（重定向要用）——一条查询两个用途
     //    模板不存在或不属于当前用户 → 404，根本不进入事务
@@ -759,7 +768,7 @@ pub async fn template_update(
     )
     .bind(&template_id)
     .bind(&user.id)
-    .fetch_optional(&state.pool)
+    .fetch_optional(&pool)
     .await
     .map_err(AppError::Database)?
     .ok_or_else(|| AppError::NotFound("No template found in such user and phase".to_string()))?;
@@ -769,7 +778,7 @@ pub async fn template_update(
         sqlx::query_as::<_, Phase>("SELECT * FROM phases WHERE id = ? AND user_id = ?")
             .bind(&current_template.phase_id)
             .bind(&user.id)
-            .fetch_optional(&state.pool)
+            .fetch_optional(&pool)
             .await
             .map_err(AppError::Database)?
             .ok_or_else(|| AppError::NotFound("No such phase in your profile".to_string()))?;
@@ -787,7 +796,7 @@ pub async fn template_update(
     }
 
     // ③ 开事务：三步"先删后插"要么全成要么全败
-    let mut tx = state.pool.begin().await.map_err(AppError::Database)?;
+    let mut tx = pool.begin().await.map_err(AppError::Database)?;
 
     // 3.1 更新父表（改名）——只改这一行，不会插入新记录
     sqlx::query("UPDATE templates SET name = ? WHERE id = ?")
@@ -878,6 +887,8 @@ pub async fn template_delete(
     Path(template_id): Path<i64>,
 ) -> Result<Redirect, AppError>
 {
+    let pool = state.pool.read().await.clone();
+
     // ① 先查后改：验证模板归属当前用户（JOIN phases 拿 user_id）
     //    顺带拿到 phase_id（重定向要用）——和 template_update 完全一样
     let current_template = sqlx::query_as::<_, Template>(
@@ -886,14 +897,14 @@ pub async fn template_delete(
     )
     .bind(&template_id)
     .bind(&user.id)
-    .fetch_optional(&state.pool)
+    .fetch_optional(&pool)
     .await
     .map_err(AppError::Database)?
     .ok_or_else(|| AppError::NotFound("No template found in such user and phase".to_string()))?;
 
     // ② 开事务：先删子（template_items）后删父（templates）
     //    顺序不能反：父表被子表引用时先删父会留孤儿数据
-    let mut tx = state.pool.begin().await.map_err(AppError::Database)?;
+    let mut tx = pool.begin().await.map_err(AppError::Database)?;
 
     // 2.1 删孩子：模板的所有动作项
     sqlx::query("DELETE FROM template_items WHERE template_id = ?")
@@ -939,11 +950,13 @@ pub async fn list_plans(
     Query(query): Query<CalQuery>,
 ) -> Result<Html<String>, AppError>
 {
+    let pool = state.pool.read().await.clone();
+
     // ① 两级验证：阶段必须属于当前用户
     let phase_ret = sqlx::query_as::<_, Phase>("SELECT * FROM phases WHERE id = ? AND user_id = ?")
         .bind(&phase_id)
         .bind(&user.id)
-        .fetch_optional(&state.pool)
+        .fetch_optional(&pool)
         .await
         .map_err(AppError::Database)?
         .ok_or_else(|| AppError::NotFound("No such phase in your profile".to_string()))?;
@@ -964,7 +977,7 @@ pub async fn list_plans(
     let plan_date_map: HashMap<String, i64> =
         sqlx::query_as::<_, (String, i64)>("SELECT date, id FROM plans WHERE phase_id = ?")
             .bind(&phase_ret.id)
-            .fetch_all(&state.pool)
+            .fetch_all(&pool)
             .await
             .map_err(AppError::Database)?
             .into_iter()
@@ -973,7 +986,7 @@ pub async fn list_plans(
     // 目标年月：query 参数优先，默认当前年月（与 history 同款）
     let now_ym =
         sqlx::query_scalar::<_, String>("SELECT strftime('%Y-%m', date('now','localtime'))")
-            .fetch_one(&state.pool)
+            .fetch_one(&pool)
             .await
             .map_err(AppError::Database)?;
     let target_ym = match (query.year, query.month)
@@ -1017,7 +1030,7 @@ pub async fn list_plans(
         "SELECT CAST(strftime('%d', date(?, '+1 month', '-1 day')) AS INTEGER)",
     )
     .bind(format!("{target_ym}-01"))
-    .fetch_one(&state.pool)
+    .fetch_one(&pool)
     .await
     .map_err(AppError::Database)?;
 
@@ -1109,12 +1122,14 @@ pub async fn plan_create_form(
     Path(phase_id): Path<i64>,
 ) -> Result<Html<String>, AppError>
 {
+    let pool = state.pool.read().await.clone();
+
     // ① 验证阶段属于当前用户 + 未归档
     let target_phase =
         sqlx::query_as::<_, Phase>("SELECT * FROM phases WHERE id = ? AND user_id = ?")
             .bind(&phase_id)
             .bind(&user.id)
-            .fetch_optional(&state.pool)
+            .fetch_optional(&pool)
             .await
             .map_err(AppError::Database)?
             .ok_or_else(|| AppError::NotFound("No such phase in your profile".to_string()))?;
@@ -1131,7 +1146,7 @@ pub async fn plan_create_form(
         "SELECT * FROM templates WHERE phase_id = ? ORDER BY sort_order, id",
     )
     .bind(&phase_id)
-    .fetch_all(&state.pool)
+    .fetch_all(&pool)
     .await
     .map_err(AppError::Database)?
     .iter()
@@ -1151,7 +1166,7 @@ pub async fn plan_create_form(
     //    （serde_urlencoded map 语义会覆盖，见 PlanCreateForm 注释）
     let all_exercises = sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE user_id = ?")
         .bind(&user.id)
-        .fetch_all(&state.pool)
+        .fetch_all(&pool)
         .await
         .map_err(AppError::Database)?;
 
@@ -1185,7 +1200,7 @@ pub async fn plan_create_form(
 
     // ④ 今天日期：和数据库保持一致用 SQLite 的 localtime（避免 Rust 端时区偏差）
     let today = sqlx::query_scalar::<_, String>("SELECT date('now', 'localtime')")
-        .fetch_one(&state.pool)
+        .fetch_one(&pool)
         .await
         .map_err(AppError::Database)?;
 
@@ -1277,12 +1292,14 @@ pub async fn plan_create(
     Form(form): Form<PlanCreateForm>,
 ) -> Result<Redirect, AppError>
 {
+    let pool = state.pool.read().await.clone();
+
     // ① 验证阶段属于当前用户 + 未归档
     let target_phase =
         sqlx::query_as::<_, Phase>("SELECT * FROM phases WHERE id = ? AND user_id = ?")
             .bind(&phase_id)
             .bind(&user.id)
-            .fetch_optional(&state.pool)
+            .fetch_optional(&pool)
             .await
             .map_err(AppError::Database)?
             .ok_or_else(|| AppError::NotFound("No such phase in your profile".to_string()))?;
@@ -1300,7 +1317,7 @@ pub async fn plan_create(
         sqlx::query_scalar::<_, i64>("SELECT id FROM plans WHERE phase_id = ? AND date = ?")
             .bind(&phase_id)
             .bind(&form.date)
-            .fetch_optional(&state.pool)
+            .fetch_optional(&pool)
             .await
             .map_err(AppError::Database)?;
     if exists.is_some()
@@ -1359,7 +1376,7 @@ pub async fn plan_create(
     }
 
     // ④ 事务：写两张表（plans 父 + plan_items 子）要么全成要么全败
-    let mut tx = state.pool.begin().await.map_err(AppError::Database)?;
+    let mut tx = pool.begin().await.map_err(AppError::Database)?;
 
     // 4.1 插入计划（父表），拿回 plan_id
     //     【M5 修订：备注随表单保存（之前硬编码 ''）】
@@ -1388,8 +1405,7 @@ pub async fn plan_create(
         for (idx, ti) in template_items.iter().enumerate()
         {
             let (sets, reps, mode, bar_weight, key_points) =
-                resolve_plan_values(&state.pool, ti.plan_sets, ti.plan_reps, ti.exercise_id)
-                    .await?;
+                resolve_plan_values(&pool, ti.plan_sets, ti.plan_reps, ti.exercise_id).await?;
             sqlx::query(
                 "INSERT INTO plan_items
                 (plan_id, exercise_id, sort_order, plan_sets, plan_reps,
@@ -1416,7 +1432,7 @@ pub async fn plan_create(
         for (idx, ex_id) in ex_ids.iter().enumerate()
         {
             let (sets, reps, mode, bar_weight, key_points) =
-                resolve_plan_values(&state.pool, None, None, *ex_id).await?;
+                resolve_plan_values(&pool, None, None, *ex_id).await?;
             sqlx::query(
                 "INSERT INTO plan_items
                 (plan_id, exercise_id, sort_order, plan_sets, plan_reps,
@@ -1484,6 +1500,8 @@ pub async fn plan_detail(
     Path(plan_id): Path<i64>,
 ) -> Result<Html<String>, AppError>
 {
+    let pool = state.pool.read().await.clone();
+
     // ① 查计划 + 验证归属（JOIN phases 拿 user_id）
     let current_plan = sqlx::query_as::<_, Plan>(
         "SELECT p.* FROM plans p INNER JOIN phases ph ON p.phase_id = ph.id
@@ -1491,7 +1509,7 @@ pub async fn plan_detail(
     )
     .bind(&plan_id)
     .bind(&user.id)
-    .fetch_optional(&state.pool)
+    .fetch_optional(&pool)
     .await
     .map_err(AppError::Database)?
     .ok_or_else(|| AppError::NotFound("No plan found in such user and phase".to_string()))?;
@@ -1501,7 +1519,7 @@ pub async fn plan_detail(
         "SELECT * FROM plan_items WHERE plan_id = ? ORDER BY sort_order, id",
     )
     .bind(&plan_id)
-    .fetch_all(&state.pool)
+    .fetch_all(&pool)
     .await
     .map_err(AppError::Database)?;
 
@@ -1509,7 +1527,7 @@ pub async fn plan_detail(
     //    需要 name（显示）+ body_part（部位）+ 默认值（新动作回显）
     let all_exercises = sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE user_id = ?")
         .bind(&user.id)
-        .fetch_all(&state.pool)
+        .fetch_all(&pool)
         .await
         .map_err(AppError::Database)?;
     let ex_map: HashMap<i64, Exercise> = all_exercises.iter().map(|e| (e.id, e.clone())).collect();
@@ -1531,7 +1549,7 @@ pub async fn plan_detail(
              WHERE (r.record_date || '#' || printf('%010d', r.id)) = latest.k",
         )
         .bind(&user.id)
-        .fetch_all(&state.pool)
+        .fetch_all(&pool)
         .await
         .map_err(AppError::Database)?
         .into_iter()
@@ -2121,6 +2139,8 @@ pub async fn plan_update(
     Form(form): Form<PlanEditForm>,
 ) -> Result<Redirect, AppError>
 {
+    let pool = state.pool.read().await.clone();
+
     // ① 先查后改：验证归属（JOIN phases）→ 拿到 phase_id 供重定向
     let current_plan = sqlx::query_as::<_, Plan>(
         "SELECT p.* FROM plans p INNER JOIN phases ph ON p.phase_id = ph.id
@@ -2128,7 +2148,7 @@ pub async fn plan_update(
     )
     .bind(&plan_id)
     .bind(&user.id)
-    .fetch_optional(&state.pool)
+    .fetch_optional(&pool)
     .await
     .map_err(AppError::Database)?
     .ok_or_else(|| AppError::NotFound("No plan found in such user and phase".to_string()))?;
@@ -2138,7 +2158,7 @@ pub async fn plan_update(
         sqlx::query_as::<_, Phase>("SELECT * FROM phases WHERE id = ? AND user_id = ?")
             .bind(&current_plan.phase_id)
             .bind(&user.id)
-            .fetch_optional(&state.pool)
+            .fetch_optional(&pool)
             .await
             .map_err(AppError::Database)?
             .ok_or_else(|| AppError::NotFound("No such phase in your profile".to_string()))?;
@@ -2157,7 +2177,7 @@ pub async fn plan_update(
     .bind(&current_plan.phase_id)
     .bind(&form.date)
     .bind(&plan_id)
-    .fetch_optional(&state.pool)
+    .fetch_optional(&pool)
     .await
     .map_err(AppError::Database)?;
     if exists.is_some()
@@ -2169,7 +2189,7 @@ pub async fn plan_update(
     }
 
     // ④ 事务：先删后插（和模板 update 一样的套路）
-    let mut tx = state.pool.begin().await.map_err(AppError::Database)?;
+    let mut tx = pool.begin().await.map_err(AppError::Database)?;
 
     // 4.1 更新父表（日期 + 备注）
     sqlx::query("UPDATE plans SET date = ?, note = ? WHERE id = ?")
@@ -2191,7 +2211,7 @@ pub async fn plan_update(
         "SELECT * FROM plan_items WHERE plan_id = ? ORDER BY sort_order, id",
     )
     .bind(&plan_id)
-    .fetch_all(&state.pool)
+    .fetch_all(&pool)
     .await
     .map_err(AppError::Database)?;
     let old_order: HashMap<i64, i64> = old_items
@@ -2210,7 +2230,7 @@ pub async fn plan_update(
         WHERE r.plan_item_id IN (SELECT id FROM plan_items WHERE plan_id = ?)",
     )
     .bind(&plan_id)
-    .fetch_all(&state.pool)
+    .fetch_all(&pool)
     .await
     .map_err(AppError::Database)?
     .into_iter()
@@ -2330,6 +2350,8 @@ pub async fn plan_delete(
     Path(plan_id): Path<i64>,
 ) -> Result<Redirect, AppError>
 {
+    let pool = state.pool.read().await.clone();
+
     // ① 先查后改：验证归属（JOIN phases）→ 拿 phase_id 供重定向
     let current_plan = sqlx::query_as::<_, Plan>(
         "SELECT p.* FROM plans p INNER JOIN phases ph ON p.phase_id = ph.id
@@ -2337,13 +2359,13 @@ pub async fn plan_delete(
     )
     .bind(&plan_id)
     .bind(&user.id)
-    .fetch_optional(&state.pool)
+    .fetch_optional(&pool)
     .await
     .map_err(AppError::Database)?
     .ok_or_else(|| AppError::NotFound("No plan found in such user and phase".to_string()))?;
 
     // ② 事务：解除 records 外键关联 → 删子（plan_items）→ 删父（plans）
-    let mut tx = state.pool.begin().await.map_err(AppError::Database)?;
+    let mut tx = pool.begin().await.map_err(AppError::Database)?;
 
     // 2.1 该计划下的所有计划项 id → 对应 records 的 plan_item_id 置 NULL
     //     训练记录是用户的历史数据，删除计划不该连记录一起删，
@@ -2407,6 +2429,8 @@ pub async fn template_sort(
     Query(query): Query<MoveQuery>,
 ) -> Result<Redirect, AppError>
 {
+    let pool = state.pool.read().await.clone();
+
     // ① 验证归属：JOIN phases 拿 user_id（模板不存在/不属于你 → NotFound）
     let current = sqlx::query_as::<_, Template>(
         "SELECT t.* FROM templates t INNER JOIN phases p ON t.phase_id = p.id
@@ -2414,7 +2438,7 @@ pub async fn template_sort(
     )
     .bind(&template_id)
     .bind(&user.id)
-    .fetch_optional(&state.pool)
+    .fetch_optional(&pool)
     .await
     .map_err(AppError::Database)?
     .ok_or_else(|| AppError::NotFound("No template found".to_string()))?;
@@ -2424,7 +2448,7 @@ pub async fn template_sort(
         "SELECT * FROM templates WHERE phase_id = ? ORDER BY sort_order, id",
     )
     .bind(&current.phase_id)
-    .fetch_all(&state.pool)
+    .fetch_all(&pool)
     .await
     .map_err(AppError::Database)?;
     let index = siblings.iter().position(|t| t.id == template_id);
@@ -2459,7 +2483,7 @@ pub async fn template_sort(
     };
 
     // ③ 事务：先重写 1..n 再交换（见文件头注释）
-    let mut tx = state.pool.begin().await.map_err(AppError::Database)?;
+    let mut tx = pool.begin().await.map_err(AppError::Database)?;
     for (i, t) in siblings.iter().enumerate()
     {
         sqlx::query("UPDATE templates SET sort_order = ? WHERE id = ?")
@@ -2499,6 +2523,8 @@ pub async fn template_item_move(
     Query(query): Query<MoveQuery>,
 ) -> Result<Redirect, AppError>
 {
+    let pool = state.pool.read().await.clone();
+
     // ① 验证模板归属（JOIN phases）
     let _current = sqlx::query_as::<_, Template>(
         "SELECT t.* FROM templates t INNER JOIN phases p ON t.phase_id = p.id
@@ -2506,7 +2532,7 @@ pub async fn template_item_move(
     )
     .bind(&template_id)
     .bind(&user.id)
-    .fetch_optional(&state.pool)
+    .fetch_optional(&pool)
     .await
     .map_err(AppError::Database)?
     .ok_or_else(|| AppError::NotFound("No template found".to_string()))?;
@@ -2516,7 +2542,7 @@ pub async fn template_item_move(
         "SELECT * FROM template_items WHERE template_id = ? ORDER BY sort_order, id",
     )
     .bind(&template_id)
-    .fetch_all(&state.pool)
+    .fetch_all(&pool)
     .await
     .map_err(AppError::Database)?;
     let index = siblings.iter().position(|i| i.id == item_id);
@@ -2548,7 +2574,7 @@ pub async fn template_item_move(
     };
 
     // ③ 事务：先重写 1..n 再交换
-    let mut tx = state.pool.begin().await.map_err(AppError::Database)?;
+    let mut tx = pool.begin().await.map_err(AppError::Database)?;
     for (i, item) in siblings.iter().enumerate()
     {
         sqlx::query("UPDATE template_items SET sort_order = ? WHERE id = ?")
@@ -2588,6 +2614,8 @@ pub async fn plan_item_move(
     Query(query): Query<MoveQuery>,
 ) -> Result<Redirect, AppError>
 {
+    let pool = state.pool.read().await.clone();
+
     // ① 验证计划归属（JOIN phases）
     let _current = sqlx::query_as::<_, Plan>(
         "SELECT p.* FROM plans p INNER JOIN phases ph ON p.phase_id = ph.id
@@ -2595,7 +2623,7 @@ pub async fn plan_item_move(
     )
     .bind(&plan_id)
     .bind(&user.id)
-    .fetch_optional(&state.pool)
+    .fetch_optional(&pool)
     .await
     .map_err(AppError::Database)?
     .ok_or_else(|| AppError::NotFound("No plan found".to_string()))?;
@@ -2605,7 +2633,7 @@ pub async fn plan_item_move(
         "SELECT * FROM plan_items WHERE plan_id = ? ORDER BY sort_order, id",
     )
     .bind(&plan_id)
-    .fetch_all(&state.pool)
+    .fetch_all(&pool)
     .await
     .map_err(AppError::Database)?;
     let index = siblings.iter().position(|i| i.id == item_id);
@@ -2637,7 +2665,7 @@ pub async fn plan_item_move(
     };
 
     // ③ 事务：先重写 1..n 再交换
-    let mut tx = state.pool.begin().await.map_err(AppError::Database)?;
+    let mut tx = pool.begin().await.map_err(AppError::Database)?;
     for (i, item) in siblings.iter().enumerate()
     {
         sqlx::query("UPDATE plan_items SET sort_order = ? WHERE id = ?")

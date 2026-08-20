@@ -174,6 +174,8 @@ pub async fn today(
     AuthUser(user): AuthUser,
 ) -> Result<Html<String>, AppError>
 {
+    let pool = state.pool.read().await.clone();
+
     // 1. 签名：State + AuthUser
     // 2. 查进行中阶段：
     //    SELECT * FROM phases WHERE user_id = ? AND archived = 0
@@ -183,13 +185,13 @@ pub async fn today(
         "SELECT * FROM phases WHERE user_id = ? AND archived = 0 ORDER BY created_at DESC LIMIT 1",
     )
     .bind(&user.id)
-    .fetch_optional(&state.pool)
+    .fetch_optional(&pool)
     .await
     .map_err(AppError::Database)?
     .ok_or_else(|| AppError::NotFound("No phase running on your profile".to_string()))?;
     // 3. 查今天：SELECT date('now', 'localtime')
     let today_dt = sqlx::query_scalar::<_, String>("SELECT date('now', 'localtime')")
-        .fetch_one(&state.pool)
+        .fetch_one(&pool)
         .await
         .map_err(AppError::Database)?;
     // 4. 查今天的计划：
@@ -199,7 +201,7 @@ pub async fn today(
         sqlx::query_as::<_, Plan>("SELECT * FROM plans WHERE phase_id = ? AND date = ?")
             .bind(&current_phase.id)
             .bind(&today_dt)
-            .fetch_optional(&state.pool)
+            .fetch_optional(&pool)
             .await
             .map_err(AppError::Database)?
             .ok_or_else(|| AppError::NotFound("No plan set for today".to_string()))?;
@@ -214,12 +216,12 @@ pub async fn today(
         "SELECT * FROM plan_items WHERE plan_id = ? ORDER BY sort_order ASC",
     )
     .bind(&today_plan.id)
-    .fetch_all(&state.pool)
+    .fetch_all(&pool)
     .await
     .map_err(AppError::Database)?;
     let id_to_ex = sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE user_id = ?")
         .bind(&user.id)
-        .fetch_all(&state.pool)
+        .fetch_all(&pool)
         .await
         .map_err(AppError::Database)?
         .iter()
@@ -252,7 +254,7 @@ pub async fn today(
          ORDER BY record_date DESC, id DESC LIMIT 1",
         )
         .bind(item.id)
-        .fetch_optional(&state.pool)
+        .fetch_optional(&pool)
         .await
         .map_err(AppError::Database)?;
         items_with_records.push((item, last));
@@ -268,7 +270,7 @@ pub async fn today(
             "SELECT CAST(julianday('now','localtime') - julianday(?) AS INTEGER)",
         )
         .bind(start_date)
-        .fetch_one(&state.pool)
+        .fetch_one(&pool)
         .await
         .map_err(AppError::Database)?
         .to_string(),
@@ -455,6 +457,8 @@ pub async fn record_form(
     Path((plan_id, item_id)): Path<(i64, i64)>,
 ) -> Result<Html<String>, AppError>
 {
+    let pool = state.pool.read().await.clone();
+
     // 1. 签名：State + AuthUser + Path((plan_id, item_id))
     // 2. 验证计划归属：JOIN phases 查 user_id
     let current_plan = sqlx::query_as::<_, Plan>(
@@ -464,7 +468,7 @@ pub async fn record_form(
     )
     .bind(&plan_id)
     .bind(&user.id)
-    .fetch_optional(&state.pool)
+    .fetch_optional(&pool)
     .await
     .map_err(AppError::Database)?
     .ok_or_else(|| AppError::NotFound("No plan found in such user and phase".to_string()))?;
@@ -472,7 +476,7 @@ pub async fn record_form(
     let phase = sqlx::query_as::<_, Phase>("SELECT * FROM phases WHERE id = ? AND user_id = ?")
         .bind(&current_plan.phase_id)
         .bind(&user.id)
-        .fetch_optional(&state.pool)
+        .fetch_optional(&pool)
         .await
         .map_err(AppError::Database)?
         .ok_or_else(|| AppError::NotFound("No phase found".to_string()))?;
@@ -489,7 +493,7 @@ pub async fn record_form(
         sqlx::query_as::<_, PlanItem>("SELECT * FROM plan_items WHERE id = ? AND plan_id = ?")
             .bind(&item_id)
             .bind(&current_plan.id)
-            .fetch_optional(&state.pool)
+            .fetch_optional(&pool)
             .await
             .map_err(AppError::Database)?
             .ok_or_else(|| AppError::NotFound("No plan item found".to_string()))?;
@@ -499,7 +503,7 @@ pub async fn record_form(
         sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE id = ? AND user_id = ?")
             .bind(&plan_item.exercise_id)
             .bind(&user.id)
-            .fetch_optional(&state.pool)
+            .fetch_optional(&pool)
             .await
             .map_err(AppError::Database)?
             .ok_or_else(|| AppError::NotFound("No such exercise".to_string()))?;
@@ -514,7 +518,7 @@ pub async fn record_form(
         ORDER BY id DESC LIMIT 1",
     )
     .bind(&item_id)
-    .fetch_optional(&state.pool)
+    .fetch_optional(&pool)
     .await
     .map_err(AppError::Database)?;
     // 【M5 修订 bug：上次训练按 exercise_id 查，不按 plan_item_id！】
@@ -526,7 +530,7 @@ pub async fn record_form(
         ORDER BY record_date DESC, id DESC LIMIT 1",
     )
     .bind(&plan_item.exercise_id)
-    .fetch_optional(&state.pool)
+    .fetch_optional(&pool)
     .await
     .map_err(AppError::Database)?;
     // 兼容变量：最近一次记录（当日 → 上次），供"上次参考"展示和 completed 回显
@@ -723,7 +727,7 @@ pub async fn record_form(
     //     位置：动作名称下面、上次参考上面。
     //     None（< 2 条记录）→ 表单页不放"记录太少"文案，静默省略图。
     let chart_section =
-        match crate::handlers::stats::exercise_chart_html(&state.pool, exercise_details.id).await?
+        match crate::handlers::stats::exercise_chart_html(&pool, exercise_details.id).await?
         {
             Some(html) => html,
             None => String::new(),
@@ -982,6 +986,8 @@ pub async fn record_save(
     Form(form): Form<RecordForm>,
 ) -> Result<Redirect, AppError>
 {
+    let pool = state.pool.read().await.clone();
+
     // 1. 签名：State + AuthUser + Path((plan_id, item_id)) + Form(form)
     // 2. 验证归属（同 record_form）
     let current_plan = sqlx::query_as::<_, Plan>(
@@ -991,7 +997,7 @@ pub async fn record_save(
     )
     .bind(&plan_id)
     .bind(&user.id)
-    .fetch_optional(&state.pool)
+    .fetch_optional(&pool)
     .await
     .map_err(AppError::Database)?
     .ok_or_else(|| AppError::NotFound("No plan found in such user and phase".to_string()))?;
@@ -999,7 +1005,7 @@ pub async fn record_save(
     let phase = sqlx::query_as::<_, Phase>("SELECT * FROM phases WHERE id = ? AND user_id = ?")
         .bind(&current_plan.phase_id)
         .bind(&user.id)
-        .fetch_optional(&state.pool)
+        .fetch_optional(&pool)
         .await
         .map_err(AppError::Database)?
         .ok_or_else(|| AppError::NotFound("No phase found".to_string()))?;
@@ -1018,7 +1024,7 @@ pub async fn record_save(
         sqlx::query_as::<_, PlanItem>("SELECT * FROM plan_items WHERE id = ? AND plan_id = ?")
             .bind(&item_id)
             .bind(&current_plan.id)
-            .fetch_optional(&state.pool)
+            .fetch_optional(&pool)
             .await
             .map_err(AppError::Database)?
             .ok_or_else(|| AppError::NotFound("No plan item found".to_string()))?;
@@ -1056,7 +1062,7 @@ pub async fn record_save(
         ORDER BY record_date DESC, id DESC LIMIT 1",
     )
     .bind(&item_id)
-    .fetch_optional(&state.pool)
+    .fetch_optional(&pool)
     .await
     .map_err(AppError::Database)?;
     // 5. 有记录 → UPDATE：
@@ -1096,14 +1102,14 @@ pub async fn record_save(
             .bind(&form.key_points)
             .bind(&form.mode)
             .bind(&record.id)
-            .execute(&state.pool)
+            .execute(&pool)
             .await
             .map_err(AppError::Database)?;
         },
         None =>
         {
             let today_dt = sqlx::query_scalar::<_, String>("SELECT date('now', 'localtime')")
-                .fetch_one(&state.pool)
+                .fetch_one(&pool)
                 .await
                 .map_err(AppError::Database)?;
             sqlx::query(
@@ -1125,7 +1131,7 @@ pub async fn record_save(
             .bind(&form.strategy)
             .bind(&form.key_points)
             .bind(&form.mode)
-            .execute(&state.pool)
+            .execute(&pool)
             .await
             .map_err(AppError::Database)?;
         },
@@ -1144,7 +1150,7 @@ pub async fn record_save(
             .bind(&form.key_points)
             .bind(&plan_item.exercise_id)
             .bind(&user.id)
-            .execute(&state.pool)
+            .execute(&pool)
             .await
             .map_err(AppError::Database)?;
     }
@@ -1165,7 +1171,7 @@ pub async fn record_save(
     .bind(&form.unit)
     .bind(&plan_item.exercise_id)
     .bind(&user.id)
-    .execute(&state.pool)
+    .execute(&pool)
     .await
     .map_err(AppError::Database)?;
     // 7. 重定向回 /today（今日页刷新后显示 ✅ 已训练）

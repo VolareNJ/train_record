@@ -243,7 +243,7 @@ pub struct PhaseForm
 /// 2. 查进行中：
 ///    let active = sqlx::query_as::<_, Phase>(
 ///        "SELECT * FROM phases WHERE user_id = ? AND archived = 0 ORDER BY created_at DESC")
-///        .bind(user.id).fetch_all(&state.pool).await.map_err(AppError::Database)?;
+///        .bind(user.id).fetch_all(&pool).await.map_err(AppError::Database)?;
 /// 3. 查已归档（同上，archived = 1）
 /// 4. 拼 HTML：两个分区各一个 <h2> + 表格，active/archived 各自迭代 map
 /// 5. 返回完整页面字符串
@@ -252,11 +252,13 @@ pub async fn list(
     AuthUser(user): AuthUser,
 ) -> Result<Html<String>, AppError>
 {
+    let pool = state.pool.read().await.clone();
+
     let active_phases = sqlx::query_as::<_, Phase>(
         "SELECT * FROM phases WHERE user_id = ? AND archived  = 0 ORDER BY created_at DESC",
     )
     .bind(user.id)
-    .fetch_all(&state.pool)
+    .fetch_all(&pool)
     .await
     .map_err(AppError::Database)?;
 
@@ -264,7 +266,7 @@ pub async fn list(
         "SELECT * FROM phases WHERE user_id = ? AND archived  = 1 ORDER BY created_at DESC",
     )
     .bind(user.id)
-    .fetch_all(&state.pool)
+    .fetch_all(&pool)
     .await
     .map_err(AppError::Database)?;
 
@@ -412,6 +414,7 @@ pub async fn create_form(
     AuthUser(user): AuthUser,
 ) -> Result<Html<String>, AppError>
 {
+    let pool = state.pool.read().await.clone();
     Ok(Html(
         r#"
         <head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
@@ -539,6 +542,8 @@ pub async fn create(
     Form(form): Form<PhaseForm>,
 ) -> Result<Redirect, AppError>
 {
+    let pool = state.pool.read().await.clone();
+
     // 校验：name 非空（空则立刻返回 422）
     if form.name.trim().is_empty()
     {
@@ -548,7 +553,7 @@ pub async fn create(
     if sqlx::query_scalar::<_, i64>("SELECT id FROM phases WHERE user_id = ? AND name = ?")
         .bind(user.id)
         .bind(&form.name)
-        .fetch_optional(&state.pool)
+        .fetch_optional(&pool)
         .await
         .map_err(AppError::Database)?
         .is_some()
@@ -569,7 +574,7 @@ pub async fn create(
         .bind(&form.name)
         .bind(&form.note)
         .bind(&start_date)
-        .execute(&state.pool)
+        .execute(&pool)
         .await
         .map_err(AppError::Database)?;
     Ok(Redirect::to("/phases"))
@@ -638,10 +643,12 @@ pub async fn edit_form(
     Path(phase_id): Path<i64>,
 ) -> Result<Html<String>, AppError>
 {
+    let pool = state.pool.read().await.clone();
+
     let phase = sqlx::query_as::<_, Phase>("SELECT * FROM phases WHERE id = ? AND user_id = ?")
         .bind(&phase_id)
         .bind(&user.id)
-        .fetch_optional(&state.pool)
+        .fetch_optional(&pool)
         .await
         .map_err(AppError::Database)?
         .ok_or_else(|| AppError::NotFound("No such phase".to_string()))?;
@@ -705,6 +712,8 @@ pub async fn update(
     Form(form): Form<PhaseForm>,
 ) -> Result<Redirect, AppError>
 {
+    let pool = state.pool.read().await.clone();
+
     // 校验 name 非空（空则立刻返回 422）
     if form.name.trim().is_empty()
     {
@@ -728,7 +737,7 @@ pub async fn update(
     if sqlx::query_scalar::<_, bool>("SELECT archived FROM phases WHERE id = ? AND user_id = ?")
         .bind(phase_id)
         .bind(user.id)
-        .fetch_optional(&state.pool)
+        .fetch_optional(&pool)
         .await
         .map_err(AppError::Database)?
         .ok_or_else(|| AppError::NotFound("阶段不存在".to_string()))?
@@ -748,7 +757,7 @@ pub async fn update(
     };
 
     // 【教学：execute 返回 Future —— rows_affected 报错的根源】
-    // 学生写：let ext_ret = sqlx::query(...).execute(&state.pool);
+    // 学生写：let ext_ret = sqlx::query(...).execute(&pool);
     //              ↑ 没有 .await！ext_ret 是 Future（"待办事项"），
     //              ↑ 不是 SqliteQueryResult。
     //         if ext_ret.rows_affected() == 0  → E0599！
@@ -772,7 +781,7 @@ pub async fn update(
     .bind(&start_dt)
     .bind(phase_id)
     .bind(user.id)
-    .execute(&state.pool)
+    .execute(&pool)
     .await
     .map_err(AppError::Database)?;
 
@@ -876,7 +885,9 @@ pub async fn archive(
     Path(phase_id): Path<i64>,
 ) -> Result<Redirect, AppError>
 {
-    set_archived(&state.pool, user.id, phase_id, ActionType::Archive).await?;
+    let pool = state.pool.read().await.clone();
+
+    set_archived(&pool, user.id, phase_id, ActionType::Archive).await?;
     Ok(Redirect::to("/phases"))
 }
 
@@ -892,6 +903,8 @@ pub async fn unarchive(
     Path(phase_id): Path<i64>,
 ) -> Result<Redirect, AppError>
 {
-    set_archived(&state.pool, user.id, phase_id, ActionType::Unarchive).await?;
+    let pool = state.pool.read().await.clone();
+
+    set_archived(&pool, user.id, phase_id, ActionType::Unarchive).await?;
     Ok(Redirect::to("/phases"))
 }

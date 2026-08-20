@@ -85,13 +85,15 @@ pub async fn history(
     Query(query): Query<CalQuery>,
 ) -> Result<Html<String>, AppError>
 {
+    let pool = state.pool.read().await.clone();
+
     let non_empty_train_dts = sqlx::query_scalar::<_, String>(
         "SELECT DISTINCT record_date FROM records r
         INNER JOIN exercises e ON r.exercise_id = e.id
         WHERE e.user_id = ? ORDER BY record_date DESC",
     )
     .bind(&user.id)
-    .fetch_all(&state.pool)
+    .fetch_all(&pool)
     .await
     .map_err(AppError::Database)?;
 
@@ -113,7 +115,7 @@ pub async fn history(
     //   月份固定两位：format!("{m:02}") 保证 "03" 而非 "3"
     let now_ym =
         sqlx::query_scalar::<_, String>("SELECT strftime('%Y-%m', date('now','localtime'))")
-            .fetch_one(&state.pool)
+            .fetch_one(&pool)
             .await
             .map_err(AppError::Database)?;
     let target_year = query
@@ -129,7 +131,7 @@ pub async fn history(
     // 【M5 修订：按动作查看 —— 全部动作（id + 名字 + 部位）】
     let all_exercises = sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE user_id = ?")
         .bind(&user.id)
-        .fetch_all(&state.pool)
+        .fetch_all(&pool)
         .await
         .map_err(AppError::Database)?;
     // 部位下拉选项（去重 + 排序，"全部"用空串）
@@ -197,7 +199,7 @@ pub async fn history(
         "SELECT CAST(strftime('%d', date(?, '+1 month', '-1 day')) AS INTEGER)",
     )
     .bind(format!("{target_ym}-01"))
-    .fetch_one(&state.pool)
+    .fetch_one(&pool)
     .await
     .map_err(AppError::Database)?;
 
@@ -317,6 +319,8 @@ pub async fn history_day(
     Path(date): Path<String>,
 ) -> Result<Html<String>, AppError>
 {
+    let pool = state.pool.read().await.clone();
+
     match date.split('-').collect::<Vec<&str>>().as_slice()
     {
         [yyyy, mm, dd] =>
@@ -374,13 +378,13 @@ pub async fn history_day(
     )
     .bind(&user.id)
     .bind(&date)
-    .fetch_all(&state.pool)
+    .fetch_all(&pool)
     .await
     .map_err(AppError::Database)?;
 
     let all_exercises = sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE user_id = ?")
         .bind(&user.id)
-        .fetch_all(&state.pool)
+        .fetch_all(&pool)
         .await
         .map_err(AppError::Database)?
         .into_iter()
@@ -542,13 +546,15 @@ pub async fn exercise_stats(
     Path(id): Path<i64>,
 ) -> Result<Html<String>, AppError>
 {
+    let pool = state.pool.read().await.clone();
+
     // ① 数据隔离纪律：先验证动作存在且属于当前用户
     //    （同时拿到动作名，渲染页面标题用——查询结果别丢）
     let exercise =
         sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE id = ? AND user_id = ?")
             .bind(&id)
             .bind(&user.id)
-            .fetch_optional(&state.pool)
+            .fetch_optional(&pool)
             .await
             .map_err(AppError::Database)?
             .ok_or_else(|| AppError::NotFound("No such exercise in your profile".to_string()))?;
@@ -556,7 +562,7 @@ pub async fn exercise_stats(
         "SELECT * FROM records WHERE exercise_id = ? ORDER BY record_date ASC, id",
     )
     .bind(&id)
-    .fetch_all(&state.pool)
+    .fetch_all(&pool)
     .await
     .map_err(AppError::Database)?
     .into_iter()
@@ -593,7 +599,7 @@ pub async fn exercise_stats(
     )
     .bind(exercise.bar_weight)
     .bind(&id)
-    .fetch_all(&state.pool)
+    .fetch_all(&pool)
     .await
     .map_err(AppError::Database)?
     .into_iter()
@@ -668,7 +674,7 @@ pub async fn exercise_stats(
     // 原内联的 labels/weights/one_rms/two_rms + serde_json 注入代码
     // 抽到文件底部的公共函数，时间范围改为最近 180 天。
     // None（记录 < 2 条）→ 显示提示文案。
-    let chart_section = match exercise_chart_html(&state.pool, id).await?
+    let chart_section = match exercise_chart_html(&pool, id).await?
     {
         Some(html) => html,
         None => "<p>记录太少，攒几次训练再看趋势</p>".to_string(),

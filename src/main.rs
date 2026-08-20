@@ -57,6 +57,7 @@ use axum::{
 use config::AppConfig;
 use error::AppError;
 use sqlx::SqlitePool;
+use tokio::sync::RwLock;
 use tower_http::services::{ServeDir, ServeFile};
 
 // ============================================================
@@ -114,7 +115,7 @@ use tower_http::services::{ServeDir, ServeFile};
 pub struct AppState
 {
     /// 数据库连接池：所有 handler 查库都用它
-    pub pool: SqlitePool,
+    pub pool: std::sync::Arc<RwLock<SqlitePool>>,
     /// 应用配置：端口/数据库路径/会话密钥
     pub config: AppConfig,
 }
@@ -184,6 +185,7 @@ async fn main()
     //   M3+：理解连接池内部（为什么比单连接好）
     // 🎯 验收：能说出 .expect 和 ? 的区别（一个 panic，一个向上抛）。
     let pool = db::init_pool(&config).await.expect("数据库初始化失败");
+    let pool = std::sync::Arc::new(RwLock::new(pool));
 
     // --------------------------------------------------------
     // 3. 组装 AppState
@@ -449,6 +451,7 @@ async fn main()
 // ============================================================
 async fn ensure_admin(state: &AppState)
 {
+    let pool = state.pool.read().await.clone();
     // 环境变量没配 → 跳过（可能是已有用户的系统）
     if state.config.admin_username.is_empty() || state.config.admin_password.is_empty()
     {
@@ -461,7 +464,7 @@ async fn ensure_admin(state: &AppState)
     // fetch_one 只取第一行第一列 → bool 类型
     let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM users WHERE username = ?)")
         .bind(&state.config.admin_username)
-        .fetch_one(&state.pool)
+        .fetch_one(&pool)
         .await
         .unwrap_or(false);
 
@@ -482,7 +485,7 @@ async fn ensure_admin(state: &AppState)
         .bind(&state.config.admin_username)
         .bind(&password_hash)
         .bind(true)
-        .execute(&state.pool)
+        .execute(&pool)
         .await
         .expect("创建管理员失败");
 
@@ -781,6 +784,8 @@ async fn ensure_admin(state: &AppState)
 // ============================================================
 async fn home(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, AppError>
 {
+    let pool = state.pool.read().await.clone();
+
     // 【教学：State(state) 提取器】
     // 参数里的 State(state) 会自动从请求里取出我们传入的 AppState。
     // 这就是"依赖注入"——handler 需要的共享资源自动拿。
@@ -817,13 +822,13 @@ async fn home(State(state): State<AppState>, headers: HeaderMap) -> Result<Respo
         "SELECT COUNT(*) FROM phases WHERE user_id = ? AND archived = 0",
     )
     .bind(&user.id)
-    .fetch_one(&state.pool)
+    .fetch_one(&pool)
     .await
     .map_err(AppError::Database)?;
     let exercise_count =
         sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM exercises WHERE user_id = ?")
             .bind(&user.id)
-            .fetch_one(&state.pool)
+            .fetch_one(&pool)
             .await
             .map_err(AppError::Database)?;
     let template_count = sqlx::query_scalar::<_, i64>(
@@ -831,7 +836,7 @@ async fn home(State(state): State<AppState>, headers: HeaderMap) -> Result<Respo
     WHERE phase_id IN (SELECT id FROM phases WHERE user_id = ?)",
     )
     .bind(&user.id)
-    .fetch_one(&state.pool)
+    .fetch_one(&pool)
     .await
     .map_err(AppError::Database)?;
     let plan_count = sqlx::query_scalar::<_, i64>(
@@ -839,7 +844,7 @@ async fn home(State(state): State<AppState>, headers: HeaderMap) -> Result<Respo
     WHERE phase_id IN (SELECT id FROM phases WHERE user_id = ?)",
     )
     .bind(&user.id)
-    .fetch_one(&state.pool)
+    .fetch_one(&pool)
     .await
     .map_err(AppError::Database)?;
 
@@ -862,7 +867,7 @@ async fn home(State(state): State<AppState>, headers: HeaderMap) -> Result<Respo
         "SELECT * FROM phases WHERE user_id = ? AND archived = 0 ORDER BY created_at DESC LIMIT 1",
     )
     .bind(&user.id)
-    .fetch_optional(&state.pool)
+    .fetch_optional(&pool)
     .await
     .map_err(AppError::Database)?;
     let phase_links = match &current_phase
@@ -947,7 +952,7 @@ async fn home(State(state): State<AppState>, headers: HeaderMap) -> Result<Respo
 // 2. 加 phases 计数 ✅
 //    做法：模仿 user_count 再加一个查询：
 //      let phase_num: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM phases")
-//          .fetch_one(&state.pool).await.unwrap_or(-1);
+//          .fetch_one(&pool).await.unwrap_or(-1);
 //    收获：query_scalar 查单值 + fetch_one 取一行，与 user_count 完全同构。
 //    回退原因：同上，避免与 M0 定义代码混淆。
 //
