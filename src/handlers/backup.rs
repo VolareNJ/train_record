@@ -71,11 +71,10 @@ use crate::{AppState, error::AppError, handlers::auth::AuthUser, models};
 ///    - 导出记录：两个链接（?format=csv / ?format=json）
 /// 4. 返回首页链接
 pub async fn backup_page(
-    State(state): State<AppState>,
+    State(_state): State<AppState>,
     AuthUser(user): AuthUser,
 ) -> Result<Html<String>, AppError>
 {
-    let pool = state.pool.read().await.clone();
     if !user.is_admin
     {
         return Err(AppError::Forbidden("此界面要求管理员".to_string()));
@@ -247,7 +246,6 @@ pub async fn backup_upload(
     {
         return Err(AppError::Validation("没有收到文件".to_string()));
     };
-    let file_name = db_file.file_name().unwrap_or_default().to_string();
 
     // 【教学：魔数校验 —— Field::bytes() 是异步的】
     // db_file.bytes() 返回 Future<Output = Result<Bytes, MultipartError>>，

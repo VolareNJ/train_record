@@ -387,11 +387,10 @@ pub async fn list(
 ///    页面底部放 <script> 切换显隐
 /// 4. 返回链接 /exercises
 pub async fn create_form(
-    State(state): State<AppState>,
-    AuthUser(user): AuthUser,
+    State(_state): State<AppState>,
+    AuthUser(_user): AuthUser,
 ) -> Result<Html<String>, AppError>
 {
-    let pool = state.pool.read().await.clone();
     Ok(Html(
         r#"
         <head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>

@@ -21,7 +21,7 @@
 use axum::{
     Json,
     http::StatusCode,
-    response::{IntoResponse, Response},
+    response::{IntoResponse, Redirect, Response},
 };
 use serde_json::json;
 
@@ -83,8 +83,11 @@ impl IntoResponse for AppError
             },
             AppError::Unauthorized =>
             {
-                // 401：未认证
-                (StatusCode::UNAUTHORIZED, "请先登录".to_string())
+                // M7 第 2 步：未登录访问页面 → 302 跳转登录页（给"人"看）
+                // ⚠️ M8 的 REST API 会用自己的 ApiError 返回 401 JSON，
+                //    这里只管页面，全局跳转即可。
+                // Redirect 本身实现了 IntoResponse，直接 .into_response()
+                return Redirect::to("/login").into_response();
             },
             AppError::NotFound(msg) =>
             {

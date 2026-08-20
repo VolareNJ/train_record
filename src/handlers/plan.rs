@@ -488,7 +488,6 @@ pub async fn template_edit_form(
     .fetch_all(&pool)
     .await
     .map_err(AppError::Database)?;
-    let selected_item_ids: HashSet<i64> = current_items.iter().map(|i| i.exercise_id).collect();
 
     // ③ 查【全部】动作（供下拉框 + 表格行名 + JSON）
     let all_exercises = sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE user_id = ?")
