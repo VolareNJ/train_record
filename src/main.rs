@@ -34,6 +34,7 @@
 //
 // 📌 阶段要求：M0 会用即可（新写文件要在这里加一行 mod）。
 // 🎯 验收：能说出这 4 个 mod 各自对应 src/ 下的哪个文件。
+mod api;
 mod auth;
 mod calc;
 mod config;
@@ -446,6 +447,14 @@ async fn main()
             "/exercises/{id}/stats",
             get(handlers::stats::exercise_stats),
         )
+        // ----------------------------------------------------------
+        // M8 新增：REST API 层（/api/v1，为 M9 iced GUI 铺路）
+        // 教学注释见 src/api/mod.rs 顶部
+        // ⚠️ 必须在 .with_state(state) 之前 merge：
+        //    merge 要求两边 Router 状态一致（都是 Router<AppState>）
+        //    with_state 后是 Router<()>（serve 需要），无法 merge
+        // ----------------------------------------------------------
+        .merge(api::router())
         .with_state(state);
 
     // --------------------------------------------------------

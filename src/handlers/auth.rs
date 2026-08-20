@@ -532,7 +532,7 @@ pub async fn logout(
 ///             .and_then(|part| part.split('=').nth(1))
 ///             .map(|t| t.to_string())
 ///     })
-fn extract_token(headers: &HeaderMap) -> Option<String>
+pub fn extract_token(headers: &HeaderMap) -> Option<String>
 {
     // TODO(M1): 学生实现（步骤见上方注释）
     // unimplemented!("M1 学生实现：解析 cookie token")
