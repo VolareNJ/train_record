@@ -278,41 +278,58 @@ pub async fn list(
     //   "训练计划" → /phases/{id}/plans
     // 这样用户点进一个阶段，立刻能看到这个阶段下的模板和计划。
     // 首页只放"大入口"（阶段/动作），细粒度入口放在各自归属的页面——导航不迷路。
-    let active_rows = active_phases
-        .iter()
-        .map(|p| {
-            format!(
-                "<tr><td>{id}</td><td>{name}</td><td>{note}</td>\
-                <td><a href=\"/phases/{id}/templates\">训练模板</a> \
-                <a href=\"/phases/{id}/plans\">训练计划</a> \
-                <a href=\"/phases/{id}/edit\">编辑</a></td></tr>",
-                id = p.id,
-                name = p.name,
-                note = p.note
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+    // 进行中列表：空 → 友好提示；非空 → 表格行
+    // 【M7 第 4 步：空态 —— 空列表不再是一张空表格】
+    let active_rows = if active_phases.is_empty()
+    {
+        r#"<tr><td colspan="4" class="empty-tip">还没有进行中的阶段，去创建一个吧</td></tr>"#
+            .to_string()
+    }
+    else
+    {
+        active_phases
+            .iter()
+            .map(|p| {
+                format!(
+                    "<tr><td>{id}</td><td>{name}</td><td>{note}</td>\
+                    <td><a href=\"/phases/{id}/templates\">训练模板</a> \
+                    <a href=\"/phases/{id}/plans\">训练计划</a> \
+                    <a href=\"/phases/{id}/edit\">编辑</a></td></tr>",
+                    id = p.id,
+                    name = p.name,
+                    note = p.note
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
 
     // 已归档：只读，操作列只给查看入口（不能编辑——归档阶段不可修改）
-    let archived_rows = archived_phases
-        .iter()
-        .map(|p| {
-            format!(
-                "<tr><td>{id}</td><td>{name}</td><td>{note}</td>\
-                <td><a href=\"/phases/{id}/templates\">训练模板</a> \
-                <a href=\"/phases/{id}/plans\">训练计划</a> \
-                <span style=\"color:gray\">（只读）</span></td></tr>",
-                id = p.id,
-                name = p.name,
-                note = p.note
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+    let archived_rows = if archived_phases.is_empty()
+    {
+        r#"<tr><td colspan="4" class="empty-tip">暂无已归档阶段</td></tr>"#.to_string()
+    }
+    else
+    {
+        archived_phases
+            .iter()
+            .map(|p| {
+                format!(
+                    "<tr><td>{id}</td><td>{name}</td><td>{note}</td>\
+                    <td><a href=\"/phases/{id}/templates\">训练模板</a> \
+                    <a href=\"/phases/{id}/plans\">训练计划</a> \
+                    <span style=\"color:gray\">（只读）</span></td></tr>",
+                    id = p.id,
+                    name = p.name,
+                    note = p.note
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
 
     Ok(Html(format!(
-        r#"<head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+        r#"{head}
         <h2>进行中</h2>
             <table border="1"><tr><th>ID</th><th>名称</th><th>备注</th><th>操作</th></tr>
                 {active_rows}
@@ -322,7 +339,8 @@ pub async fn list(
                 {archived_rows}
             </table>
         <p><a href="/phases/new">创建阶段</a></p>
-        <p><a href="/">返回首页</a></p>"#
+        <p><a href="/">返回首页</a></p>"#,
+        head = crate::page::page_head("训练阶段"),
     )))
 }
 
@@ -414,9 +432,9 @@ pub async fn create_form(
     AuthUser(_user): AuthUser,
 ) -> Result<Html<String>, AppError>
 {
-    Ok(Html(
+    Ok(Html(format!(
         r#"
-        <head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+        {head}
         <h1>开启新征程</h1>
         <form method="post" action="/phases">
             <label>名称 <input name="name" required></label><br>
@@ -425,9 +443,9 @@ pub async fn create_form(
             <button type="submit">创建</button>
         </form>
         <p><a href="/phases">返回</a></p>
-        "#
-        .to_string(),
-    ))
+        "#,
+        head = crate::page::page_head("创建训练阶段"),
+    )))
 }
 
 // ============================================================
@@ -657,7 +675,7 @@ pub async fn edit_form(
 
     Ok(Html(format!(
         r#"
-        <head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+        {head}
         <h1>编辑训练阶段</h1>
         <p>欢迎，{username} —— 正在编辑：{phase_name}</p>
         <form method="post" action="/phases/{phase_id}/edit">
@@ -668,6 +686,7 @@ pub async fn edit_form(
         </form>
         <p><a href="/phases">返回列表</a></p>
         "#,
+        head = crate::page::page_head("编辑训练阶段"),
         username = user.username,
         phase_name = phase.name,
         phase_note = phase.note,

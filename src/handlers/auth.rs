@@ -121,17 +121,17 @@ pub struct CreateUserForm
 /// 这也是为什么教学注释说 M2 换 askama 模板（自动处理类型）。
 pub async fn login_page() -> Html<String>
 {
-    Html(
+    Html(format!(
         r#"
-        <head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+        {head}
         <form method="post" action="/login">
           <label>用户名 <input name="username" required></label><br>
           <label>密码 <input name="password" type="password" required></label><br>
           <button type="submit">登录</button>
         </form>
-        "#
-        .to_string(),
-    )
+        "#,
+        head = crate::page::page_head("登录"),
+    ))
 }
 
 // ============================================================
@@ -708,12 +708,12 @@ pub async fn admin_users(
     Ok(Html(format!(
         r#"<!DOCTYPE html>
                 <html lang="zh">
-                <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>用户管理</title></head>
+                <head>{head}</head>
                 <body>
                 <h1>用户管理</h1>
                 <table border="1">
                     <tr><th>ID</th><th>用户名</th><th>角色</th></tr>
-                    {}
+                    {user_rows}
                 </table>
                 <h2>创建新用户（邀请制）</h2>
                 <form method="post" action="/admin/users">
@@ -725,7 +725,8 @@ pub async fn admin_users(
                 <p><a href="/">返回首页</a></p>
             </body>
             </html>"#,
-        user_vec
+        head = crate::page::page_head("用户管理"),
+        user_rows = user_vec,
     )))
 }
 

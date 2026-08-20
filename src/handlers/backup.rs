@@ -82,14 +82,10 @@ pub async fn backup_page(
     // 【HTML 约定（AGENTS.md）】
     //   - 移动端 viewport head（手机浏览器备份场景）
     //   - 乘号用 ASCII *、不带空格（本页无乘号，但约定通用）
-    Ok(Html(
+    Ok(Html(format!(
         r#"<!DOCTYPE html>
         <html lang="zh">
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>数据备份</title>
-        </head>
+        {head}
         <body>
             <h1>数据备份</h1>
             <h2>下载备份</h2>
@@ -105,9 +101,9 @@ pub async fn backup_page(
                <a href="/admin/backup/export?format=json">导出 JSON</a></p>
             <p><a href="/">返回首页</a></p>
         </body>
-        </html>"#
-        .to_string(),
-    ))
+        </html>"#,
+        head = crate::page::page_head("数据备份"),
+    )))
 }
 
 // ============================================================
@@ -323,22 +319,18 @@ pub async fn backup_upload(
     // 【教学：最后一步 —— 返回 HTML 提示页（不是 Redirect）】
     // M7 热替换后不再需要重启：写锁内 close 旧池 → 覆盖 → 重连新池，
     // 一次请求内完成。函数签名是 Result<Html<String>, AppError>，所以拼提示页。
-    Ok(Html(
+    Ok(Html(format!(
         r#"<!DOCTYPE html>
         <html lang="zh">
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>恢复完成</title>
-        </head>
+        {head}
         <body>
             <h1>恢复成功</h1>
             <p>数据库已恢复，已生效，无需重启。</p>
             <p><a href="/admin/backup">返回备份页</a> | <a href="/">返回首页</a></p>
         </body>
-        </html>"#
-            .to_string(),
-    ))
+        </html>"#,
+        head = crate::page::page_head("恢复完成"),
+    )))
 }
 
 // ============================================================

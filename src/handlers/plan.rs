@@ -192,17 +192,27 @@ pub async fn list_templates(
     //     列表里每行给"上移/下移"小表单（POST /templates/{id}/sort?dir=up|down），
     //     handler 在同一阶段内交换相邻模板的 sort_order。
     //     操作链接用表单 POST（删除是改数据，不能用 GET 链接）
-    let template_ret = sqlx::query_as::<_, Template>(
+    //     【M7 第 4 步：空态 —— 无模板 → 表格里显示友好提示行】
+    let template_vec = sqlx::query_as::<_, Template>(
         "SELECT * FROM templates WHERE phase_id = ? ORDER BY sort_order, id",
     )
     .bind(&phase_ret.id)
     .fetch_all(&pool)
     .await
-    .map_err(AppError::Database)?
-    .iter()
-    .map(|item| {
-        format!(
-            r#"<tr><td>{tmp_name}</td>
+    .map_err(AppError::Database)?;
+
+    let template_ret = if template_vec.is_empty()
+    {
+        r#"<tr><td colspan="3" class="empty-tip">这个阶段还没有训练模板，先创建一个吧</td></tr>"#
+            .to_string()
+    }
+    else
+    {
+        template_vec
+            .iter()
+            .map(|item| {
+                format!(
+                    r#"<tr><td>{tmp_name}</td>
                 <td>
                 <form method="post" action="/templates/{tmp_id}/sort?dir=up"
                 style="display:inline"><button type="submit">↑</button></form>
@@ -213,17 +223,18 @@ pub async fn list_templates(
                 <td><form method="post" action="/templates/{tmp_id}/delete"
                 style="display:inline"><button type="submit">删除</button></form></td>
                 </tr>"#,
-            tmp_id = item.id,
-            tmp_name = item.name
-        )
-    })
-    .collect::<Vec<String>>()
-    .join("\n");
+                    tmp_id = item.id,
+                    tmp_name = item.name
+                )
+            })
+            .collect::<Vec<String>>()
+            .join("\n")
+    };
 
     // ④ 拼页面（注意：r#"... "# 内部不能再出现裸引号，否则会渲染到页面）
     Ok(Html(format!(
         r#"
-                <head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+                {head}
                 <h2>训练模板</h2>
                 {archived_note}
                     <table border="1"><tr><th>名称</th><th>排序</th><th>操作</th></tr>
@@ -232,6 +243,7 @@ pub async fn list_templates(
                 <p><a href="/phases/{phase_id}/templates/new">创建训练模板</a></p>
                 <p><a href="/">返回首页</a></p>
             "#,
+        head = crate::page::page_head("训练模板"),
         archived_note = archived_note,
         tmp_content = template_ret,
         phase_id = phase_ret.id
@@ -319,7 +331,7 @@ pub async fn template_create_form(
     // ③ 拼表单
     Ok(Html(format!(
         r#"
-        <head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+        {head}
         <h2>创建训练模板</h2>
         <form method="post" action="/phases/{phase_id}/templates">
             模板名：<input name="name"><br>
@@ -338,6 +350,7 @@ pub async fn template_create_form(
             {javascript}
         </script>
         "#,
+        head = crate::page::page_head("创建训练模板"),
         phase_id = phase_ret.id,
         part_options = part_options,
         checkbox_rows = checkbox_rows,
@@ -621,7 +634,7 @@ pub async fn template_edit_form(
     //      "部位 → 组头行 id"，addRow 新行插到对应组头行之后】
     Ok(Html(format!(
         r#"
-        <head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+        {head}
         <h2>编辑训练模板</h2>
         <form method="post" action="/templates/{template_id}/edit">
             模板名：<input name="name" value="{name}" required><br>
@@ -745,6 +758,7 @@ pub async fn template_edit_form(
             }}
         </script>
         "#,
+        head = crate::page::page_head("编辑训练模板"),
         template_id = template_id,
         name = current_template.name,
         phase_id = current_template.phase_id,
@@ -1067,7 +1081,7 @@ pub async fn list_plans(
     // ④ 拼页面（日历 + 年月导航 + 创建入口）
     Ok(Html(format!(
         r#"
-        <head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+        {head}
         <h2>训练计划</h2>
         {archived_note}
         <p>年份：
@@ -1093,6 +1107,7 @@ pub async fn list_plans(
             }}
         </script>
         "#,
+        head = crate::page::page_head("训练计划"),
         archived_note = archived_note,
         year_options = year_options,
         month_options = month_options,
@@ -1223,7 +1238,7 @@ pub async fn plan_create_form(
     //    与 exercises.rs 的 toggleBarWeight 同款写法）。
     Ok(Html(format!(
         r#"
-        <head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+        {head}
         <h2>新建当日计划</h2>
         <form method="post" action="/phases/{phase_id}/plans">
             日期：<input type="date" name="date" value="{today}"><br>
@@ -1248,6 +1263,7 @@ pub async fn plan_create_form(
             {javascript}
         </script>
         "#,
+        head = crate::page::page_head("新建当日计划"),
         phase_id = phase_id,
         today = today,
         template_rows = template_rows,
@@ -1860,7 +1876,7 @@ pub async fn plan_detail(
     //    - JS：EX_OPTIONS + addRow/removeRow + 多实例换算器（移植自 plan_edit_form）
     Ok(Html(format!(
         r#"
-        <head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+        {head}
         <h2>编辑计划（{plan_date}）</h2>
         <form method="post" action="/plans/{plan_id}/edit">
             日期：<input type="date" name="date" value="{plan_date}">
@@ -1891,6 +1907,7 @@ pub async fn plan_detail(
             {javascript}
         </script>
         "#,
+        head = crate::page::page_head("编辑计划"),
         plan_id = current_plan.id,
         plan_date = current_plan.date,
         plan_note = current_plan.note,

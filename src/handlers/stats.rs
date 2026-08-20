@@ -101,11 +101,14 @@ pub async fn history(
     if non_empty_train_dts.is_empty()
     {
         return Ok(Html(
-            r#"<head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+            format!(
+                r#"{head}
             <h2>历史回顾</h2>
             <p>还没有训练记录，去<a href="/today">今日页</a>开始第一次训练吧</p>
-            <p><a href="/">返回首页</a></p>"#
-                .to_string(),
+            <p><a href="/">返回首页</a></p>"#,
+                head = crate::page::page_head("历史回顾"),
+            )
+            .to_string(),
         ));
     }
 
@@ -238,7 +241,7 @@ pub async fn history(
     //   原 checkbox 勾选是在"有训练日列表"前提下避免页面过长；
     //   训练日列表已移除，页面只剩日历 + 动作列表，直接展示即可。
     Ok(Html(format!(
-        r#"<head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+        r#"{head}
         <h2>历史回顾</h2>
         <p>年份：
         <select id="cal-year-filter" onchange="changeCalMonth()">
@@ -264,6 +267,7 @@ pub async fn history(
         <script>
             {javascript}
         </script>"#,
+        head = crate::page::page_head("历史回顾"),
         cells = cells,
         ex_part_options = ex_part_options,
         ex_links = ex_links,
@@ -400,10 +404,11 @@ pub async fn history_day(
     if rows_raw.is_empty()
     {
         return Ok(Html(format!(
-            r#"<head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+            r#"{head}
             <h2>{date} 训练记录</h2>
             <p>这一天没有训练记录</p>
-            <p><a href="/history">返回历史回顾</a></p>"#
+            <p><a href="/history">返回历史回顾</a></p>"#,
+            head = crate::page::page_head("训练记录"),
         )));
     }
 
@@ -493,10 +498,11 @@ pub async fn history_day(
         .join("\n");
 
     Ok(Html(format!(
-        r#"<head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+        r#"{head}
         <h2>{date} 训练记录</h2>
         {grouped_html}
-        <p><a href="/history">返回历史回顾</a></p>"#
+        <p><a href="/history">返回历史回顾</a></p>"#,
+        head = crate::page::page_head("训练记录"),
     )))
 }
 
@@ -613,10 +619,11 @@ pub async fn exercise_stats(
     if all_records.is_empty()
     {
         return Ok(Html(format!(
-            r#"<head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+            r#"{head}
             <h2>{name} 的历史记录</h2>
             <p>这个动作还没有记录</p>
             <p><a href="/history">返回历史回顾</a></p>"#,
+            head = crate::page::page_head("动作历史"),
             name = exercise.name,
         )));
     }
@@ -681,7 +688,7 @@ pub async fn exercise_stats(
     };
 
     Ok(Html(format!(
-        r#"<head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+        r#"{head}
         <h2>{name} 的历史记录</h2>
         <table border="1">
         <tr><th>日期</th><th>观测强度</th><th>重量</th><th>组*次</th><th>1RM</th><th>2RM</th><th>3RM</th>
@@ -690,6 +697,7 @@ pub async fn exercise_stats(
         </table>
         {chart_section}
         <p><a href="/history">返回历史回顾</a></p>"#,
+        head = crate::page::page_head("动作历史"),
         name = exercise.name,
     )))
 }

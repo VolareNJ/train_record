@@ -222,26 +222,8 @@ pub async fn list(
     .map(|(ex_id, last_date, days_ago)| (ex_id, (last_date, days_ago)))
     .collect();
 
-    Ok(Html(format!(
-        r#"
-        <head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
-        <h1>动作库</h1>
-        <form method="get" action="/exercises">
-            部位筛选：
-            <select name="body_part" onchange="this.form.submit()">
-                <option value="">全部</option>
-                {part_options}
-            </select>
-        </form>
-        <table border="1">
-            <tr><th>名称</th><th>部位</th><th>模式</th><th>组数</th><th>次数</th><th>最后训练</th><th>距今(天)</th><th>操作</th></tr>
-            {query_ret_rows}
-        </table>
-        <p><a href="/exercises/new">创建动作</a></p>
-        <p><a href="/">返回首页</a></p>
-        "#,
-        part_options = part_options,
-        query_ret_rows = match part_filter
+    // 查动作列表（筛选可选）→ 空 → 空态行（M7 第 4 步）
+    let exercises = match part_filter
     {
         None => sqlx::query_as::<_, Exercise>(
             // 【M4 修订：动作库排序】同一 body_part 内按 sort_order 排
@@ -258,52 +240,83 @@ pub async fn list(
         .fetch_all(&pool),
     }
     .await
-    .map_err(AppError::Database)?
-    .iter()
-    .map(|e| {
-        // 【M6 修订：最后训练两列】无记录 → "-"
-        let (last_date, days_ago) = last_train_map
-            .get(&e.id)
-            .cloned()
-            .unwrap_or_else(|| ("-".to_string(), -1));
-        let days_text = if days_ago < 0
-        {
-            "-".to_string()
-        }
-        else if days_ago == 0
-        {
-            "今天".to_string()
-        }
-        else
-        {
-            format!("{days_ago}")
-        };
-        format!(
-            "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td>\
-             <td>{}</td><td>{}</td>\
-             <td><a href=\"/exercises/{}/edit\">编辑</a>\
-             <form method=\"post\" action=\"/exercises/{}/delete\" style=\"display:inline\">\
-             <button type=\"submit\">删除</button></form></td></tr>",
-            e.name,
-            e.body_part,
-            // 显示中文（M6 清理：lb2kg 历史值已迁移归正，不再需要兜底）
-            match e.default_mode.as_str()
-            {
-                "bar" => "杠铃",
-                "support" => "支撑",
-                "std" => "标准",
-                other => other,
-            },
-            e.default_sets,
-            e.default_reps,
-            last_date,
-            days_text,
-            e.id,
-            e.id
-        )
-    })
-    .collect::<Vec<String>>()
-    .join("\n")
+    .map_err(AppError::Database)?;
+
+    let query_ret_rows = if exercises.is_empty()
+    {
+        r#"<tr><td colspan="8" class="empty-tip">还没有动作，先创建一个吧</td></tr>"#.to_string()
+    }
+    else
+    {
+        exercises
+            .iter()
+            .map(|e| {
+                // 【M6 修订：最后训练两列】无记录 → "-"
+                let (last_date, days_ago) = last_train_map
+                    .get(&e.id)
+                    .cloned()
+                    .unwrap_or_else(|| ("-".to_string(), -1));
+                let days_text = if days_ago < 0
+                {
+                    "-".to_string()
+                }
+                else if days_ago == 0
+                {
+                    "今天".to_string()
+                }
+                else
+                {
+                    format!("{days_ago}")
+                };
+                format!(
+                    "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td>\
+                     <td>{}</td><td>{}</td>\
+                     <td><a href=\"/exercises/{}/edit\">编辑</a>\
+                     <form method=\"post\" action=\"/exercises/{}/delete\" style=\"display:inline\">\
+                     <button type=\"submit\">删除</button></form></td></tr>",
+                    e.name,
+                    e.body_part,
+                    // 显示中文（M6 清理：lb2kg 历史值已迁移归正，不再需要兜底）
+                    match e.default_mode.as_str()
+                    {
+                        "bar" => "杠铃",
+                        "support" => "支撑",
+                        "std" => "标准",
+                        other => other,
+                    },
+                    e.default_sets,
+                    e.default_reps,
+                    last_date,
+                    days_text,
+                    e.id,
+                    e.id
+                )
+            })
+            .collect::<Vec<String>>()
+            .join("\n")
+    };
+
+    Ok(Html(format!(
+        r#"
+        {head}
+        <h1>动作库</h1>
+        <form method="get" action="/exercises">
+            部位筛选：
+            <select name="body_part" onchange="this.form.submit()">
+                <option value="">全部</option>
+                {part_options}
+            </select>
+        </form>
+        <table border="1">
+            <tr><th>名称</th><th>部位</th><th>模式</th><th>组数</th><th>次数</th><th>最后训练</th><th>距今(天)</th><th>操作</th></tr>
+            {query_ret_rows}
+        </table>
+        <p><a href="/exercises/new">创建动作</a></p>
+        <p><a href="/">返回首页</a></p>
+        "#,
+        head = crate::page::page_head("动作库"),
+        part_options = part_options,
+        query_ret_rows = query_ret_rows,
     )))
 }
 
@@ -391,9 +404,9 @@ pub async fn create_form(
     AuthUser(_user): AuthUser,
 ) -> Result<Html<String>, AppError>
 {
-    Ok(Html(
+    Ok(Html(format!(
         r#"
-        <head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+        {head}
         <h1>创建训练动作</h1>
         <form method="post" action="/exercises">
             <label>动作名称
@@ -445,16 +458,16 @@ pub async fn create_form(
         </form>
         <p><a href="/exercises">返回动作库</a></p>
         <script>
-            function toggleBarWeight() {
+            function toggleBarWeight() {{
                 var mode = document.getElementById('default_mode').value;
                 document.getElementById('bar_weight_row').style.display =
                     (mode === 'bar') ? '' : 'none';
-            }
+            }}
             toggleBarWeight();
         </script>
-        "#
-        .to_string(),
-    ))
+        "#,
+        head = crate::page::page_head("创建训练动作"),
+    )))
 }
 
 // ============================================================
@@ -683,7 +696,7 @@ pub async fn edit_form(
 
     Ok(Html(format!(
         r#"
-        <head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+        {head}
         <h1>编辑训练动作</h1>
         {chart_section}
         <form method="post" action="/exercises/{exercise_id}/edit">
@@ -728,6 +741,7 @@ pub async fn edit_form(
             {javascript}
         </script>
         "#,
+        head = crate::page::page_head("编辑训练动作"),
         chart_section = chart_section,
         exercise_id = exercise_id,
         current_name = record_to_edit.name,
@@ -1068,7 +1082,7 @@ pub async fn detail(
 
     Ok(Html(format!(
         r#"
-        <head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+        {head}
         <h1>动作详情</h1>
         <p>名称：{name}</p>
         <p>部位：{body_part}</p>
@@ -1079,6 +1093,7 @@ pub async fn detail(
         <p>要领：{key_points}</p>
         <p><a href="/exercises">返回列表</a></p>
         "#,
+        head = crate::page::page_head("动作详情"),
         name = exercise.name,
         body_part = exercise.body_part,
         default_mode = match exercise.default_mode.as_str()

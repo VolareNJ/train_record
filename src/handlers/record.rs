@@ -181,14 +181,31 @@ pub async fn today(
     //    SELECT * FROM phases WHERE user_id = ? AND archived = 0
     //    ORDER BY created_at DESC LIMIT 1
     //    → 没有 → 空态提示"暂无进行中阶段，请先创建"
-    let current_phase = sqlx::query_as::<_, Phase>(
+    let current_phase = match sqlx::query_as::<_, Phase>(
         "SELECT * FROM phases WHERE user_id = ? AND archived = 0 ORDER BY created_at DESC LIMIT 1",
     )
     .bind(&user.id)
     .fetch_optional(&pool)
     .await
     .map_err(AppError::Database)?
-    .ok_or_else(|| AppError::NotFound("No phase running on your profile".to_string()))?;
+    {
+        Some(p) => p,
+        // 【M7 第 4 步：空态 —— 无进行中阶段 → 友好提示页（原来是 404）】
+        None =>
+        {
+            return Ok(Html(
+                format!(
+                    r#"{head}
+            <h2>今日训练</h2>
+            <p class="empty-tip">暂无进行中阶段，请先创建</p>
+            <p><a href="/phases/new">去创建阶段</a></p>
+            <p><a href="/">返回首页</a></p>"#,
+                    head = crate::page::page_head("今日训练"),
+                )
+                .to_string(),
+            ));
+        },
+    };
     // 3. 查今天：SELECT date('now', 'localtime')
     let today_dt = sqlx::query_scalar::<_, String>("SELECT date('now', 'localtime')")
         .fetch_one(&pool)
@@ -198,13 +215,32 @@ pub async fn today(
     //    SELECT * FROM plans WHERE phase_id = ? AND date = ?
     //    → 没有 → 空态提示"今天还没有计划"
     let today_plan =
-        sqlx::query_as::<_, Plan>("SELECT * FROM plans WHERE phase_id = ? AND date = ?")
+        match sqlx::query_as::<_, Plan>("SELECT * FROM plans WHERE phase_id = ? AND date = ?")
             .bind(&current_phase.id)
             .bind(&today_dt)
             .fetch_optional(&pool)
             .await
             .map_err(AppError::Database)?
-            .ok_or_else(|| AppError::NotFound("No plan set for today".to_string()))?;
+        {
+            Some(p) => p,
+            // 【M7 第 4 步：空态 —— 今天无计划 → 友好提示页（原来是 404）】
+            None =>
+            {
+                return Ok(Html(
+                    format!(
+                        r#"{head}
+            <h2>今日训练({today_dt})</h2>
+            <p class="empty-tip">今天还没有计划</p>
+            <p><a href="/plans/new?phase_id={phase_id}">去新建今日计划</a></p>
+            <p><a href="/">返回首页</a></p>"#,
+                        head = crate::page::page_head("今日训练"),
+                        today_dt = today_dt,
+                        phase_id = current_phase.id,
+                    )
+                    .to_string(),
+                ));
+            },
+        };
     // 5. 查计划项（不带动作名，避免 JOIN 破坏 query_as）：
     //    SELECT * FROM plan_items WHERE plan_id = ? ORDER BY sort_order
     //    再查全部动作 → 建 HashMap<i64, String>（id → 名字）索引：
@@ -382,21 +418,13 @@ pub async fn today(
     // 【M6：PWA 注入 —— manifest + Service Worker 注册】
     Ok(Html(format!(
         r#"
-        <head>
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <link rel="manifest" href="/static/manifest.json">
-        </head>
+        {head}
         <h2>今日训练({today_dt})</h2>
         <p>阶段：{phase_name} | 已坚持 {persist_days} 天</p>
         {grouped_html}
         <p><a href="/">返回首页</a></p>
-        <script>
-            if ('serviceWorker' in navigator) {{
-                // 【M6 PWA：sw.js 在根目录 → 默认作用域 / 全站接管】
-                navigator.serviceWorker.register('/sw.js');
-            }}
-        </script>
         "#,
+        head = crate::page::page_head("今日训练"),
         today_dt = today_dt,
         phase_name = current_phase.name,
         persist_days = persist_days,
@@ -735,7 +763,7 @@ pub async fn record_form(
     Ok(Html(format!(
         r#"<!DOCTYPE html>
         <html lang="zh">
-        <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>记录：{ex_name}</title></head>
+        {head}
         <body data-bar-weight="{bar_weight}">
         <h2>记录：{ex_name}</h2>        {plan_note_block}{action_note_block}{chart_section}<p>计划值：{plan_value_display}</p>
         <p>上次参考：{last_ref}</p>
@@ -801,6 +829,7 @@ pub async fn record_form(
         <script src="/static/weight_converter.js?v=4"></script>
         </body>
         </html>"#,
+        head = crate::page::page_head("记录"),
         ex_name = exercise_details.name,
         bar_weight = prefill_bar_weight,
         prefill_body_weight = prefill_body_weight,

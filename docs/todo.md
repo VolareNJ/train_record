@@ -91,6 +91,22 @@
   生产数据已手动修复（今天的记录全部重新挂回）。
 - **详细复盘**：`docs/learning_path/M4_bugfix_notes.md` §11
 
+### 2.4 静态资源无 Cache-Control → 启发式缓存坑（M7 第 5 步，已解决 ✅）
+
+- **坑**：ServeDir 响应不带 `Cache-Control` 头时，浏览器按
+  `(now - Last-Modified) * 10%` 猜测新鲜度（启发式缓存）。
+  实测：更新 manifest.json（加了 icons）后，浏览器 HTTP 缓存仍持有
+  7 天前的旧文件；SW install 的 `addAll` 也命中这份陈旧响应 →
+  新 SW 预缓存里还是旧 manifest（无 icons），PWA 图标验证不通过。
+- **现象**：curl 服务器返回 460B 新 manifest，浏览器 fetch 返回 183B 旧版；
+  `cache: 'no-store'` 无效（被 SW cache-first 拦截命中 SW 缓存）；
+  CDP `Network.setCacheDisabled` 也不影响 SW install 的 fetch。
+- **解法**：`.nest_service("/static", ServiceBuilder::new()
+  .layer(SetResponseHeaderLayer::overriding(header::CACHE_CONTROL,
+  HeaderValue::from_static("no-cache"))).service(ServeDir::new("static")))`
+  → 浏览器每次带 ETag revalidate，文件变了才重新下载。
+- **注意**：不要图快改 `max-age` 长缓存，会复发此坑。
+
 ---
 
 ## 三、测试数据（M3/M4 阶段 curl 实测用）

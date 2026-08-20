@@ -41,6 +41,7 @@ mod db;
 mod error;
 mod handlers;
 mod models;
+mod page;
 
 // 【教学：use 导入】
 // use 把其他模块/库的路径引入作用域，避免每次写全路径。
@@ -50,7 +51,7 @@ mod models;
 use axum::{
     Router,
     extract::State,
-    http::HeaderMap,
+    http::{HeaderMap, HeaderValue, header},
     response::{Html, IntoResponse, Redirect, Response},
     routing::{get, get_service, post},
 };
@@ -58,7 +59,11 @@ use config::AppConfig;
 use error::AppError;
 use sqlx::SqlitePool;
 use tokio::sync::RwLock;
-use tower_http::services::{ServeDir, ServeFile};
+use tower::ServiceBuilder;
+use tower_http::{
+    services::{ServeDir, ServeFile},
+    set_header::SetResponseHeaderLayer,
+};
 
 // ============================================================
 // 【教学：应用状态 (AppState)】★ 重点概念，多看几遍
@@ -327,7 +332,22 @@ async fn main()
         //    不用 scope 参数、不用特殊响应头，一行注册全站接管。
         // 生产部署时根目录的 sw.js 要和二进制一起拷。
         .route("/sw.js", get_service(ServeFile::new("sw.js")))
-        .nest_service("/static", ServeDir::new("static")) // 已有
+        // 【M7 修订：静态资源加 Cache-Control: no-cache】
+        // 之前 ServeDir 不带 Cache-Control 头 → 浏览器"启发式缓存"坑：
+        //   无缓存头时浏览器按 (now - Last-Modified) * 10% 猜新鲜度，
+        //   更新 manifest.json 后旧浏览器仍拿旧文件（实测踩坑，
+        //   SW install 的 addAll 也命中陈旧 HTTP 缓存）。
+        // no-cache 语义：每次用 ETag 重新验证，文件变了才下载新内容；
+        // 配合 sw.js 的 cacheFirst 只对 /static/ 生效（页面走 network-first）。
+        .nest_service(
+            "/static",
+            ServiceBuilder::new()
+                .layer(SetResponseHeaderLayer::overriding(
+                    header::CACHE_CONTROL,
+                    HeaderValue::from_static("no-cache"),
+                ))
+                .service(ServeDir::new("static")),
+        )
         .route(
             "/phases",
             get(handlers::phases::list).post(handlers::phases::create),
@@ -888,10 +908,7 @@ async fn home(State(state): State<AppState>, headers: HeaderMap) -> Result<Respo
     // 模板/计划同时保留在阶段列表每行里（见 phases.rs list 的注释）——
     // 首页只放"当前进行中阶段"的直达入口，其余阶段仍从阶段列表进入，避免首页堆满链接。
     Ok(Html(format!(
-        r#"<head>
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <link rel="manifest" href="/static/manifest.json">
-        </head>
+        r#"{head}
         <h1>训练记录系统</h1>
         <p>欢迎回来，{username}！</p>
         <h2>数据概览</h2>
@@ -918,14 +935,8 @@ async fn home(State(state): State<AppState>, headers: HeaderMap) -> Result<Respo
             <button type="submit">保存</button>
         </form>
         <p style="color:#888;font-size:0.9em">用于支撑（自重）类动作的重量换算，记录页自动获取。</p>
-        <script>
-            if ('serviceWorker' in navigator) {{
-                // 【M6 PWA：sw.js 放根目录后默认作用域就是 /，无需 scope 参数】
-                // （放 /static/ 下会被限制作用域，必须 Service-Worker-Allowed 头）
-                navigator.serviceWorker.register('/sw.js');
-            }}
-        </script>
         "#,
+        head = crate::page::page_head("训练记录系统"),
         username = user.username,
         phase_count = phase_count,
         exercise_count = exercise_count,
