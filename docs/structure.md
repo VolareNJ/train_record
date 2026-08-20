@@ -160,6 +160,14 @@ train_record/
     │   ├── plan.rs           # 模板、当日计划
     │   ├── record.rs         # 训练记录、编辑
     │   └── stats.rs          # 历史、日历、图表数据、1RM
+    ├── api/                  # M8 起：REST API 层（为 iced GUI 客户端铺路）
+    │   ├── mod.rs            # ApiError（7 变体）+ /api/v1 全部路由注册
+    │   ├── auth.rs           # ApiAuthUser 守卫 + login/logout/me
+    │   ├── phases.rs         # 阶段 CRUD + 归档
+    │   ├── exercises.rs      # 动作 CRUD + 筛选 + 1RM
+    │   ├── plans.rs          # 模板/计划全 CRUD + 事务 + orphaned 还原
+    │   ├── records.rs        # today/upsert/list_by_date/update/delete
+    │   └── stats.rs          # calendar/history_day/exercise_stats
     ├── calc.rs               # 1RM/Epley/Wathan、重量换算逻辑
     ├── templates/            # Askama 模板（.html）
     │   ├── base.html

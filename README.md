@@ -179,7 +179,7 @@ train_record/
 │   ├── db.rs               # 数据库连接池 + 迁移
 │   ├── models.rs           # 数据模型（User/Phase/Exercise/...）
 │   ├── calc.rs             # 1RM 纯函数（Epley/Wathan）+ 单元测试
-│   └── handlers/
+│   ├── handlers/
 │       ├── auth.rs         # 登录/登出/用户管理/体重维护
 │       ├── phases.rs       # 阶段管理
 │       ├── exercises.rs    # 动作库 CRUD
@@ -187,6 +187,14 @@ train_record/
 │       ├── record.rs       # 今日页 + 记录表单 + 保存 + 计重展示串
 │       ├── stats.rs        # 历史回顾（日历/当天详情/动作详情/图表）
 │       └── backup.rs       # 备份（下载/上传恢复/CSV+JSON 导出）
+│   └── api/                # M8：REST API 层（/api/v1，为 iced GUI 客户端铺路）
+│       ├── mod.rs          # ApiError + 全部路由注册
+│       ├── auth.rs         # ApiAuthUser 守卫 + login/logout/me
+│       ├── phases.rs       # 阶段 CRUD + 归档
+│       ├── exercises.rs    # 动作 CRUD + 筛选 + 1RM
+│       ├── plans.rs        # 模板/计划全 CRUD + 事务
+│       ├── records.rs      # today/upsert/列表/更新/删除
+│       └── stats.rs        # calendar/history_day/exercise_stats
 ├── static/
 │   ├── manifest.json       # PWA 清单
 │   ├── sw.js               # Service Worker（静态资源离线缓存）
@@ -197,8 +205,8 @@ train_record/
 │   ├── structure.md        # 完整设计文档（需求/表结构/页面/计划）
 │   ├── todo.md             # 待办与设计决策（跨会话）
 │   └── learning_path/      # 🗺️ 分阶段开发路径图
-│       ├── M0.md ~ M8.md   # 各阶段路径图（M0-M7 ✅，M8 定义完成待实现）
-│       ├── M1_ref/ M4_ref/ # 参考答案
+│       ├── M0.md ~ M8.md   # 各阶段路径图（M0-M8 ✅ 全部完成）
+│       ├── M1_ref/ M4_ref/ M8_ref/ # 参考答案
 │       ├── M4_bugfix_notes.md      # M4 后 Bug 复盘
 │       └── M5_roadmap_notes.md     # M5 前路线复盘（含 GUI 决策）
 ├── Python_pkg/             # 原 Python 版（历史数据与参考）
@@ -227,7 +235,7 @@ train_record/
 | **M5** | 历史回顾：日历导航、当天详情、动作详情折线图/1RM | ✅ 已完成（含理解验证，2026-08-14 收官） |
 | **M6** | 备份与体验：.db 下载/上传恢复、CSV/JSON 导出、PWA | ✅ 已完成（含理解验证，2026-08-18 收官） |
 | **M7** | 打磨：热替换连接池、未登录跳转、排序、美化、离线、部署 | ✅ 已完成（含理解验证，2026-08-21 收官） |
-| **M8** | REST API 层（为 iced GUI 客户端铺路） | 📝 定义完成，待实现 |
+| **M8** | REST API 层（为 iced GUI 客户端铺路） | ✅ 已完成（认证/阶段/动作/计划/记录/统计 + 数据隔离实测，2026-08-21 收官） |
 
 > 开发是**边写边学**模式：每个文件都带有【教学注释】，从 [`docs/learning_path/M0.md`](docs/learning_path/M0.md) 开始阅读。
 
@@ -238,7 +246,7 @@ train_record/
 - [`docs/proposal.md`](docs/proposal.md) —— 项目背景：为什么重写
 - [`docs/structure.md`](docs/structure.md) —— **设计地基**：完整需求结论、数据库 DDL、页面规格、开发计划
 - [`docs/todo.md`](docs/todo.md) —— 待办与设计决策（跨会话备忘）
-- [`docs/learning_path/M0.md`](docs/learning_path/M0.md) ~ [`M8.md`](docs/learning_path/M8.md) —— **分阶段开发路径图**（M0-M7 已完成，M8 定义完成待实现）
+- [`docs/learning_path/M0.md`](docs/learning_path/M0.md) ~ [`M8.md`](docs/learning_path/M8.md) —— **分阶段开发路径图**（M0-M8 已完成）
 - [`docs/learning_path/M4_bugfix_notes.md`](docs/learning_path/M4_bugfix_notes.md) —— M4 后 Bug 修复复盘（iced 必考清单）
 - [`docs/learning_path/M5_roadmap_notes.md`](docs/learning_path/M5_roadmap_notes.md) —— M5 前能力评估与 GUI 技术栈决策
 
