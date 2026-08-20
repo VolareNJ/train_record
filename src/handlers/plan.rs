@@ -163,6 +163,12 @@ pub async fn list_templates(
 {
     let pool = state.pool.read().await.clone();
     // ① 两级验证：阶段必须属于当前用户（数据隔离底线）
+    //    ⚠️【M7 批改：这里不能加 ORDER BY sort_order！
+    //    phases 表没有 sort_order 列（sort_order 是 templates/template_items/
+    //    plan_items/exercises 的列），且单行查询（WHERE id=?）排序无意义——
+    //    学生第 2 项把 ORDER BY 加在这里 → 模板列表页直接报
+    //    "no such column: sort_order" 数据库错误。
+    //    正确的"模板列表排序"在 ③ 的 templates 查询里（M4 已有 ORDER BY）。】
     let phase_ret = sqlx::query_as::<_, Phase>("SELECT * FROM phases WHERE id = ? AND user_id = ?")
         .bind(&phase_id)
         .bind(&user.id)
@@ -397,6 +403,13 @@ pub async fn template_create(
         return Err(AppError::Validation("至少选择一个动作".to_string()));
     }
 
+    let next_sort = sqlx::query_scalar::<_, i64>(
+        "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM templates WHERE phase_id = ?",
+    )
+    .bind(&phase_id)
+    .fetch_one(&pool)
+    .await?;
+
     let mut tx = pool.begin().await.map_err(AppError::Database)?;
 
     let template_id = sqlx::query_scalar::<_, i64>(
@@ -406,7 +419,7 @@ pub async fn template_create(
     )
     .bind(&phase_id)
     .bind(&form.name)
-    .bind(0_i64)
+    .bind(next_sort)
     .fetch_one(&mut *tx)
     .await
     .map_err(AppError::Database)?;
@@ -534,7 +547,8 @@ pub async fn template_edit_form(
     //     后跟本组行 —— 单表格内分区，JS addRow 只需在组头行后插入（见下）。
     let raw_rows = current_items
         .iter()
-        .map(|item| {
+        .enumerate()
+        .map(|(idx, item)| {
             let ex = ex_map.get(&item.exercise_id);
             let ex_name = ex
                 .map(|e| e.name.clone())
@@ -545,6 +559,7 @@ pub async fn template_edit_form(
             let row = format!(
                 r#"<tr id="ex-row-{ex_id}" data-part="{part}">
                 <td><input type="checkbox" name="{ex_id}" value="1" checked hidden>
+                <input type="hidden" name="order_{ex_id}" value="{order}">
                 {ex_name}</td>
                 <td>
                 <button type="button" onclick="submitMove('/templates/{template_id}/items/{item_id}/move?dir=up')">↑</button>
@@ -557,6 +572,7 @@ pub async fn template_edit_form(
                 template_id = template_id,
                 ex_name = ex_name,
                 part = part,
+                order = idx,
             );
             (part, row)
         })
@@ -676,10 +692,18 @@ pub async fn template_edit_form(
                 var tr = document.createElement('tr');
                 tr.id = 'ex-row-' + id;
                 tr.setAttribute('data-part', ex.part);
+                // 【M7 修订：order_{{ex_id}} 隐藏序号 —— 后端排序真值】
+                // 提交顺序由表单里 order 字段决定，新行取当前最大 order + 1
+                var maxOrder = 0;
+                document.querySelectorAll('input[name^="order_"]').forEach(function(inp){{
+                    var v = parseInt(inp.value, 10);
+                    if (!isNaN(v) && v > maxOrder) maxOrder = v;
+                }});
                 // 新行还没有 item_id，无法上移/下移 → 排序单元格留空占位
                 // （若放"待保存"按钮则必须等保存后才有 item_id，得不偿失）
                 tr.innerHTML =
                     '<td><input type="checkbox" name="' + id + '" value="1" checked hidden>' +
+                    '<input type="hidden" name="order_' + id + '" value="' + (maxOrder + 1) + '">' +
                     escapeHtml(ex.name) + '</td>' +
                     '<td></td>' +
                     '<td><button type="button" onclick="removeRow(' + id + ')">删除</button></td>';
@@ -805,23 +829,15 @@ pub async fn template_update(
         .await
         .map_err(AppError::Database)?;
 
-    // 3.1.5 【M4 修订：保留旧 sort_order（排序修复）】
-    //     旧版"先删后插"用 enumerate 重新编号 → 用户在编辑页调的排序全丢！
-    //     而且 exercise_ids() 来自 HashMap，顺序本就不定。
-    //     修复：删前把 (exercise_id → sort_order) 存下来，INSERT 时沿用旧值；
-    //     新添加的动作排末尾（MAX+1 起）。
-    let old_items = sqlx::query_as::<_, TemplateItem>(
-        "SELECT * FROM template_items WHERE template_id = ? ORDER BY sort_order, id",
-    )
-    .bind(&template_id)
-    .fetch_all(&mut *tx)
-    .await
-    .map_err(AppError::Database)?;
-    let old_order: HashMap<i64, i64> = old_items
-        .iter()
-        .map(|i| (i.exercise_id, i.sort_order))
-        .collect();
-    let base_order = old_order.values().copied().max().unwrap_or(-1);
+    // 3.1.5 【M7 修订：顺序真值 = order_{ex_id} 隐藏字段】
+    //     旧版（M4）"删前存 old_order 沿用旧 sort_order"有个隐患：
+    //     exercise_ids() 来自 HashMap，新动作的插入顺序不保证与页面一致
+    //     （todo.md §1.3），且 addRow 新动作排末尾的逻辑依赖 max 计算。
+    //     M7 修法：编辑页每行带 order_{ex_id}（= 页面展示序号），
+    //     JS addRow 给新行赋"当前最大序号+1"；后端 ordered_exercise_ids()
+    //     按 order 排序后 enumerate 分配 sort_order —— 排序真值在表单里，
+    //     不依赖 HashMap 迭代序，也不依赖旧库里的 sort_order。
+    //     无 order 键（旧表单/手动构造）→ 退化原顺序（兼容）。
 
     // 3.2 删掉所有旧子表行（先删后插：清空重来，避免"残留旧动作"）
     sqlx::query("DELETE FROM template_items WHERE template_id = ?")
@@ -831,26 +847,18 @@ pub async fn template_update(
         .map_err(AppError::Database)?;
 
     // 3.3 重新插入所有勾选的动作（enumerate 生成 sort_order）
-    let ex_ids: Vec<i64> = form.exercise_ids();
-    let mut new_idx: i64 = 0;
-    for ex_id in ex_ids
+    //     【M7 修订：顺序真值 = order_{ex_id} 隐藏字段】
+    //     旧版用 exercise_ids()（HashMap 迭代序，不保证与页面展示一致），
+    //     新版编辑页每行带 order_{ex_id} 序号，后端按序号排序后再插入；
+    //     无 order 键（旧表单）→ 退化原顺序。
+    for (idx, ex_id) in form.ordered_exercise_ids().into_iter().enumerate()
     {
-        // 旧动作沿用旧 sort_order；新动作从 base_order+1 起递增
-        let sort_order = match old_order.get(&ex_id)
-        {
-            Some(o) => *o,
-            None =>
-            {
-                new_idx += 1;
-                base_order + new_idx
-            },
-        };
         sqlx::query(
             "INSERT INTO template_items (template_id, exercise_id, sort_order) VALUES (?, ?, ?)",
         )
         .bind(&template_id)
-        .bind(ex_id) // ex_id 已经是 &i64，不用再 &
-        .bind(sort_order)
+        .bind(ex_id)
+        .bind(idx as i64) // ← order 排序后的下标即 sort_order
         .execute(&mut *tx) // ← 事务要 &mut *tx（Transaction 可变解引用）
         .await
         .map_err(AppError::Database)?;
@@ -1634,7 +1642,8 @@ pub async fn plan_detail(
     //     每行：hidden checkbox（保证提交收集）+ 全部编辑输入 + ↑↓ + 删除
     let raw_rows = plan_items
         .iter()
-        .map(|item| {
+        .enumerate()
+        .map(|(idx, item)| {
             let ex = ex_map.get(&item.exercise_id);
             // 动作名 + 部位（查不到显示 "?"，理论不发生）
             let (ex_name, ex_part) = match ex
@@ -1788,7 +1797,9 @@ pub async fn plan_detail(
             );
             let row = format!(
                 r#"<tr id="row-{ex_id}" data-part="{ex_part}">
-                <td><input type="checkbox" name="{ex_id}" value="1" checked hidden>{ex_name}</td>
+                <td><input type="checkbox" name="{ex_id}" value="1" checked hidden>
+                <input type="hidden" name="order_{ex_id}" value="{order}">
+                {ex_name}</td>
                 <td><input name="note_{ex_id}" value="{note}" size="12">{last_strategy_ref}</td>
                 <td><input name="weight_{ex_id}" id="weight-input-{ex_id}" type="number" step="0.5" value="{weight}" readonly style="background:#eee;">{last_actual_ref}</td>
                 <td><select name="mode_{ex_id}" id="mode-{ex_id}" class="mode-select" data-ex="{ex_id}">{mode_options}</select></td>
@@ -1811,6 +1822,7 @@ pub async fn plan_detail(
                 plan_id = plan_id,
                 ex_part = ex_part,
                 ex_name = ex_name,
+                order = idx,
                 sets = sets,
                 reps = reps,
                 weight = weight,
@@ -1945,8 +1957,16 @@ pub async fn plan_detail(
                 var tr = document.createElement('tr');
                 tr.id = 'row-' + id;
                 tr.setAttribute('data-part', ex.part);
+                /* 【M7 修订：order_{ex_id} 隐藏序号 —— 后端排序真值 */
+                var maxOrder = 0;
+                document.querySelectorAll('input[name^="order_"]').forEach(function(inp){
+                var v = parseInt(inp.value, 10);
+                if (!isNaN(v) && v > maxOrder) maxOrder = v;
+                });
                 tr.innerHTML =
-                '<td><input type="checkbox" name="' + id + '" value="1" checked hidden>' + escapeHtml(ex.name) + '</td>' +
+                '<td><input type="checkbox" name="' + id + '" value="1" checked hidden>' +
+                '<input type="hidden" name="order_' + id + '" value="' + (maxOrder + 1) + '">' +
+                escapeHtml(ex.name) + '</td>' +
                 '<td><input name="note_' + id + '" size="12"></td>' +
                 '<td><input name="weight_' + id + '" id="weight-input-' + id + '" type="number" step="0.5" readonly style="background:#eee;"></td>' +
                 '<td><select name="mode_' + id + '" id="mode-' + id + '" class="mode-select" data-ex="' + id + '">' + modeOptions(ex.default_mode) + '</select></td>' +
@@ -2203,21 +2223,8 @@ pub async fn plan_update(
     //     ⚠️【外键陷阱：同 plan_delete】已训练过的计划项有 records 引用，
     //     直接删会报 FOREIGN KEY constraint failed。
     //     先解除关联（保留训练历史），再删。
-    //     【M4 修订：删前先存旧 (exercise_id → sort_order) 映射，
-    //     4.3 重新插入时沿用旧 sort_order，用户在编辑页调的排序不丢；
-    //     新添加的动作排末尾（base + 1 起）】
-    let old_items = sqlx::query_as::<_, PlanItem>(
-        "SELECT * FROM plan_items WHERE plan_id = ? ORDER BY sort_order, id",
-    )
-    .bind(&plan_id)
-    .fetch_all(&pool)
-    .await
-    .map_err(AppError::Database)?;
-    let old_order: HashMap<i64, i64> = old_items
-        .iter()
-        .map(|i| (i.exercise_id, i.sort_order))
-        .collect();
-    let base_order = old_order.values().copied().max().unwrap_or(-1);
+    //     【M7 修订：排序真值 = order_{ex_id} 隐藏字段（同 template_update），
+    //     不再需要删前存 old_order —— 见 4.3 注释】
 
     // ⚠️【M5 修订：重新关联训练记录】
     // 解除关联前先备份 (exercise_id → record_id 列表)，
@@ -2257,24 +2264,14 @@ pub async fn plan_update(
     //    组/次/重/计重方式/杆重/休息/要领直接来自表单
     //    （编辑页已回显当前值，未选动作预填默认值），
     //    空字符串 → None → 存 NULL（plan_detail 显示 "-"）
+    //    【M7 修订：顺序真值 = order_{ex_id} 隐藏字段（同 template_update）】
+    //    按页面展示顺序排序后再插入；无 order 键 → 退化原顺序。
     //    ⚠️【M5 修订：重建后按备份清单精确还原记录关联】
     //    4.2 已把该计划下所有 records.plan_item_id 置 NULL（外键防冲突），
     //    重建的 plan_items 是新 id——这里用 orphaned 清单还原：
     //    同一计划内每个动作唯一，exercise_id → 新 plan_item_id 一一对应。
-    let ex_ids: Vec<i64> = form.exercise_ids();
-    let mut new_idx: i64 = 0;
-    for ex_id in ex_ids
+    for (idx, ex_id) in form.ordered_exercise_ids().into_iter().enumerate()
     {
-        // 旧动作沿用旧 sort_order；新动作从 base_order+1 起递增
-        let sort_order = match old_order.get(&ex_id)
-        {
-            Some(o) => *o,
-            None =>
-            {
-                new_idx += 1;
-                base_order + new_idx
-            },
-        };
         // 【M6 修订：不再插入 plan_mode/plan_bar_weight（已废弃，保持 NULL）】
         let result = sqlx::query(
             "INSERT INTO plan_items
@@ -2284,7 +2281,7 @@ pub async fn plan_update(
         )
         .bind(&plan_id)
         .bind(ex_id)
-        .bind(sort_order)
+        .bind(idx as i64) // ← order 排序后的下标即 sort_order
         .bind(form.plan_sets(ex_id))
         .bind(form.plan_reps(ex_id))
         .bind(form.plan_weight(ex_id))
@@ -2737,6 +2734,35 @@ impl TemplateCreateForm
             })
             .collect()
     }
+
+    /// 【M7 修订：按 order 排序的动作 id 列表（编辑页顺序兜底）】
+    /// 编辑页每行带 <input name="order_{ex_id}" value="序号">，
+    /// 后端按序号排序（序号 = 页面展示顺序，JS addRow 给新行赋 max+1）。
+    /// HashMap 迭代顺序不保证（todo.md §1.3），必须显式排序。
+    /// 没有 order_ 键的（旧版表单/创建页）→ 退化为 exercise_ids() 原顺序。
+    pub fn ordered_exercise_ids(&self) -> Vec<i64>
+    {
+        let ids: Vec<i64> = self.exercise_ids();
+        // 全都没有 order_ 键 → 直接用原顺序
+        let has_order = ids
+            .iter()
+            .any(|id| self.rest.contains_key(&format!("order_{id}")));
+        if !has_order
+        {
+            return ids;
+        }
+        let mut ordered: Vec<(i64, i64)> = ids
+            .iter()
+            .filter_map(|id| {
+                self.rest
+                    .get(&format!("order_{id}"))
+                    .and_then(|v| v.parse::<i64>().ok())
+                    .map(|order| (*id, order))
+            })
+            .collect();
+        ordered.sort_by_key(|(_, order)| *order);
+        ordered.into_iter().map(|(id, _)| id).collect()
+    }
 }
 
 /// 计划创建表单（日期 + 可选模板 + 可选手动选动作）
@@ -2823,6 +2849,32 @@ impl PlanEditForm
                 }
             })
             .collect()
+    }
+
+    /// 【M7 修订：按 order 排序的动作 id 列表（编辑页顺序兜底）】
+    /// 同 TemplateCreateForm::ordered_exercise_ids：编辑页每行带
+    /// order_{ex_id} 隐藏序号，后端按它排序（HashMap 迭代序不可靠）。
+    pub fn ordered_exercise_ids(&self) -> Vec<i64>
+    {
+        let ids: Vec<i64> = self.exercise_ids();
+        let has_order = ids
+            .iter()
+            .any(|id| self.rest.contains_key(&format!("order_{id}")));
+        if !has_order
+        {
+            return ids;
+        }
+        let mut ordered: Vec<(i64, i64)> = ids
+            .iter()
+            .filter_map(|id| {
+                self.rest
+                    .get(&format!("order_{id}"))
+                    .and_then(|v| v.parse::<i64>().ok())
+                    .map(|order| (*id, order))
+            })
+            .collect();
+        ordered.sort_by_key(|(_, order)| *order);
+        ordered.into_iter().map(|(id, _)| id).collect()
     }
 
     /// 【教学：前缀键方案】
