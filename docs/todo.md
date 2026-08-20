@@ -6,29 +6,29 @@
 
 ---
 
-## 〇、阶段路线（2026-08-14 更新）
+## 〇、阶段路线（2026-08-21 更新）
 
 - ✅ M0-M5 全部完成（M5 含理解验证，2026-08-14 收官）
 - ✅ M6 备份与体验（原计划：数据备份/导出）
-- **M7 打磨**（原计划：todo §1.1/§1.3/§1.4 等收尾）→ 文档 `docs/learning_path/M7.md` 已定义，待实现
+- ✅ M7 打磨（热替换连接池/未登录跳转/排序真值/美化/PWA 离线/部署文档）
+  （含理解验证，2026-08-21 收官；§1.1/§1.3/§1.4 三项待办已解决，见下）
 - **M8 REST API 层**（新增）：给 train_record 加 JSON API，为 iced GUI 客户端铺路
   - 详见 `docs/learning_path/M5_roadmap_notes.md` §3 路线图与"GUI 技术栈决策"
-  - 阶段文档 `docs/learning_path/M8.md` 待写（M7 完成后开工）
+  - 阶段文档 `docs/learning_path/M8.md` 已定义，待实现
+  - 认证方案：M8 复用 session cookie（ApiAuthUser 守卫）；
+    `Authorization: Bearer token` 头认证是扩展点（iced 客户端若需要再加）
 
 ---
 
 ## 一、待解决事项（按优先级）
 
-### 1.1 模板间排序：`templates.sort_order` 真值分配 🔴
+### 1.1 模板间排序：`templates.sort_order` 真值分配 ✅（M7 第 3 步已解决，4d2231a 之前）
 
 - **现状**：`templates.sort_order` 是预留字段，M3 阶段插入时恒为 `0`（占位）。
   M3 的模板列表查询**没有** `ORDER BY sort_order`，不影响功能。
-- **计划解决**：**M5 / M7 打磨阶段**
-- **方案候选**：
-  - 创建时 `MAX(sort_order) + 1` 分配新值
-  - 或界面拖拽排序后批量回写
-- **注意**：在此之前**不要依赖** `templates.sort_order` 的值，
-  也不要因为"全是 0"而改动它。子表 `template_items.sort_order` / `plan_items.sort_order` 从一开始就是真数据（`enumerate()` 生成）。
+- **解法（M7）**：创建时 `COALESCE(MAX(sort_order), -1) + 1` 分配新值（新模板排最后），
+  列表查询加 `ORDER BY sort_order, id`。
+- **注意**：`template_items.sort_order` / `plan_items.sort_order` 从一开始就是真数据（`enumerate()` 生成）。
 
 ### 1.2 模板/计划"空动作"校验 ✅（M5 第 6 步已解决，8d6434f 之前）
 
@@ -37,26 +37,23 @@
   （plan_create 只在未选模板时校验——模板自身已有校验）
 - **实测**：curl 空模板/空计划均 422；选模板正常创建不误伤
 
-### 1.3 HashMap 迭代顺序 ≠ 勾选顺序 🟡
+### 1.3 HashMap 迭代顺序 ≠ 勾选顺序 ✅（M7 第 3 步已解决）
 
-- **现状**：`TemplateCreateForm` 用 `#[serde(flatten)]` + `HashMap` 收集勾选的动作 id，
+- **坑**：`TemplateCreateForm` 用 `#[serde(flatten)]` + `HashMap` 收集勾选的动作 id，
   `HashMap` 迭代顺序**不保证**是表单提交顺序（实测勾选 6→7，落库 sort_order 是 7=0、6=1）。
-- **影响**：sort_order 仍连续（0,1,2…），列表按 sort_order 展示顺序正常；
-  但"用户勾选先后 = 动作先后"的语义丢失。
-- **计划解决**：**M3 编辑页兜底**（编辑时按展示顺序重新分配 sort_order）；
-  若需严格勾选顺序，改为 checkbox name 带序号（如 `exercise_ids_0`）或前端排序。
+- **解法（M7）**：编辑页每行加隐藏序号 `order_{ex_id}`（渲染时=展示顺序），
+  JS `addRow` 给新行赋"当前最大序号+1"；后端从 flatten HashMap 过滤 `order_` 前缀键
+  按 order 排序后再 `enumerate()` 分配 sort_order（先删后插时用）。
+- **效果**：编辑计划/模板打乱顺序保存后，刷新顺序与编辑时一致。
 
-### 1.4 未登录访问返回 401 JSON 而非重定向到 /login 🟡
+### 1.4 未登录访问返回 401 JSON 而非重定向到 /login ✅（M7 第 2 步已解决）
 
 - **现状**：`AuthUser` 守卫失败返回 `AppError::Unauthorized` → error.rs 输出
   **401 JSON**（`{"error": "请先登录"}`），浏览器显示 JSON 文本，
   而不是 303 重定向到登录页。
-- **影响**：M2/M3 验收标准都写"未登录被重定向到 /login"，实际行为是"被拒绝"。
-  安全效果已达成（未登录进不来），但用户体验差（看到 JSON 而非登录页）。
-- **计划解决**：**打磨阶段**（M7），用户已确认。
-- **方案候选**：
-  - error.rs 的 `IntoResponse` 里 Unauthorized → `Redirect::to("/login")`（全局统一跳转）
-  - 或前端加 JS：fetch 收到 401 自动 `window.location = '/login'`
+- **解法（M7）**：error.rs 的 `IntoResponse` 里 Unauthorized → `Redirect::to("/login")`（302，全局统一跳转）。
+- **注意**：M8 的 REST API 需要 401 JSON（程序要判断"没登录"），
+  届时 API 用自己的 `ApiError` 类型，不受这里影响。
 
 ---
 
