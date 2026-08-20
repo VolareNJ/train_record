@@ -9,9 +9,9 @@
 //   GET  /exercises/{id}/edit → 编辑表单页（edit_form）
 //   POST /exercises/{id}/edit → 更新动作（update）
 //   POST /exercises/{id}/delete → 删除动作（delete）
-//   GET  /exercises/{id}      → 动作详情（detail，M5 用，先占位）
+//   GET  /exercises/{id}      → 动作详情（detail，M7 清理时接线，列表页有详情链接）
 //
-// 7 个函数，比 phases 多了 delete（动作库允许删除）。
+// 8 个函数，比 phases 多了 delete（动作库允许删除）。
 //
 // 📌 阶段要求：M2 你来实现本文件所有函数（detail 除外）。
 //   完整实现已备份在 docs/learning_path/M2_ref/exercises_ref.rs，
@@ -272,6 +272,7 @@ pub async fn list(
                     "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td>\
                      <td>{}</td><td>{}</td>\
                      <td><a href=\"/exercises/{}/edit\">编辑</a>\
+                     <a href=\"/exercises/{}\">详情</a>\
                      <form method=\"post\" action=\"/exercises/{}/delete\" style=\"display:inline\">\
                      <button type=\"submit\">删除</button></form></td></tr>",
                     e.name,
@@ -288,6 +289,7 @@ pub async fn list(
                     e.default_reps,
                     last_date,
                     days_text,
+                    e.id,
                     e.id,
                     e.id
                 )

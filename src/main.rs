@@ -364,6 +364,8 @@ async fn main()
             get(handlers::exercises::list).post(handlers::exercises::create),
         )
         .route("/exercises/new", get(handlers::exercises::create_form))
+        // 【M7 清理：动作详情页挂路由（原 M5 占位从未接线，dead_code 警告）】
+        .route("/exercises/{id}", get(handlers::exercises::detail))
         .route(
             "/exercises/{id}/edit",
             get(handlers::exercises::edit_form).post(handlers::exercises::update),

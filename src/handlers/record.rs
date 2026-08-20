@@ -1251,23 +1251,10 @@ pub struct RecordForm
 // ============================================================
 // 【教学：解析表单数字的辅助函数 —— 空串 → 默认值】
 // ============================================================
-/// 把表单的字符串数字解析成 i64，空串/解析失败 → 返回默认值
-///
-/// 【教学：为什么要有这个辅助函数？】
-/// 表单里 sets/reps/rest 用户可能留空，也可能是脏数据（"abc"）。
-/// 如果每个字段都写一遍 match，代码重复 3 遍。
-/// 抽成泛型函数：parse_or(字符串, 默认值) → 数字
-/// （这里是教学版，只做 i64；M4 学生可按需扩展 f64 版）
-///
-/// 【教学：泛型 + FromStr 的写法】
-/// fn parse_or<T: FromStr>(s: &str, default: T) -> T {
-///     s.trim().parse::<T>().unwrap_or(default)
-/// }
-/// T 只要是"能从字符串解析的类型"（i64/f64 都实现了 FromStr）就能用。
-/// unwrap_or(default)：解析成功用解析值，失败用默认值（不 panic）。
-fn parse_or<T>(s: &str, default: T) -> T
-where
-    T: std::str::FromStr,
-{
-    s.trim().parse::<T>().unwrap_or(default)
-}
+// 【M7 清理：parse_or 已删除】
+// 概念教学保留：表单里 sets/reps/rest 用户可能留空，
+// 解析失败时需要一个"回落默认值"的写法：
+//   s.trim().parse::<i64>().unwrap_or(default)
+// 本项目实际各 handler 都是内联写 unwrap_or，没有复用这个泛型函数，
+// 留着一个"从未调用"的函数会触发 dead_code 警告，故删除。
+// 若 M8+ 发现解析逻辑重复 3 次以上，再抽回泛型函数。

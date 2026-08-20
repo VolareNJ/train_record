@@ -31,13 +31,10 @@ pub struct User
     pub username: String,
     /// argon2 密码哈希（不存明文密码！）
     pub password_hash: String,
-    /// 显示名称
-    pub display_name: String,
     /// 是否管理员：0=否 1=是
     pub is_admin: bool,
     /// 体重（kg，可空 = 未设置；M5 修订：support 模式换算用，全局可维护）
     pub body_weight: Option<f64>,
-    pub created_at: String,
 }
 
 // ============================================================
@@ -49,7 +46,6 @@ pub struct User
 pub struct Phase
 {
     pub id: i64,
-    pub user_id: i64,
     /// 阶段名，如 "phase1"
     pub name: String,
     /// 备注
@@ -58,7 +54,6 @@ pub struct Phase
     pub start_date: Option<String>,
     /// 是否归档：0=进行中 1=已归档(只读)
     pub archived: bool,
-    pub created_at: String,
 }
 
 // ============================================================
@@ -69,7 +64,6 @@ pub struct Phase
 pub struct Exercise
 {
     pub id: i64,
-    pub user_id: i64,
     /// 动作名，如 "深蹲"
     pub name: String,
     /// 部位分组：胸/背/腿/肩/臂/核心
@@ -87,9 +81,6 @@ pub struct Exercise
     pub default_reps: i64,
     /// 动作要领文本
     pub key_points: String,
-    /// 部位内排序（同一 body_part 内从 1 开始；M4 修订新增）
-    pub sort_order: i64,
-    pub created_at: String,
 }
 
 // ============================================================
@@ -104,7 +95,6 @@ pub struct Template
     pub phase_id: i64,
     /// 模板名，如 "A分化"
     pub name: String,
-    pub sort_order: i64,
 }
 
 /// 模板项（模板里的一个动作）
@@ -112,9 +102,7 @@ pub struct Template
 pub struct TemplateItem
 {
     pub id: i64,
-    pub template_id: i64,
     pub exercise_id: i64,
-    pub sort_order: i64,
     /// 计划组数（空=用动作默认）
     pub plan_sets: Option<i64>,
     /// 计划次数
@@ -133,7 +121,6 @@ pub struct Plan
     /// 日期 'YYYY-MM-DD'（中国时区自然日）
     pub date: String,
     pub note: String,
-    pub created_at: String,
 }
 
 /// 计划项（计划里的一个动作）
@@ -141,9 +128,7 @@ pub struct Plan
 pub struct PlanItem
 {
     pub id: i64,
-    pub plan_id: i64,
     pub exercise_id: i64,
-    pub sort_order: i64,
     /// 计划组数
     pub plan_sets: Option<i64>,
     /// 计划次数
@@ -196,7 +181,7 @@ fn part_rank(part: &str, order: &[String]) -> usize
 /// 输出：按 part_rank 升序排列的 (部位, 行列表) 向量 —— 组内顺序不变，
 ///       组间顺序由 order 决定。
 /// 同 rank 的组（例如两个自定义部位都兜底）保持输入相对顺序（稳定排序）。
-pub fn group_by_body_part<'a>(
+pub fn group_by_body_part(
     rows: impl Iterator<Item = (String, String)>,
     order: &[String],
 ) -> Vec<(String, Vec<String>)>
@@ -229,9 +214,6 @@ pub fn group_by_body_part<'a>(
 pub struct Record
 {
     pub id: i64,
-    /// 关联的计划项（若从计划录入）
-    pub plan_item_id: Option<i64>,
-    pub phase_id: i64,
     pub exercise_id: i64,
     /// 记录日期 'YYYY-MM-DD'
     pub record_date: String,
@@ -252,5 +234,4 @@ pub struct Record
     /// 是否已完成（0=未完成 1=已完成；M4 修订新增）
     /// 今日页只有 completed = 1 才标"✅已完成"
     pub completed: bool,
-    pub created_at: String,
 }

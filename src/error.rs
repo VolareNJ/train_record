@@ -156,10 +156,8 @@ impl From<String> for AppError
     }
 }
 
-/// 自定义 Result 别名，省得每个函数写全名
-///
-/// 【教学说明】
-/// type 别名：Result<T, AppError> 太长了，
-/// 写成 AppResult<T> 让签名更简洁。
-/// 用法：`pub async fn foo() -> AppResult<()>`
-pub type AppResult<T> = Result<T, AppError>;
+// 【M7 清理：type 别名 AppResult 已删除】
+// 概念教学保留：type 别名可以让 Result<T, AppError> 写成 AppResult<T>。
+// 本项目实际未用它（handler 都直接写 Result<T, AppError>），
+// 留着一个"从未使用"的别名会触发 dead_code 警告，故删除。
+// 若 M8+ 发现多处重复写 Result<T, AppError>，再重新加回。
