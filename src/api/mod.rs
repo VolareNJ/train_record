@@ -79,6 +79,8 @@ pub enum ApiError
     /// 数据库错误 → 500
     Database(sqlx::Error),
     /// 未登录 → 401 JSON（不是 302！）
+    /// ⚠️ 挖空练习期间加 allow（ApiAuthUser 挖空后暂无人构造），实现完成后可删
+    #[allow(dead_code)]
     Unauthorized,
     /// 资源不存在 → 404
     NotFound(String),

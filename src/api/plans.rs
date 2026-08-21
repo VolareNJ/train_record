@@ -43,6 +43,9 @@ use crate::{
     models::{Exercise, Phase, Plan, PlanItem, Template, TemplateItem},
 };
 
+// ⚠️ 注意：HashMap 不只 plan_update 用（template_out/plan_out 的 ex_names 索引也用），
+//    所以 import 保持原样，不要删。
+
 // ============================================================
 // 【教学：DTO 结构体】
 // ============================================================
@@ -731,6 +734,8 @@ pub async fn plan_detail(
 /// 3. begin → 备份 orphaned → 解除 records 关联 → DELETE plan_items
 ///    → UPDATE plans → 循环 INSERT plan_items（enumerate）→ 还原 records
 /// 4. commit → plan_out → Json
+/// ⚠️ 挖空练习期间加 allow 消除 unused 警告，实现完成后可删
+#[allow(unused)]
 pub async fn plan_update(
     State(state): State<AppState>,
     ApiAuthUser(user): ApiAuthUser,
@@ -738,108 +743,24 @@ pub async fn plan_update(
     Json(req): Json<PlanReq>,
 ) -> Result<Json<PlanOut>, ApiError>
 {
-    let pool = state.pool.read().await.clone();
-
-    let plan = verify_plan(&pool, user.id, id).await?;
-    verify_phase(&pool, user.id, plan.phase_id).await?;
-
-    validate_date(&req.date)?;
-    if req.items.is_empty()
-    {
-        return Err(ApiError::Validation("至少选择一个动作".to_string()));
-    }
-
-    let mut tx = pool.begin().await.map_err(ApiError::Database)?;
-
-    // ① 备份 orphaned（exercise_id → record id 列表）
-    let orphaned: HashMap<i64, Vec<i64>> = sqlx::query_as::<_, (i64, i64)>(
-        "SELECT r.exercise_id, r.id FROM records r
-        WHERE r.plan_item_id IN (SELECT id FROM plan_items WHERE plan_id = ?)",
-    )
-    .bind(&id)
-    .fetch_all(&mut *tx)
-    .await
-    .map_err(ApiError::Database)?
-    .into_iter()
-    .fold(HashMap::new(), |mut acc, (ex_id, rec_id)| {
-        acc.entry(ex_id).or_default().push(rec_id);
-        acc
-    });
-
-    // ② 解除关联（保留训练历史）
-    sqlx::query(
-        "UPDATE records SET plan_item_id = NULL
-        WHERE plan_item_id IN (SELECT id FROM plan_items WHERE plan_id = ?)",
-    )
-    .bind(&id)
-    .execute(&mut *tx)
-    .await
-    .map_err(ApiError::Database)?;
-
-    // ③ 删旧子表
-    sqlx::query("DELETE FROM plan_items WHERE plan_id = ?")
-        .bind(&id)
-        .execute(&mut *tx)
-        .await
-        .map_err(ApiError::Database)?;
-
-    // ④ 更新父表
-    sqlx::query("UPDATE plans SET date = ?, note = ? WHERE id = ?")
-        .bind(&req.date)
-        .bind(&req.note)
-        .bind(&id)
-        .execute(&mut *tx)
-        .await
-        .map_err(ApiError::Database)?;
-
-    // ⑤ 重插 plan_items + 还原 records 关联
-    for (idx, item) in req.items.iter().enumerate()
-    {
-        let result = sqlx::query(
-            "INSERT INTO plan_items
-            (plan_id, exercise_id, sort_order, plan_sets, plan_reps, plan_weight,
-             plan_rest, plan_key_points, plan_note)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(&id)
-        .bind(item.exercise_id)
-        .bind(idx as i64)
-        .bind(item.plan_sets)
-        .bind(item.plan_reps)
-        .bind(item.plan_weight)
-        .bind(item.plan_rest)
-        .bind(&item.plan_key_points)
-        .bind(&item.plan_note)
-        .execute(&mut *tx)
-        .await
-        .map_err(ApiError::Database)?;
-
-        let new_item_id = result.last_insert_rowid();
-
-        if let Some(rec_ids) = orphaned.get(&item.exercise_id)
-        {
-            for rec_id in rec_ids
-            {
-                sqlx::query("UPDATE records SET plan_item_id = ? WHERE id = ?")
-                    .bind(new_item_id)
-                    .bind(rec_id)
-                    .execute(&mut *tx)
-                    .await
-                    .map_err(ApiError::Database)?;
-            }
-        }
-    }
-
-    tx.commit().await.map_err(ApiError::Database)?;
-
-    // 查新计划返回
-    let updated = sqlx::query_as::<_, Plan>("SELECT * FROM plans WHERE id = ?")
-        .bind(&id)
-        .fetch_one(&pool)
-        .await
-        .map_err(ApiError::Database)?;
-
-    Ok(Json(plan_out(&pool, &updated, user.id).await?))
+    // 【实现步骤】
+    // 1. let pool = state.pool.read().await.clone();
+    // 2. let plan = verify_plan(&pool, user.id, id).await?;
+    //    verify_phase(&pool, user.id, plan.phase_id).await?;
+    // 3. validate_date(&req.date)?；req.items.is_empty() → Validation
+    // 4. let mut tx = pool.begin().await?;
+    // 5. ① 备份 orphaned（exercise_id → record id 列表）：
+    //      SELECT r.exercise_id, r.id FROM records r
+    //      WHERE r.plan_item_id IN (SELECT id FROM plan_items WHERE plan_id = ?)
+    //      → fold 进 HashMap<i64, Vec<i64>>
+    // 6. ② UPDATE records SET plan_item_id = NULL（保留历史）
+    // 7. ③ DELETE plan_items WHERE plan_id = ?
+    // 8. ④ UPDATE plans SET date = ?, note = ? WHERE id = ?
+    // 9. ⑤ for (idx, item) in req.items.iter().enumerate()：
+    //      INSERT plan_items（sort_order = idx）→ last_insert_rowid
+    //      → orphaned.get(&item.exercise_id) 还原 records.plan_item_id
+    // 10. tx.commit() → 查回 plans → plan_out
+    todo!("M8 练习：plan_update 实现") // 【待实现】
 }
 
 // ============================================================

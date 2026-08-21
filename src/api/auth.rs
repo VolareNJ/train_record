@@ -56,6 +56,8 @@ use crate::{AppState, api::ApiError, auth, handlers::auth::extract_token, models
 // extract_token 是"从 Cookie 头解析 session token"的纯函数，
 // 页面层和 API 层都要用。它原本是 handlers/auth.rs 的私有函数，
 // M8 把它改成 pub（只改可见性，逻辑不动）——单一事实来源。
+// ⚠️ 注意：extract_token / auth 不仅守卫用，logout 也用，
+//    所以 import 保持原样，不要删。
 // ============================================================
 /// API 已登录用户（M8 守卫提取器，Rejection = ApiError）
 ///
@@ -63,6 +65,8 @@ use crate::{AppState, api::ApiError, auth, handlers::auth::extract_token, models
 /// 未登录请求会在调用 handler 前被拦截（401 JSON）。
 pub struct ApiAuthUser(pub User);
 
+// ⚠️ 挖空练习期间加 allow 消除 unused 警告，实现完成后可删
+#[allow(unused)]
 impl axum::extract::FromRequestParts<AppState> for ApiAuthUser
 {
     type Rejection = ApiError;
@@ -84,12 +88,7 @@ impl axum::extract::FromRequestParts<AppState> for ApiAuthUser
         // 提示：auth::get_user_by_session 返回 Result<User, AppError>，
         //   AppError 不能直接 ? 转成 ApiError（没有 From 实现），
         //   需要 map_err 转成 ApiError::Unauthorized。
-        let pool = state.pool.read().await.clone();
-        let token = extract_token(&parts.headers).ok_or(ApiError::Unauthorized)?;
-        let user = auth::get_user_by_session(&pool, &token)
-            .await
-            .map_err(|_| ApiError::Unauthorized)?;
-        Ok(ApiAuthUser(user))
+        todo!("M8 练习：ApiAuthUser 守卫实现") // 【待实现】
     }
 }
 

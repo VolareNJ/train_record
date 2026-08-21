@@ -260,6 +260,8 @@ pub async fn today(
 // ============================================================
 // 数字字段直接 f64/i64（JSON 类型安全，无页面层 String parse 的坑）。
 // completed 默认 false（不传就是未完成）。
+// ⚠️ 挖空练习期间加 allow 消除 dead_code 警告，实现完成后可删
+#[allow(dead_code)]
 #[derive(Deserialize)]
 pub struct RecordCreateReq
 {
@@ -319,6 +321,8 @@ pub struct RecordOut
 /// 3. 校验负数
 /// 4. 查最近记录 → match：Some → UPDATE；None → INSERT（record_date = 今天）
 /// 5. 返回保存后的记录 JSON（RecordOut）
+/// ⚠️ 挖空练习期间加 allow 消除 unused 警告，实现完成后可删
+#[allow(unused)]
 pub async fn upsert_record(
     State(state): State<AppState>,
     ApiAuthUser(user): ApiAuthUser,
@@ -326,128 +330,24 @@ pub async fn upsert_record(
     Json(req): Json<RecordCreateReq>,
 ) -> Result<Json<RecordOut>, ApiError>
 {
-    let pool = state.pool.read().await.clone();
-
-    // 1. 计划归属
-    let plan = sqlx::query_as::<_, Plan>(
-        "SELECT p.* FROM plans p
-        INNER JOIN phases ph ON p.phase_id = ph.id
-        WHERE p.id = ? AND ph.user_id = ?",
-    )
-    .bind(&plan_id)
-    .bind(&user.id)
-    .fetch_optional(&pool)
-    .await
-    .map_err(ApiError::Database)?
-    .ok_or_else(|| ApiError::NotFound("计划不存在".to_string()))?;
-
-    // 2. 阶段未归档
-    let phase = sqlx::query_as::<_, Phase>("SELECT * FROM phases WHERE id = ? AND user_id = ?")
-        .bind(&plan.phase_id)
-        .bind(&user.id)
-        .fetch_optional(&pool)
-        .await
-        .map_err(ApiError::Database)?
-        .ok_or_else(|| ApiError::NotFound("阶段不存在".to_string()))?;
-    if phase.archived
-    {
-        return Err(ApiError::Forbidden("归档阶段不可编辑".to_string()));
-    }
-
-    // 3. 计划项属于该计划（双条件）+ 拿 exercise_id
-    let plan_item =
-        sqlx::query_as::<_, PlanItem>("SELECT * FROM plan_items WHERE id = ? AND plan_id = ?")
-            .bind(&item_id)
-            .bind(&plan_id)
-            .fetch_optional(&pool)
-            .await
-            .map_err(ApiError::Database)?
-            .ok_or_else(|| ApiError::NotFound("计划项不存在".to_string()))?;
-
-    // 4. 负数校验
-    if req.weight < 0.0 || req.sets < 0 || req.reps < 0 || req.rest < 0
-    {
-        return Err(ApiError::Validation(
-            "重量/组数/次数/休息不能为负数".to_string(),
-        ));
-    }
-
-    // 5. 查该计划项最近记录
-    let most_recent = sqlx::query_as::<_, Record>(
-        "SELECT * FROM records WHERE plan_item_id = ?
-        ORDER BY record_date DESC, id DESC LIMIT 1",
-    )
-    .bind(&item_id)
-    .fetch_optional(&pool)
-    .await
-    .map_err(ApiError::Database)?;
-
-    // 6. 计重方式（mode）：API 简化 —— 用动作库默认值，不落库回写
-    let mode = sqlx::query_scalar::<_, String>(
-        "SELECT default_mode FROM exercises WHERE id = ? AND user_id = ?",
-    )
-    .bind(&plan_item.exercise_id)
-    .bind(&user.id)
-    .fetch_optional(&pool)
-    .await
-    .map_err(ApiError::Database)?
-    .unwrap_or_else(|| "bar".to_string());
-
-    // 7. INSERT 或 UPDATE（当天已有记录 → 更新同一行）
-    let saved: Record = match most_recent
-    {
-        Some(record) => sqlx::query_as::<_, Record>(
-            "UPDATE records SET completed = ?, weight = ?, sets = ?, reps = ?, rest = ?,
-                feeling = ?, strategy = ?, key_points = ?
-                WHERE id = ?
-                RETURNING *",
-        )
-        .bind(&req.completed)
-        .bind(&req.weight)
-        .bind(&req.sets)
-        .bind(&req.reps)
-        .bind(&req.rest)
-        .bind(&req.feeling)
-        .bind(&req.strategy)
-        .bind(&req.key_points)
-        .bind(&record.id)
-        .fetch_one(&pool)
-        .await
-        .map_err(ApiError::Database)?,
-        None =>
-        {
-            let today_dt = sqlx::query_scalar::<_, String>("SELECT date('now', 'localtime')")
-                .fetch_one(&pool)
-                .await
-                .map_err(ApiError::Database)?;
-            sqlx::query_as::<_, Record>(
-                "INSERT INTO records
-                (plan_item_id, phase_id, exercise_id, record_date, completed,
-                weight, sets, reps, rest, feeling, strategy, key_points, mode)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                RETURNING *",
-            )
-            .bind(&plan_item.id)
-            .bind(&phase.id)
-            .bind(&plan_item.exercise_id)
-            .bind(&today_dt)
-            .bind(&req.completed)
-            .bind(&req.weight)
-            .bind(&req.sets)
-            .bind(&req.reps)
-            .bind(&req.rest)
-            .bind(&req.feeling)
-            .bind(&req.strategy)
-            .bind(&req.key_points)
-            .bind(&mode)
-            .fetch_one(&pool)
-            .await
-            .map_err(ApiError::Database)?
-        },
-    };
-
-    // 7. 查动作名（record_out）
-    Ok(Json(record_out(&pool, &saved, user.id).await?))
+    // 【实现步骤】
+    // 1. let pool = state.pool.read().await.clone();
+    // 2. 计划归属：SELECT p.* FROM plans p INNER JOIN phases ph
+    //    ON p.phase_id = ph.id WHERE p.id = ? AND ph.user_id = ?
+    //    （fetch_optional → None → NotFound"计划不存在"）
+    // 3. 阶段未归档：SELECT * FROM phases WHERE id = ? AND user_id = ?
+    //    （plan.phase_id；archived → Forbidden"归档阶段不可编辑"）
+    // 4. 计划项属于该计划：SELECT * FROM plan_items WHERE id = ? AND plan_id = ?
+    //    （双条件防越权 → None → NotFound"计划项不存在"）
+    // 5. 负数校验：weight/sets/reps/rest < 0 → Validation
+    // 6. 查最近记录：SELECT * FROM records WHERE plan_item_id = ?
+    //    ORDER BY record_date DESC, id DESC LIMIT 1
+    // 7. 计重方式：SELECT default_mode FROM exercises WHERE id = ? AND user_id = ?
+    //    （None → "bar" 兜底；API 简化不回写动作库）
+    // 8. match most_recent：Some → UPDATE（RETURNING *）；
+    //    None → INSERT（record_date = date('now','localtime')，RETURNING *）
+    // 9. 返回 record_out(&pool, &saved, user.id)
+    todo!("M8 练习：upsert_record 实现") // 【待实现】
 }
 
 // ============================================================
