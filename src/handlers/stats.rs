@@ -206,11 +206,27 @@ pub async fn history(
     .await
     .map_err(AppError::Database)?;
 
+    // 【bugfix：日历对齐 —— 1 号是星期几？】
+    // 旧版从 day=1 直接渲染、每 7 格换行 → 1 号永远在"一"列，
+    // 实际 1 号是星期三时整个日历错位（表头写"一 二 三…"却对不上）。
+    // 用 SQLite strftime('%w') 查 1 号星期几（0=周日…6=周六），
+    // 表头以周一开头 → 偏移 = (w + 6) % 7：
+    //   w=1(周一) → 0；w=0(周日) → 6；w=3(周三) → 2
+    let first_wday = sqlx::query_scalar::<_, i64>("SELECT CAST(strftime('%w', ?) AS INTEGER)")
+        .bind(format!("{target_ym}-01"))
+        .fetch_one(&pool)
+        .await
+        .map_err(AppError::Database)?;
+    let lead_offset = (first_wday + 6) % 7;
+    // 1 号前面的空白格（上月的占位，不链接）
+    let lead_cells = std::iter::repeat_n(r#"<td></td>"#, lead_offset as usize).collect::<String>();
+
     // 日历单元格：1..=目标月天数，每 7 格换一行
     //   【M5 修订：颜色填充替代 ● 标记】
     //   - 有记录的日子 → 绿色背景 + 链接到 /history/{date}
     //   - 无记录 → 灰色背景（视觉上"空"更直观）
     // {day:02} = 零填充两位数（08-03 的"03"）
+    // 【bugfix：换行按 (day + lead_offset) 计数 —— 与表头周一对齐】
     let cells = (1..=days_in_month)
         .map(|day| {
             let date_str = format!("{target_ym}-{day:02}");
@@ -226,7 +242,7 @@ pub async fn history(
                 format!(r#"<td style="background-color:#dddddd">{day}</td>"#)
             };
             // 每 7 格换行；最后一天恰好整行时不多插空行
-            if day % 7 == 0 && day != days_in_month
+            if (day + lead_offset) % 7 == 0 && day != days_in_month
             {
                 format!("{cell}</tr><tr>")
             }
@@ -254,7 +270,7 @@ pub async fn history(
         <h3>日历</h3>
         <table border="1">
         <tr><th>一</th><th>二</th><th>三</th><th>四</th><th>五</th><th>六</th><th>日</th></tr>
-        <tr>{cells}</tr>
+        <tr>{lead_cells}{cells}</tr>
         </table>
         <h3>按动作查看</h3>
         <p>部位：
@@ -269,6 +285,7 @@ pub async fn history(
         </script>"#,
         head = crate::page::page_head("历史回顾"),
         cells = cells,
+        lead_cells = lead_cells,
         ex_part_options = ex_part_options,
         ex_links = ex_links,
         year_options = year_options,

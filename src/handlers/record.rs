@@ -231,7 +231,7 @@ pub async fn today(
                         r#"{head}
             <h2>今日训练({today_dt})</h2>
             <p class="empty-tip">今天还没有计划</p>
-            <p><a href="/plans/new?phase_id={phase_id}">去新建今日计划</a></p>
+            <p><a href="/phases/{phase_id}/plans/new">去新建今日计划</a></p>
             <p><a href="/">返回首页</a></p>"#,
                         head = crate::page::page_head("今日训练"),
                         today_dt = today_dt,
@@ -282,7 +282,12 @@ pub async fn today(
     //    ORDER BY record_date DESC, id DESC LIMIT 1
     //    → 有记录 → ✅已训练 + 显示该条 strategy
     //    → 无记录 → ⬜未训练
+    //    【bugfix：状态色查询保留未完成记录（黄色"已记录未完成"），
+    //     但"上次策略"列只显示已完成记录的策略 —— 未完成记录
+    //     只是草稿/进行中，不能当"上次参考"（用户诉求）】
+    //     拆两个查询：状态查询（含未完成）+ 已完成策略查询
     let mut items_with_records = Vec::new();
+    let mut items_with_completed_strategy = Vec::new();
     for item in &today_plan_items
     {
         let last = sqlx::query_as::<_, Record>(
@@ -293,7 +298,20 @@ pub async fn today(
         .fetch_optional(&pool)
         .await
         .map_err(AppError::Database)?;
+        // 【bugfix：上次参考只取已完成的记录】
+        //   未完成（completed = 0）的记录是"训练中改到一半"的草稿，
+        //   把它当"上次策略"参考会误导渐进超负荷判断。
+        //   → 策略参考单独查 completed = 1 的最近一条。
+        let last_completed = sqlx::query_as::<_, Record>(
+            "SELECT * FROM records WHERE plan_item_id = ? AND completed = 1
+         ORDER BY record_date DESC, id DESC LIMIT 1",
+        )
+        .bind(item.id)
+        .fetch_optional(&pool)
+        .await
+        .map_err(AppError::Database)?;
         items_with_records.push((item, last));
+        items_with_completed_strategy.push(last_completed);
     }
 
     // 7. 拼 HTML：阶段信息 + 计划动作列表（每行：动作名/计划值/状态/策略/记录链接）
@@ -322,7 +340,9 @@ pub async fn today(
     //     与模板编辑页/计划详情页一致（未收录部位按出现顺序兜底）。
     //     每个部位渲染一个小节：<h3>部位</h3> + 表格。
     let mut groups: Vec<(String, String)> = Vec::new();
-    for (item, last) in &items_with_records
+    for ((item, last), last_completed) in items_with_records
+        .iter()
+        .zip(&items_with_completed_strategy)
     {
         // 动作名 + 部位 + 默认计重：从索引取（查不到显示 "?" / "未分组"，理论不发生）
         let (ex_name, body_part, ex_default_mode, ex_default_bar, ex_default_unit) =
@@ -369,27 +389,33 @@ pub async fn today(
                 reps = item.plan_reps.map_or("-".to_string(), |v| v.to_string()),
             )
         };
-        // 整行状态色 + 上次策略提示
-        // 【M5 修订：整行填色替代状态列（信息更直观、少一列更紧凑）】
+        // 整行状态色（任意最近记录：保留黄色草稿态）
         //   None                → 灰色   #dddddd（未训练）
         //   Some(rec) 未勾选    → 黄色   #ffe08a（已记录未完成）
         //   Some(rec) completed → 绿色   #b7e4b0（已完成）
         //   tr 加 style 背景色，所有 td 一起变色（无位移风险）
         // 【M5 修订：策略去掉"上次策略："前缀——列头已表明含义】
-        let (status_color, strategy_hint) = match last
+        // 【bugfix：状态色用"任意最近记录"，策略列只用"已完成记录"】
+        let status_color = match last
         {
-            Some(rec) if rec.completed => ("#b7e4b0", rec.strategy.clone()),
-            Some(rec) => ("#ffe08a", rec.strategy.clone()),
-            None => ("#dddddd", String::new()),
+            Some(rec) if rec.completed => "#b7e4b0",
+            Some(_) => "#ffe08a",
+            None => "#dddddd",
         };
+        // 上次策略列：已完成记录的 strategy（未完成记录不参与参考）
+        //   last_completed = None → 空（哪怕有未完成草稿也不显示）
+        let strategy_ref = last_completed
+            .as_ref()
+            .map(|r| r.strategy.clone())
+            .unwrap_or_default();
         let row = format!(
             "<tr style=\"background-color:{status_color}\"><td>{ex_name}</td><td>{plan_value}</td>\
-             <td>{strategy_hint}</td>\
+             <td>{strategy_ref}</td>\
              <td><a href=\"/plans/{plan_id}/record/{item_id}\">记录/编辑</a></td></tr>",
             ex_name = ex_name,
             plan_value = plan_value,
             status_color = status_color,
-            strategy_hint = strategy_hint,
+            strategy_ref = strategy_ref,
             plan_id = today_plan.id,
             item_id = item.id,
         );
@@ -553,16 +579,31 @@ pub async fn record_form(
     // 计划项会因"先删后插"重建（新 id），历史记录挂旧 id——
     // 按当前 plan_item_id 查"上一次"→ 跨计划就查不到（显示"第一次训练"）。
     // 按 exercise_id 查 = "这个动作上次练是什么时候"，跨计划项正确。
+    // 【bugfix：只取已完成的记录（completed = 1）】
+    // 未完成记录是"训练中改到一半"的草稿，不能当"上次参考"，
+    // 也不该预填表单（否则渐进超负荷参照物被草稿污染）。
     let last_record = sqlx::query_as::<_, Record>(
         "SELECT * FROM records WHERE exercise_id = ? AND record_date < date('now','localtime')
+        AND completed = 1
         ORDER BY record_date DESC, id DESC LIMIT 1",
     )
     .bind(&plan_item.exercise_id)
     .fetch_optional(&pool)
     .await
     .map_err(AppError::Database)?;
-    // 兼容变量：最近一次记录（当日 → 上次），供"上次参考"展示和 completed 回显
-    let most_recent_record = today_record.as_ref().or(last_record.as_ref());
+    // 兼容变量：最近一次【已完成】记录（当日已完成 → 上次已完成），供"上次参考"展示
+    // 【bugfix：未完成记录不算"上次参考" —— 当日草稿（completed=0）不算数，
+    //   回退到上次已完成的记录；两个都无 → None（"第一次训练"文案）】
+    // 注意：预填链（prefill_*）仍优先 today_record（编辑连续性），
+    // 只有"上次参考"文字用这个过滤后的变量。
+    let most_recent_record = if today_record.as_ref().map(|r| r.completed).unwrap_or(false)
+    {
+        today_record.as_ref()
+    }
+    else
+    {
+        last_record.as_ref()
+    };
     // 6. 拼 HTML：计划值 + 上次参考 + 表单（含换算器挂载点）
 
     // 6a. 上次记录参考（Option → HTML 行，None → 提示"还没有记录"）
@@ -807,6 +848,9 @@ pub async fn record_form(
             </label><br>
             <label>次数
                 <input name="reps" type="number" step="1" value="{prefill_reps}">
+            </label>
+            <label style="margin-left:0.8em">
+                <input type="checkbox" name="sync_defaults" value="1"> 是否同步
             </label><br>
             <label>休息（秒）
                 <input name="rest" type="number" step="1" value="{prefill_rest}">
@@ -1203,6 +1247,28 @@ pub async fn record_save(
     .execute(&pool)
     .await
     .map_err(AppError::Database)?;
+    // 6.7 【M8 bugfix：是否同步默认组/次（用户诉求）】
+    //     record_form 的组数/次数旁新增"是否同步"勾选框：
+    //     勾选（sync_defaults=1）→ 本次 sets/reps 回写
+    //     exercises.default_sets / default_reps（以后建计划默认用新值）；
+    //     不勾选 → 不动动作库的默认组/次。
+    //     ⚠️ 数据隔离：WHERE id = ? AND user_id = ?
+    //     ⚠️ 其他字段（重量/休息/感受/策略/要领/计重配置）的回写逻辑不变，
+    //       只有组/次受这个勾选框控制。
+    if form.sync_defaults.as_deref() == Some("1")
+    {
+        sqlx::query(
+            "UPDATE exercises SET default_sets = ?, default_reps = ?
+            WHERE id = ? AND user_id = ?",
+        )
+        .bind(&sets)
+        .bind(&reps)
+        .bind(&plan_item.exercise_id)
+        .bind(&user.id)
+        .execute(&pool)
+        .await
+        .map_err(AppError::Database)?;
+    }
     // 7. 重定向回 /today（今日页刷新后显示 ✅ 已训练）
     Ok(Redirect::to("/today"))
 }
@@ -1246,6 +1312,12 @@ pub struct RecordForm
     /// 【M6 修订：观测强度单位（unit-select 的当前值，hidden 提交）】
     /// 保存时回写动作库 default_unit
     pub unit: String,
+    /// 【M8 bugfix：是否同步默认组/次到动作库（checkbox）】
+    /// 勾选（sync_defaults=1）→ 保存记录时把本次 sets/reps 回写
+    /// exercises.default_sets / default_reps；不勾选 → 只存记录，
+    /// 不动动作库（组/次是个人化的，不是每次都该改全局默认）。
+    /// 默认不勾选——用户明确要"这次改默认"才同步。
+    pub sync_defaults: Option<String>,
 }
 
 // ============================================================

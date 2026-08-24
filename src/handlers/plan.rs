@@ -1055,8 +1055,22 @@ pub async fn list_plans(
     .await
     .map_err(AppError::Database)?;
 
+    // 【bugfix：日历对齐 —— 1 号是星期几？】
+    // 旧版 day=1 直接渲染 + 每 7 格换行 → 1 号永远在"一"列，
+    // 实际 1 号是星期三时整月错位（表头"一二三四五六日"对不上）。
+    // strftime('%w')：0=周日…6=周六；表头周一起 → 偏移 = (w + 6) % 7
+    let first_wday = sqlx::query_scalar::<_, i64>("SELECT CAST(strftime('%w', ?) AS INTEGER)")
+        .bind(format!("{target_ym}-01"))
+        .fetch_one(&pool)
+        .await
+        .map_err(AppError::Database)?;
+    let lead_offset = (first_wday + 6) % 7;
+    // 1 号前面的空白占位格（上月的空位）
+    let lead_cells = std::iter::repeat_n(r#"<td></td>"#, lead_offset as usize).collect::<String>();
+
     // 日历单元格：有计划的日期 → 绿色链接到 plan_detail；否则灰色
     // 【M6 修订：删除按钮移到 plan_detail 下方（PRG 回训练计划）】
+    // 【bugfix：换行按 (day + lead_offset) 计数 —— 与表头周一对齐】
     let cells = (1..=days_in_month)
         .map(|day| {
             let date_str = format!("{target_ym}-{day:02}");
@@ -1067,7 +1081,7 @@ pub async fn list_plans(
                 ),
                 None => format!(r#"<td style="background-color:#dddddd">{day}</td>"#),
             };
-            if day % 7 == 0 && day != days_in_month
+            if (day + lead_offset) % 7 == 0 && day != days_in_month
             {
                 format!("{cell}</tr><tr>")
             }
@@ -1095,7 +1109,7 @@ pub async fn list_plans(
         <h3>日历（绿色 = 有计划）</h3>
         <table border="1">
         <tr><th>一</th><th>二</th><th>三</th><th>四</th><th>五</th><th>六</th><th>日</th></tr>
-        <tr>{cells}</tr>
+        <tr>{lead_cells}{cells}</tr>
         </table>
         <p><a href="/phases/{phase_id}/plans/new">创建当日计划</a></p>
         <p><a href="/">返回首页</a></p>
@@ -1112,6 +1126,7 @@ pub async fn list_plans(
         year_options = year_options,
         month_options = month_options,
         cells = cells,
+        lead_cells = lead_cells,
         phase_id = phase_ret.id
     )))
 }
@@ -1389,11 +1404,13 @@ pub async fn plan_create(
 
     // 【M5 第 6 步打磨项：空动作校验（todo.md §1.2）】
     // plan_create 有两类动作来源：
-    //   ① form.template_id 选了模板 → 复制模板项（模板自身已有校验，不会空）
+    //   ① form.parsed_template_id() 选了模板 → 复制模板项（模板自身已有校验，不会空）
     //   ② 没选模板 → 用 form.exercise_ids()（手动勾选）
     // 校验：template_id 为 None 且 exercise_ids() 为空 → Validation"至少选择一个动作"。
     // ⚠️ 放在 ④ 事务 begin 之前，避免空动作也开事务插一条空壳计划。
-    if form.template_id.is_none() && form.exercise_ids().is_empty()
+    // 【M8 bugfix：用 parsed_template_id()（空字符串 → None），
+    //   否则自选动作（template_id=）会把空串 parse 失败/误判成有模板】
+    if form.parsed_template_id().is_none() && form.exercise_ids().is_empty()
     {
         return Err(AppError::Validation("至少选择一个动作".to_string()));
     }
@@ -1414,7 +1431,8 @@ pub async fn plan_create(
     .map_err(AppError::Database)?;
 
     // 4.2 分支：选模板 → 复制模板项；没选 → 手动选的动作
-    if let Some(tid) = form.template_id
+    //     【M8 bugfix：parsed_template_id() 解析空串 → None】
+    if let Some(tid) = form.parsed_template_id()
     {
         // ⑤ 从模板复制：查模板的 template_items，逐个复制成 plan_items
         let template_items = sqlx::query_as::<_, TemplateItem>(
@@ -2112,10 +2130,13 @@ pub async fn plan_detail(
                 function setupRow(exId){
                 var sel = document.getElementById('mode-' + exId);
                 syncModeRow(exId);
-                var savedUnit = localStorage.getItem('weight_converter_unit');
-                if (savedUnit === 'kg' || savedUnit === 'lb') {
-                document.getElementById('unit-' + exId).value = savedUnit;
-                }
+                /* 【M8 bugfix：单位预填不再被 localStorage 覆盖】
+                 * 旧逻辑：savedUnit 有值就覆盖 unit 下拉 → 用户上次手动切过
+                 * 单位，所有动作的下拉都变成那个值，exercises 表的
+                 * default_unit 预填（后端已 selected）完全失效。
+                 * 现在：默认值永远来自 exercises.default_unit（后端渲染），
+                 * 用户手动切换仍然记 localStorage（下方 input 事件），
+                 * 但下次打开页面回到动作库默认，符合"默认从 exercises 预填"。 */
                 sel.addEventListener('input', function(){ syncModeRow(exId); updateRow(exId); });
                 document.getElementById('plate-' + exId).addEventListener('input', function(){ updateRow(exId); });
                 document.getElementById('unit-' + exId).addEventListener('input', function(){
@@ -2789,8 +2810,15 @@ pub struct PlanCreateForm
     pub date: String,
     /// 备注（plans.note，训练提醒，如"xxkg晋级赛"）
     pub note: String,
-    /// Option = 可空：没选模板就是 None（下拉框没选 → 不提交 template_id 键）
-    pub template_id: Option<i64>,
+    /// 模板 id（可选）。
+    ///
+    /// ⚠️【M8 bugfix：不能声明成 Option<i64>！】
+    /// 表单里 <select> 不选模板时提交的是 **空字符串**（template_id=），
+    /// serde_urlencoded 把 Option<i64> 收到 "" → 解析 i64 失败 → 422 报错。
+    /// 这就是"自选动作创建计划报错"的根因（选模板 template_id=5 反而正常）。
+    /// 按 M2 约定（表单字段全用 String）声明成 Option<String>，
+    /// handler 里把空字符串过滤成 None，非空再 parse 成 i64。
+    pub template_id: Option<String>,
     /// 手动选的动作集合：checkbox 的 name 直接用动作 id，值是 "1"
     ///
     /// ⚠️【serde_urlencoded 多选陷阱】（模板表单踩过的坑，这里再讲一遍）
@@ -2813,6 +2841,17 @@ pub struct PlanCreateForm
 
 impl PlanCreateForm
 {
+    /// 【M8 bugfix：模板 id 解析 —— 空字符串 → None，非空 → parse i64】
+    /// select 不选时提交 template_id=，serde 收到 Some("")；
+    /// 这里过滤空串 → None（未选模板），再 parse 成数字。
+    pub fn parsed_template_id(&self) -> Option<i64>
+    {
+        self.template_id
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .and_then(|s| s.parse::<i64>().ok())
+    }
+
     /// 从 flatten 的键值对里提取选中的动作 id 列表
     /// checkbox name 是 "6"、"7"…，值是 "1"（勾选标记）
     pub fn exercise_ids(&self) -> Vec<i64>

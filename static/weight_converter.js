@@ -160,13 +160,12 @@ function initWeightConverter()
         Number(localStorage.getItem('weight_converter_body')) || 70;
     // 【M4：观测强度单位偏好从 localStorage 读】
     // 单位不入库（观测强度本身也不入库），只做前端换算辅助。
-    // 记过一次后下次自动带出，不用每次重选（和体重同款机制）。
-    const savedUnit = localStorage.getItem('weight_converter_unit');
-    // 有历史偏好 → 覆盖 HTML 里的默认 selected（kg）
-    if (savedUnit && (savedUnit === 'kg' || savedUnit === 'lb'))
-    {
-        unitSelect.value = savedUnit;
-    }
+    // 【M8 bugfix：不再用 localStorage 覆盖后端预填】
+    // 旧逻辑：savedUnit 有值就覆盖 unit-select → 上次手动切过单位后，
+    // 下次打开页面就永远显示那个单位，exercises.default_unit 的后端
+    // 预填（selected）被覆盖，用户看到"单位没从动作库预填"。
+    // 现在：初始值永远来自后端 default_unit 预填；用户手动切换仍
+    // 记 localStorage（见 unitSelect input 事件），但页面加载不再覆盖。
 
     // 【教学：updateResult —— 读输入 → 换算 → 写显示】
     const updateResult = () =>
