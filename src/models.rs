@@ -66,7 +66,7 @@ pub struct Exercise
     pub id: i64,
     /// 动作名，如 "深蹲"
     pub name: String,
-    /// 部位分组：胸/背/腿/肩/臂/核心
+    /// 部位分组：胸/背/腿/肩/手臂/核心
     pub body_part: String,
     /// 默认模式：bar/support/std（M4 修订：lb2kg 移除，老数据归一到 std）
     pub default_mode: String,

@@ -99,7 +99,7 @@ pub struct ListQuery
 //   ③ 后端 parse 失败 = 拒绝（绕过前端直接 POST 空串 → 422）
 //
 // 【教学：下拉选择（<select>）】
-// body_part（胸/背/腿/肩/臂/核心）和 default_mode（bar/support/std）
+// body_part（胸/背/腿/肩/手臂/核心）和 default_mode（bar/support/std）
 // 是"有限取值"，用下拉框让用户选，而不是自由输入：
 //   <select name="body_part">
 //     <option value="胸">胸</option>
@@ -341,7 +341,7 @@ pub async fn list(
 ///       <option value="背">背</option>
 ///       <option value="腿">腿</option>
 ///       <option value="肩">肩</option>
-///       <option value="臂">臂</option>
+///       <option value="手臂">手臂</option>
 ///       <option value="核心">核心</option>
 ///     </select>
 ///   </label>
@@ -420,7 +420,7 @@ pub async fn create_form(
                     <option value="背">背</option>
                     <option value="腿">腿</option>
                     <option value="肩">肩</option>
-                    <option value="臂">臂</option>
+                    <option value="手臂">手臂</option>
                     <option value="核心">核心</option>
                 </select>
             </label><br>
@@ -606,7 +606,7 @@ pub async fn create(
 ///   <option value="胸" selected>胸</option>   ← selected = 默认选中
 /// 但"当前值"是动态的（可能是胸/背/腿...），怎么只给匹配的那个加 selected？
 ///   用 Rust 判断后拼字符串：
-///   let body_part_options = ["胸", "背", "腿", "肩", "臂", "核心"]
+///   let body_part_options = ["胸", "背", "腿", "肩", "手臂", "核心"]
 ///       .iter()
 ///       .map(|part| {
 ///           let sel = if *part == exercise.body_part { " selected" } else { "" };
@@ -750,7 +750,7 @@ pub async fn edit_form(
         current_sets = record_to_edit.default_sets,
         current_reps = record_to_edit.default_reps,
         current_key_points = record_to_edit.key_points,
-        body_part_options = ["胸", "背", "腿", "肩", "臂", "核心"]
+        body_part_options = ["胸", "背", "腿", "肩", "手臂", "核心"]
             .iter()
             .map(|part| {
                 format!(
