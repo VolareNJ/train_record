@@ -1,4 +1,4 @@
-﻿// ============================================================
+// ============================================================
 // api/exercises.rs —— 动作库 API（M8 第 4 步）
 // ============================================================
 // 【教学说明】
@@ -29,7 +29,8 @@ use sqlx::SqlitePool;
 use crate::{
     AppState,
     api::{ApiError, auth::ApiAuthUser},
-    models::Exercise,
+    calc::epley_1rm,
+    models::{Exercise, Record},
 };
 
 // ⚠️ 注意：exercise_out 挖空后 Record / epley_1rm 的 import 已删，
@@ -112,27 +113,71 @@ fn default_reps() -> i64
 // ============================================================
 // 派生数据（last_record_date / best_1rm）要查 records 表，
 // 所以是 async 函数（不能 From）。
-// ⚠️ 挖空练习期间加 allow 消除 unused 警告，实现完成后可删
-#[allow(unused)]
 async fn exercise_out(pool: &SqlitePool, ex: &Exercise) -> Result<ExerciseOut, ApiError>
 {
-    // 【实现步骤】
-    // 1. 查该动作全部记录（升序）：
-    //      SELECT * FROM records WHERE exercise_id = ? ORDER BY record_date ASC, id ASC
-    // 2. last_record_date：records.last() 的 record_date（升序 → last 即最新）
-    // 3. best_1rm：records.iter().map(epley_1rm(weight, reps))
-    //      .fold(0.0f64, f64::max) → .pipe(|v| if v > 0.0 { Some(v) } else { None })
-    //    （epley_1rm 无效输入返回 0.0 → 过滤成 None）
-    // 4. 组装 ExerciseOut（字段照抄 ex + 上面两个派生值）
-    todo!("M8 练习：exercise_out 实现") // 【待实现】
+    // 1. 查该动作全部记录（升序）：last() 即最近一次训练
+    let records = sqlx::query_as::<_, Record>(
+        "SELECT * FROM records WHERE exercise_id = ? ORDER BY record_date ASC, id ASC",
+    )
+    .bind(&ex.id)
+    .fetch_all(pool)
+    .await
+    .map_err(ApiError::Database)?;
+
+    // 2. last_record_date：升序 → 最后一条 = 最近一次训练
+    //    ⚠️ 用 map 不用 unwrap：一条记录都没有 → None
+    //    （"从未练过"是合法状态，unwrap 空迭代器会 panic！）
+    let last_record_date = records.last().map(|r| r.record_date.clone());
+
+    // 3. best_1rm：历史最高 1RM（实时计算，不落库）
+    //    三步链式流水线（函数式风格）：
+    //      map   → 每条记录算一个 1RM（epley_1rm）
+    //      fold  → 把一串 1RM 折叠成最大值（见 pipe 下方注释）
+    //      pipe  → 把 "0.0"（无效输入/无记录）清理成 None（见下方注释）
+    let best_1rm = records
+        .iter()
+        .map(|r| epley_1rm(r.weight, r.reps))
+        .fold(0.0_f64, f64::max)
+        .pipe(|v| if v > 0.0 { Some(v) } else { None });
+
+    // 4. 组装 ExerciseOut：基础字段照抄 ex（ex 是借用，String 要 clone），
+    //    派生字段用上面算好的两个值
+    Ok(ExerciseOut {
+        id: ex.id,
+        name: ex.name.clone(),
+        body_part: ex.body_part.clone(),
+        default_mode: ex.default_mode.clone(),
+        bar_weight: ex.bar_weight,
+        default_unit: ex.default_unit.clone(),
+        default_sets: ex.default_sets,
+        default_reps: ex.default_reps,
+        key_points: ex.key_points.clone(),
+        last_record_date,
+        best_1rm,
+    })
 }
 
-// 【教学：pipe —— 把值喂给闭包（标准库没有，用局部函数替代）】
-// fold 之后的值要做"0.0 → None"的清理。Rust 标准库没有 pipe，
-// 这里用一个局部泛型函数实现同样的"值 → 转换"流：
-// （⚠️ exercise_out 挖空期间暂时无使用方，加 allow 消除 dead_code 警告；
-//    你实现 exercise_out 后可以删掉这个属性）
-#[allow(dead_code)]
+// 【教学：fold —— 迭代器的"折叠"（把一串值压成一个值）】
+// fold(初始值, 闭包) 遍历迭代器，闭包每次接收"累积值 + 当前元素"，
+// 返回新的累积值，最后只剩一个值：
+//   records.iter().map(1RM).fold(0.0, f64::max)
+//     = 0.0 与第 1 个 1RM 取大 → 与第 2 个取大 → ... → 与最后 1 个取大
+//     = 历史最高 1RM
+// 为什么初始值用 0.0？
+//   - 空记录时结果就是 0.0（迭代器为空也不会 panic）
+//   - 1RM 不可能是负数，0.0 是安全的"中性起点"
+// 对比：也可用 .max_by()，但空迭代器返回 None 还要再处理；
+// fold 给出一个"总有结果"的确定值，适合继续链下去。
+//
+// 【教学：pipe —— 把值喂给闭包（标准库没有，局部 trait 替代）】
+// v.pipe(f) 就是 f(v) 的链式写法，让"折叠结果"能继续接在链上：
+//   .fold(...).pipe(|v| if v > 0.0 { Some(v) } else { None })
+//   等价于拆开写：
+//     let max = fold(...);                      // f64
+//     if max > 0.0 { Some(max) } else { None }  // Option<f64>
+// 这就是管道思想（JavaScript 的 |>、Elixir 的 |>、F# 的 |> 同一概念）：
+// 数据从左到右流经一个个变换，不用起中间变量名。
+// ⚠️ 只在"变换链中途"需要时用；两步以上才值得，别为单步引 trait。
 trait Pipe: Sized
 {
     fn pipe<R>(self, f: impl FnOnce(Self) -> R) -> R;

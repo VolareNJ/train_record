@@ -65,8 +65,6 @@ use crate::{AppState, api::ApiError, auth, handlers::auth::extract_token, models
 /// 未登录请求会在调用 handler 前被拦截（401 JSON）。
 pub struct ApiAuthUser(pub User);
 
-// ⚠️ 挖空练习期间加 allow 消除 unused 警告，实现完成后可删
-#[allow(unused)]
 impl axum::extract::FromRequestParts<AppState> for ApiAuthUser
 {
     type Rejection = ApiError;
@@ -88,7 +86,13 @@ impl axum::extract::FromRequestParts<AppState> for ApiAuthUser
         // 提示：auth::get_user_by_session 返回 Result<User, AppError>，
         //   AppError 不能直接 ? 转成 ApiError（没有 From 实现），
         //   需要 map_err 转成 ApiError::Unauthorized。
-        todo!("M8 练习：ApiAuthUser 守卫实现") // 【待实现】
+        let pool = state.pool.read().await.clone();
+        let token = extract_token(&parts.headers).ok_or(ApiError::Unauthorized)?;
+        let user = auth::get_user_by_session(&pool, &token)
+            .await
+            .map_err(|_| ApiError::Unauthorized)?;
+
+        Ok(ApiAuthUser(user))
     }
 }
 
