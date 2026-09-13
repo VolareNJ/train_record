@@ -46,8 +46,12 @@
 
 ### 环境要求
 
-- Rust **stable 1.95+**（编译）
-- Rust **nightly**（仅 rustfmt 需要，用于大括号换行格式）
+- Rust **stable**（构建/测试/运行；edition 2024 需 1.85+，本项目实测 1.95）
+- Rust **nightly**（**仅格式化需要**：`rustfmt.toml` 里的 `brace_style` 等是不稳定选项）
+
+> 工具链约定：项目**不锁工具链**（无 `rust-toolchain.toml`），`cargo build/check/test/run`
+> 走系统的 stable；只有 `cargo +nightly fmt` 显式用 nightly。
+> 安装：`rustup toolchain install nightly`（stable 是 rustup 默认工具链，装完即有）。
 
 > 国内网络提示：本项目已配置 crates.io 国内镜像（`~/.cargo/config.toml`），rustup 源见 `~/.bashrc`。
 
@@ -169,12 +173,16 @@ tail -f /opt/train_record/app.log   # 查看启动日志
 
 ### 代码格式化（大括号换行）
 
-项目使用 nightly rustfmt 实现 **Allman 风格**（大括号换行）：
+格式选项（Allman 风格、大括号换行）在 `rustfmt.toml` 里，属于 rustfmt 的 **unstable 特性**，
+所以必须用 nightly 的 rustfmt：
 
 ```bash
-cargo fmt          # 格式化（rust-toolchain.toml 已固定 nightly）
-cargo fmt --check  # 检查是否合规
+cargo +nightly fmt          # 格式化
+cargo +nightly fmt --check  # 检查是否合规（CI/验收用）
 ```
+
+> ⚠️ 不要用裸 `cargo fmt`：stable rustfmt 不认识 `brace_style`，会“忽略选项后照常格式化”，
+> 结果是花体全被改回同一行——看起来成功了，其实破坏了项目风格。
 
 ---
 
@@ -182,9 +190,9 @@ cargo fmt --check  # 检查是否合规
 
 ```
 train_record/
-├── Cargo.toml              # 依赖清单（axum 含 multipart）
-├── rust-toolchain.toml     # 固定 nightly 工具链（rustfmt 需要）
-├── rustfmt.toml            # 格式化配置（大括号换行）
+├── Cargo.toml              # 依赖清单（axum 含 multipart；M9 起含 tonic/prost）
+├── build.rs                # M9：构建期用 protoc 生成 gRPC 代码
+├── rustfmt.toml            # 格式化配置（大括号换行；需 nightly rustfmt）
 ├── migrations/             # SQLite 迁移（自动执行，幂等）
 │   ├── 0001_init.sql       # 8 张基础表
 │   ├── 0002_sessions.sql   # 会话表

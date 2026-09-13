@@ -4,8 +4,9 @@
     // 作用：只对这个项目生效（保存在 .vscode/settings.json）
     // ============================================================
     // Rust 格式化使用 rustfmt（rust-analyzer 默认的格式化器）
-    // 由于我们用了 nightly 才支持的 brace_style（大括号换行），
-    // 必须指定 nightly 工具链的 rustfmt
+    // 项目默认工具链是 **stable**（构建/测试都用它）；
+    // 但 rustfmt.toml 里用了 nightly 才支持的 brace_style（大括号换行），
+    // 所以格式化单独指定 nightly 工具链的 rustfmt。
     "rust-analyzer.rustfmt.overrideCommand": [
         "cargo",
         "+nightly",

@@ -4,8 +4,13 @@
 # 【教学说明】
 # rustfmt 是 Rust 官方代码格式化工具（cargo fmt 会调用它）。
 # 本文件放在项目根目录，只对这个项目生效。
-# 注意：下面这些选项是 nightly 版的 rustfmt 才支持的，
-# 所以必须用 `cargo +nightly fmt` 而不是 `cargo fmt`。
+#
+# 【工具链约定（M9 调整）】
+# 构建/测试/运行一律用 **stable**（项目不锁工具链，无 rust-toolchain.toml）；
+# 只有格式化这里需要 nightly，因为下面几个选项是 nightly 版 rustfmt 才支持的：
+#   cargo +nightly fmt           ✅ 正确
+#   cargo fmt                    ❌ stable rustfmt 会忽略这些选项，
+#                                   然后把大括号改回行尾（看起来成功了，实际破坏了风格）
 # ============================================================
 
 # 大括号换行（Allman 风格）：函数/结构体的左大括号放在新行

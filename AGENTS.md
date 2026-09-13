@@ -16,6 +16,11 @@ You are a helpful software engineer assistant. When you thought, thought in ENGL
 
 ## 构建约定
 
+- **工具链：默认 stable**（项目不锁工具链、不用 nightly 编译）
+  - `cargo build/check/test/run` 全部走 stable（本机 rustup default）
+  - **只有格式化需要 nightly**：`cargo +nightly fmt`（rustfmt.toml 里的
+    `brace_style` 等选项是 unstable 特性，stable rustfmt 会忽略它们）
+  - 所以命令一律写 `+nightly fmt`，**不要**用裸 `cargo fmt`
 - **每次 build 前先检查编译缓存大小**：`du -sm target | cut -f1`
   - 超过 5GB → `cargo clean` 后再 `cargo build` / `cargo run`
   - 未超过 → 直接增量编译（省时间）

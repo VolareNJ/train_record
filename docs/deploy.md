@@ -31,12 +31,19 @@ train_record 是 Rust 单二进制 Web 应用，使用 systemd 管理生命周�
 
 ### 1. 安装依赖
 
-Ubuntu 24.04 + Rust 工具链（nightly，edition 2024）：
+Ubuntu 24.04 + Rust 工具链（**stable**，edition 2024）：
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+# 构建/测试只需 stable（rustup 默认就是它，不必额外装）
+rustup toolchain install stable
+# 只有格式化需要 nightly：rustfmt.toml 里的 brace_style（大括号换行）
+# 是 nightly 才支持的 unstable 选项
 rustup toolchain install nightly
 ```
+
+> 项目**不锁工具链**（已删掉 `rust-toolchain.toml`）：构建默认走 stable，
+> 格式化时用 `cargo +nightly fmt` 显式指定 nightly。
 
 ### 2. 构建 release 版
 
