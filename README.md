@@ -46,7 +46,7 @@
 
 ### 环境要求
 
-- Rust **stable**（构建/测试/运行；edition 2024 需 1.85+，本项目实测 1.95）
+- Rust **stable**（构建/测试/运行；edition 2024 需 1.85+，本项目实测 1.98.1）
 - Rust **nightly**（**仅格式化需要**：`rustfmt.toml` 里的 `brace_style` 等是不稳定选项）
 
 > 工具链约定：项目**不锁工具链**（无 `rust-toolchain.toml`），`cargo build/check/test/run`
@@ -54,6 +54,12 @@
 > 安装：`rustup toolchain install nightly`（stable 是 rustup 默认工具链，装完即有）。
 
 > 国内网络提示：本项目已配置 crates.io 国内镜像（`~/.cargo/config.toml`），rustup 源见 `~/.bashrc`。
+>
+> ⚠️ 实测踩坑（2026-09）：`rustup update` 有时会报
+> `no release found for 'stable'` 或 `Malformed manifest date`——
+> 这是 `RUSTUP_DIST_SERVER`（rsproxy）的 dist 目录同步异常，不是本地环境问题。
+> 临时改用官方源即可升级（升级完照旧用镜像拉 crates 不受影响）：
+> `env RUSTUP_DIST_SERVER=https://static.rust-lang.org RUSTUP_UPDATE_ROOT=https://static.rust-lang.org/rustup rustup update`
 
 ### 安装与运行
 
