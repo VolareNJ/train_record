@@ -1,0 +1,37 @@
+// ============================================================
+// 项目级 Zed 设置（作用范围同 .vscode/settings.json）
+//
+// 背景两条：
+// 1. Zed 只读这里（加上全局 ~/.config/zed/settings.json），
+//    不读 .vscode/settings.json，所以从 VS Code 迁过来后
+//    `rust-analyzer.checkOnSave.command = "clippy"` 那行就失效了。
+// 2. Zed 的 rust-analyzer 跑默认参数，即 check.command = "check"
+//    （cargo check），默认不显示任何 clippy 警告。
+// ============================================================
+{
+    "lsp": {
+        "rust-analyzer": {
+            "initialization_options": {
+                // 用 clippy 出诊断，等价于命令行 cargo clippy --all-targets
+                // 注意：项目当前存量 clippy 警告见 docs/todo.md §1.7，
+                // 若嫌波浪线太吵，可临时加 "ignore" 数组按 lint 名屏蔽
+                "check": {
+                    "command": "clippy",
+                    "allTargets": true
+                },
+                // 格式化走 nightly 的 rustfmt：rustfmt.toml 里的 brace_style
+                // 是 unstable 选项，stable rustfmt 会静默忽略它。
+                // 注意：数组必须是"等价于 rustfmt"的命令——从 stdin 读源码、
+                // 向 stdout 写结果，所以不能用 cargo fmt。
+                "rustfmt": {
+                    "overrideCommand": [
+                        "rustup",
+                        "run",
+                        "nightly",
+                        "rustfmt"
+                    ]
+                }
+            }
+        }
+    }
+}

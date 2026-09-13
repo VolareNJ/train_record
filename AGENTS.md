@@ -45,9 +45,10 @@ You are a helpful software engineer assistant. When you thought, thought in ENGL
   3. 已实现的方法/函数一律不允许保留 allow
 - 新增代码前先看基线：改之前跑一次 `cargo check`，改之后对比，
   不能“能跑就行，警告留着”。
-- clippy（VS Code 保存时检查用的就是它）：**新增代码不得引入新的 clippy 警告**；
-  存量风格建议的清理计划见 `docs/todo.md` §1.7。
-  对比方法：`cargo clippy --all-targets 2>&1 | grep -c "^warning"`。
+- clippy（Zed 保存时检查用的就是它，配置在 `.zed/settings.json`；
+  VS Code 的 `.vscode/settings.json` 那份 Zed 不读）：**新增代码不得引入新的 clippy 警告**。
+  现状基线是 0 条（M9 收尾清完 347 条，历史见 `docs/todo.md` §1.7）。
+  对比方法：`cargo clippy --all-targets 2>&1 | grep -c "^warning"` → 必须是 0。
 
 ## 协作模式与教学约定
 
