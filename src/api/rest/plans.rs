@@ -147,8 +147,8 @@ async fn verify_phase(
     let phase = sqlx::query_as::<_, crate::models::Phase>(
         "SELECT * FROM phases WHERE id = ? AND user_id = ?",
     )
-    .bind(&phase_id)
-    .bind(&user_id)
+    .bind(phase_id)
+    .bind(user_id)
     .fetch_optional(pool)
     .await
     .map_err(crate::api::rest::ApiError::Database)?
@@ -182,8 +182,8 @@ async fn verify_template(
         "SELECT t.* FROM templates t INNER JOIN phases p ON t.phase_id = p.id
     WHERE t.id = ? AND p.user_id = ?",
     )
-    .bind(&template_id)
-    .bind(&user_id)
+    .bind(template_id)
+    .bind(user_id)
     .fetch_optional(pool)
     .await
     .map_err(crate::api::rest::ApiError::Database)?
@@ -200,8 +200,8 @@ async fn verify_plan(
         "SELECT p.* FROM plans p INNER JOIN phases ph ON p.phase_id = ph.id
     WHERE p.id = ? AND ph.user_id = ?",
     )
-    .bind(&plan_id)
-    .bind(&user_id)
+    .bind(plan_id)
+    .bind(user_id)
     .fetch_optional(pool)
     .await
     .map_err(crate::api::rest::ApiError::Database)?
@@ -224,14 +224,14 @@ async fn template_out(
     let items = sqlx::query_as::<_, crate::models::TemplateItem>(
         "SELECT * FROM template_items WHERE template_id = ? ORDER BY sort_order",
     )
-    .bind(&t.id)
+    .bind(t.id)
     .fetch_all(pool)
     .await
     .map_err(crate::api::rest::ApiError::Database)?;
 
     let ex_names: std::collections::HashMap<i64, String> =
         sqlx::query_as::<_, crate::models::Exercise>("SELECT * FROM exercises WHERE user_id = ?")
-            .bind(&user_id)
+            .bind(user_id)
             .fetch_all(pool)
             .await
             .map_err(crate::api::rest::ApiError::Database)?
@@ -270,14 +270,14 @@ async fn plan_out(
     let items = sqlx::query_as::<_, crate::models::PlanItem>(
         "SELECT * FROM plan_items WHERE plan_id = ? ORDER BY sort_order",
     )
-    .bind(&p.id)
+    .bind(p.id)
     .fetch_all(pool)
     .await
     .map_err(crate::api::rest::ApiError::Database)?;
 
     let ex_names: std::collections::HashMap<i64, (String, String)> =
         sqlx::query_as::<_, crate::models::Exercise>("SELECT * FROM exercises WHERE user_id = ?")
-            .bind(&user_id)
+            .bind(user_id)
             .fetch_all(pool)
             .await
             .map_err(crate::api::rest::ApiError::Database)?
@@ -347,8 +347,8 @@ pub(crate) async fn template_list_impl(
 {
     // 列表只验证存在 + 归属（归档阶段也能查看列表）
     sqlx::query_as::<_, crate::models::Phase>("SELECT * FROM phases WHERE id = ? AND user_id = ?")
-        .bind(&phase_id)
-        .bind(&user_id)
+        .bind(phase_id)
+        .bind(user_id)
         .fetch_optional(pool)
         .await
         .map_err(crate::api::rest::ApiError::Database)?
@@ -357,7 +357,7 @@ pub(crate) async fn template_list_impl(
     let templates = sqlx::query_as::<_, crate::models::Template>(
         "SELECT * FROM templates WHERE phase_id = ? ORDER BY sort_order, id",
     )
-    .bind(&phase_id)
+    .bind(phase_id)
     .fetch_all(pool)
     .await
     .map_err(crate::api::rest::ApiError::Database)?;
@@ -429,7 +429,7 @@ pub(crate) async fn template_create_impl(
     let next_sort = sqlx::query_scalar::<_, i64>(
         "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM templates WHERE phase_id = ?",
     )
-    .bind(&phase_id)
+    .bind(phase_id)
     .fetch_one(pool)
     .await
     .map_err(crate::api::rest::ApiError::Database)?;
@@ -444,7 +444,7 @@ pub(crate) async fn template_create_impl(
         "INSERT INTO templates (phase_id, name, sort_order) VALUES (?, ?, ?)
         RETURNING id",
     )
-    .bind(&phase_id)
+    .bind(phase_id)
     .bind(&req.name)
     .bind(next_sort)
     .fetch_one(&mut *tx)
@@ -456,7 +456,7 @@ pub(crate) async fn template_create_impl(
         sqlx::query(
             "INSERT INTO template_items (template_id, exercise_id, sort_order) VALUES (?, ?, ?)",
         )
-        .bind(&template_id)
+        .bind(template_id)
         .bind(item.exercise_id)
         .bind(idx as i64)
         .execute(&mut *tx)
@@ -472,13 +472,13 @@ pub(crate) async fn template_create_impl(
     let template = sqlx::query_as::<_, crate::models::Template>(
         "SELECT * FROM templates WHERE id = ? AND phase_id = ?",
     )
-    .bind(&template_id)
-    .bind(&phase_id)
+    .bind(template_id)
+    .bind(phase_id)
     .fetch_one(pool)
     .await
     .map_err(crate::api::rest::ApiError::Database)?;
 
-    Ok(template_out(pool, &template, user_id).await?)
+    template_out(pool, &template, user_id).await
 }
 
 // ============================================================
@@ -490,7 +490,7 @@ pub(crate) async fn template_create_impl(
 /// 1. 更新父表（改名）
 /// 2. 删掉所有旧子表行
 /// 3. 重新插入（顺序 = 请求数组顺序）
-/// 三步一个事务（页面层 template_update 同款）。
+///    三步一个事务（页面层 template_update 同款）。
 ///
 /// 【实现步骤】
 /// 1. verify_template（归属）→ verify_phase（未归档）
@@ -544,14 +544,14 @@ pub(crate) async fn template_update_impl(
 
     sqlx::query("UPDATE templates SET name = ? WHERE id = ?")
         .bind(&req.name)
-        .bind(&template_id)
+        .bind(template_id)
         .execute(&mut *tx)
         .await
         .map_err(crate::api::rest::ApiError::Database)?;
 
     // 先删后插
     sqlx::query("DELETE FROM template_items WHERE template_id = ?")
-        .bind(&template_id)
+        .bind(template_id)
         .execute(&mut *tx)
         .await
         .map_err(crate::api::rest::ApiError::Database)?;
@@ -561,7 +561,7 @@ pub(crate) async fn template_update_impl(
         sqlx::query(
             "INSERT INTO template_items (template_id, exercise_id, sort_order) VALUES (?, ?, ?)",
         )
-        .bind(&template_id)
+        .bind(template_id)
         .bind(item.exercise_id)
         .bind(idx as i64)
         .execute(&mut *tx)
@@ -575,12 +575,12 @@ pub(crate) async fn template_update_impl(
 
     let template =
         sqlx::query_as::<_, crate::models::Template>("SELECT * FROM templates WHERE id = ?")
-            .bind(&template_id)
+            .bind(template_id)
             .fetch_one(pool)
             .await
             .map_err(crate::api::rest::ApiError::Database)?;
 
-    Ok(template_out(pool, &template, user_id).await?)
+    template_out(pool, &template, user_id).await
 }
 
 // ============================================================
@@ -619,13 +619,13 @@ pub(crate) async fn template_delete_impl(
         .map_err(crate::api::rest::ApiError::Database)?;
 
     sqlx::query("DELETE FROM template_items WHERE template_id = ?")
-        .bind(&template_id)
+        .bind(template_id)
         .execute(&mut *tx)
         .await
         .map_err(crate::api::rest::ApiError::Database)?;
 
     sqlx::query("DELETE FROM templates WHERE id = ?")
-        .bind(&template_id)
+        .bind(template_id)
         .execute(&mut *tx)
         .await
         .map_err(crate::api::rest::ApiError::Database)?;
@@ -674,8 +674,8 @@ pub(crate) async fn plan_list_impl(
 {
     // 归属验证（归档阶段也能看列表）
     sqlx::query_as::<_, crate::models::Phase>("SELECT * FROM phases WHERE id = ? AND user_id = ?")
-        .bind(&phase_id)
-        .bind(&user_id)
+        .bind(phase_id)
+        .bind(user_id)
         .fetch_optional(pool)
         .await
         .map_err(crate::api::rest::ApiError::Database)?
@@ -686,12 +686,12 @@ pub(crate) async fn plan_list_impl(
         None => sqlx::query_as::<_, crate::models::Plan>(
             "SELECT * FROM plans WHERE phase_id = ? ORDER BY date DESC, id DESC",
         )
-        .bind(&phase_id)
+        .bind(phase_id)
         .fetch_all(pool),
         Some(d) => sqlx::query_as::<_, crate::models::Plan>(
             "SELECT * FROM plans WHERE phase_id = ? AND date = ? ORDER BY date DESC, id DESC",
         )
-        .bind(&phase_id)
+        .bind(phase_id)
         .bind(d)
         .fetch_all(pool),
     }
@@ -764,7 +764,7 @@ pub(crate) async fn plan_create_impl(
         "INSERT INTO plans (phase_id, date, note) VALUES (?, ?, ?)
         RETURNING id",
     )
-    .bind(&phase_id)
+    .bind(phase_id)
     .bind(&req.date)
     .bind(&req.note)
     .fetch_one(&mut *tx)
@@ -779,7 +779,7 @@ pub(crate) async fn plan_create_impl(
              plan_rest, plan_key_points, plan_note)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
-        .bind(&plan_id)
+        .bind(plan_id)
         .bind(item.exercise_id)
         .bind(idx as i64)
         .bind(item.plan_sets)
@@ -800,13 +800,13 @@ pub(crate) async fn plan_create_impl(
     let plan = sqlx::query_as::<_, crate::models::Plan>(
         "SELECT * FROM plans WHERE id = ? AND phase_id = ?",
     )
-    .bind(&plan_id)
-    .bind(&phase_id)
+    .bind(plan_id)
+    .bind(phase_id)
     .fetch_one(pool)
     .await
     .map_err(crate::api::rest::ApiError::Database)?;
 
-    Ok(plan_out(pool, &plan, user_id).await?)
+    plan_out(pool, &plan, user_id).await
 }
 
 // ============================================================
@@ -832,7 +832,7 @@ pub(crate) async fn plan_detail_impl(
 ) -> Result<PlanOut, crate::api::rest::ApiError>
 {
     let plan = verify_plan(pool, user_id, plan_id).await?;
-    Ok(plan_out(pool, &plan, user_id).await?)
+    plan_out(pool, &plan, user_id).await
 }
 
 // ============================================================
@@ -848,7 +848,7 @@ pub(crate) async fn plan_detail_impl(
 ///   2. UPDATE records SET plan_item_id = NULL（解除关联，保留历史）
 ///   3. DELETE plan_items
 ///   4. 重插 plan_items（新 id）→ 按备份清单还原 records.plan_item_id
-/// 为什么还原？不还原 today 页按 plan_item_id 查记录 → 全部"未训练"。
+///      为什么还原？不还原 today 页按 plan_item_id 查记录 → 全部"未训练"。
 ///
 /// 【实现步骤】
 /// 1. verify_plan（归属）→ verify_phase（未归档）
@@ -905,7 +905,7 @@ pub(crate) async fn plan_update_impl(
         "SELECT r.exercise_id, r.id FROM records r
         WHERE r.plan_item_id IN (SELECT id FROM plan_items WHERE plan_id = ?)",
     )
-    .bind(&plan_id)
+    .bind(plan_id)
     .fetch_all(&mut *tx)
     .await
     .map_err(crate::api::rest::ApiError::Database)?
@@ -923,14 +923,14 @@ pub(crate) async fn plan_update_impl(
         "UPDATE records SET plan_item_id = NULL
         WHERE plan_item_id IN (SELECT id FROM plan_items WHERE plan_id = ?)",
     )
-    .bind(&plan_id)
+    .bind(plan_id)
     .execute(&mut *tx)
     .await
     .map_err(crate::api::rest::ApiError::Database)?;
 
     // 3. ③ 删旧子表（此时无外键阻挡）
     sqlx::query("DELETE FROM plan_items WHERE plan_id = ?")
-        .bind(&plan_id)
+        .bind(plan_id)
         .execute(&mut *tx)
         .await
         .map_err(crate::api::rest::ApiError::Database)?;
@@ -939,7 +939,7 @@ pub(crate) async fn plan_update_impl(
     sqlx::query("UPDATE plans SET date = ?, note = ? WHERE id = ?")
         .bind(&req.date)
         .bind(&req.note)
-        .bind(&plan_id)
+        .bind(plan_id)
         .execute(&mut *tx)
         .await
         .map_err(crate::api::rest::ApiError::Database)?;
@@ -953,7 +953,7 @@ pub(crate) async fn plan_update_impl(
              plan_rest, plan_key_points, plan_note)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
-        .bind(&plan_id)
+        .bind(plan_id)
         .bind(item.exercise_id)
         .bind(idx as i64)
         .bind(item.plan_sets)
@@ -989,12 +989,12 @@ pub(crate) async fn plan_update_impl(
         .map_err(crate::api::rest::ApiError::Database)?;
 
     let updated = sqlx::query_as::<_, crate::models::Plan>("SELECT * FROM plans WHERE id = ?")
-        .bind(&plan_id)
+        .bind(plan_id)
         .fetch_one(pool)
         .await
         .map_err(crate::api::rest::ApiError::Database)?;
 
-    Ok(plan_out(pool, &updated, user_id).await?)
+    plan_out(pool, &updated, user_id).await
 }
 
 // ============================================================
@@ -1036,20 +1036,20 @@ pub(crate) async fn plan_delete_impl(
         "UPDATE records SET plan_item_id = NULL
         WHERE plan_item_id IN (SELECT id FROM plan_items WHERE plan_id = ?)",
     )
-    .bind(&plan_id)
+    .bind(plan_id)
     .execute(&mut *tx)
     .await
     .map_err(crate::api::rest::ApiError::Database)?;
 
     // 先子后父
     sqlx::query("DELETE FROM plan_items WHERE plan_id = ?")
-        .bind(&plan_id)
+        .bind(plan_id)
         .execute(&mut *tx)
         .await
         .map_err(crate::api::rest::ApiError::Database)?;
 
     sqlx::query("DELETE FROM plans WHERE id = ?")
-        .bind(&plan_id)
+        .bind(plan_id)
         .execute(&mut *tx)
         .await
         .map_err(crate::api::rest::ApiError::Database)?;

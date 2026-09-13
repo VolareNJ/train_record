@@ -359,7 +359,7 @@ async fn grpc_smoke()
         .into_inner();
     assert!(saved.id > 0);
     assert!(saved.one_rm > 62.5, "1RM 是实时算出来的（Epley）");
-    assert_eq!(saved.completed, true);
+    assert!(saved.completed);
 
     // 再 upsert 一次同一条 → 应该是 UPDATE（id 不变），不是新增
     let again = rec_client

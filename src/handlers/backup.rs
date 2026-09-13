@@ -57,7 +57,7 @@ use axum::response::IntoResponse;
 ///    - 下载备份：<a href="/admin/backup/download">（GET 链接即可，
 ///      下载是只读操作，不需要 POST 表单）
 ///    - 上传恢复：<form method="post" enctype="multipart/form-data">
-///       上传文件必须 enctype="multipart/form-data"！
+///      上传文件必须 enctype="multipart/form-data"！
 ///      默认表单编码（urlencoded）只传键值对，传不了文件字节。
 ///      <input type="file" name="db_file" accept=".db">
 ///    - 导出记录：两个链接（?format=csv / ?format=json）
@@ -206,7 +206,7 @@ pub async fn backup_download(
 ///    （时间戳：SQLite strftime('%Y%m%d-%H%M%S','now','localtime')）
 /// 7. 写上传字节到 database_path（tokio::fs::write）
 /// 8. 返回提示页："恢复成功，请重启服务生效"
-///     为什么重启？连接池还握着旧文件句柄，
+///    为什么重启？连接池还握着旧文件句柄，
 ///    直接覆盖会损坏库；重启 = 干净地重新打开新文件。
 ///    （热替换连接池需要 Arc/RwLock 包 AppState——M7 打磨项）
 pub async fn backup_upload(
@@ -396,14 +396,14 @@ pub async fn export_records(
          WHERE e.user_id = ?
          ORDER BY r.record_date DESC, r.id",
     )
-    .bind(&user.id)
+    .bind(user.id)
     .fetch_all(&pool)
     .await
     .map_err(crate::error::AppError::Database)?;
 
     let exercise_names =
         sqlx::query_as::<_, crate::models::Exercise>("SELECT * FROM exercises WHERE user_id = ?")
-            .bind(&user.id)
+            .bind(user.id)
             .fetch_all(&pool)
             .await
             .map_err(crate::error::AppError::Database)?
@@ -433,7 +433,7 @@ pub async fn export_records(
             let rows = all_records
                 .iter()
                 .map(|r| {
-                    vec![
+                    [
                         escape_csv(&r.exercise_id.to_string()),
                         escape_csv(
                             exercise_names

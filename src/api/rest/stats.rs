@@ -120,7 +120,7 @@ pub(crate) async fn calendar_view(
         WHERE e.user_id = ? AND record_date LIKE ?
         ORDER BY record_date",
     )
-    .bind(&user_id)
+    .bind(user_id)
     .bind(format!("{prefix}%"))
     .fetch_all(pool)
     .await
@@ -228,7 +228,7 @@ pub(crate) async fn day_records(
         WHERE e.user_id = ? AND r.record_date = ?
         ORDER BY e.sort_order ASC, r.id",
     )
-    .bind(&user_id)
+    .bind(user_id)
     .bind(date)
     .fetch_all(pool)
     .await
@@ -237,7 +237,7 @@ pub(crate) async fn day_records(
     // 动作名索引（id → 名字）
     let ex_names: std::collections::HashMap<i64, String> =
         sqlx::query_as::<_, crate::models::Exercise>("SELECT * FROM exercises WHERE user_id = ?")
-            .bind(&user_id)
+            .bind(user_id)
             .fetch_all(pool)
             .await
             .map_err(crate::api::rest::ApiError::Database)?
@@ -358,8 +358,8 @@ pub(crate) async fn exercise_stats_view(
     let ex = sqlx::query_as::<_, crate::models::Exercise>(
         "SELECT * FROM exercises WHERE id = ? AND user_id = ?",
     )
-    .bind(&exercise_id)
-    .bind(&user_id)
+    .bind(exercise_id)
+    .bind(user_id)
     .fetch_optional(pool)
     .await
     .map_err(crate::api::rest::ApiError::Database)?
@@ -369,7 +369,7 @@ pub(crate) async fn exercise_stats_view(
     let records = sqlx::query_as::<_, crate::models::Record>(
         "SELECT * FROM records WHERE exercise_id = ? ORDER BY record_date ASC, id ASC",
     )
-    .bind(&exercise_id)
+    .bind(exercise_id)
     .fetch_all(pool)
     .await
     .map_err(crate::api::rest::ApiError::Database)?;

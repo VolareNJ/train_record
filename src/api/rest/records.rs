@@ -120,7 +120,7 @@ pub(crate) async fn today_view(
     let current_phase = sqlx::query_as::<_, crate::models::Phase>(
         "SELECT * FROM phases WHERE user_id = ? AND archived = 0 ORDER BY created_at DESC LIMIT 1",
     )
-    .bind(&user_id)
+    .bind(user_id)
     .fetch_optional(pool)
     .await
     .map_err(crate::api::rest::ApiError::Database)?;
@@ -137,7 +137,7 @@ pub(crate) async fn today_view(
         Some(phase) => sqlx::query_as::<_, crate::models::Plan>(
             "SELECT * FROM plans WHERE phase_id = ? AND date = ?",
         )
-        .bind(&phase.id)
+        .bind(phase.id)
         .bind(&today_dt)
         .fetch_optional(pool)
         .await
@@ -180,7 +180,7 @@ pub(crate) async fn today_view(
             let plan_items = sqlx::query_as::<_, crate::models::PlanItem>(
                 "SELECT * FROM plan_items WHERE plan_id = ? ORDER BY sort_order ASC",
             )
-            .bind(&plan.id)
+            .bind(plan.id)
             .fetch_all(pool)
             .await
             .map_err(crate::api::rest::ApiError::Database)?;
@@ -190,7 +190,7 @@ pub(crate) async fn today_view(
                 sqlx::query_as::<_, crate::models::Exercise>(
                     "SELECT * FROM exercises WHERE user_id = ?",
                 )
-                .bind(&user_id)
+                .bind(user_id)
                 .fetch_all(pool)
                 .await
                 .map_err(crate::api::rest::ApiError::Database)?
@@ -206,7 +206,7 @@ pub(crate) async fn today_view(
                     "SELECT * FROM records WHERE plan_item_id = ?
                  ORDER BY record_date DESC, id DESC LIMIT 1",
                 )
-                .bind(&item.id)
+                .bind(item.id)
                 .fetch_optional(pool)
                 .await
                 .map_err(crate::api::rest::ApiError::Database)?;
@@ -346,8 +346,8 @@ pub(crate) async fn record_upsert(
         INNER JOIN phases ph ON p.phase_id = ph.id
         WHERE p.id = ? AND ph.user_id = ?",
     )
-    .bind(&plan_id)
-    .bind(&user_id)
+    .bind(plan_id)
+    .bind(user_id)
     .fetch_optional(pool)
     .await
     .map_err(crate::api::rest::ApiError::Database)?
@@ -357,8 +357,8 @@ pub(crate) async fn record_upsert(
     let phase = sqlx::query_as::<_, crate::models::Phase>(
         "SELECT * FROM phases WHERE id = ? AND user_id = ?",
     )
-    .bind(&plan.phase_id)
-    .bind(&user_id)
+    .bind(plan.phase_id)
+    .bind(user_id)
     .fetch_optional(pool)
     .await
     .map_err(crate::api::rest::ApiError::Database)?
@@ -374,8 +374,8 @@ pub(crate) async fn record_upsert(
     let plan_item = sqlx::query_as::<_, crate::models::PlanItem>(
         "SELECT * FROM plan_items WHERE id = ? AND plan_id = ?",
     )
-    .bind(&item_id)
-    .bind(&plan_id)
+    .bind(item_id)
+    .bind(plan_id)
     .fetch_optional(pool)
     .await
     .map_err(crate::api::rest::ApiError::Database)?
@@ -394,7 +394,7 @@ pub(crate) async fn record_upsert(
         "SELECT * FROM records WHERE plan_item_id = ?
                  ORDER BY record_date DESC, id DESC LIMIT 1",
     )
-    .bind(&item_id)
+    .bind(item_id)
     .fetch_optional(pool)
     .await
     .map_err(crate::api::rest::ApiError::Database)?;
@@ -403,8 +403,8 @@ pub(crate) async fn record_upsert(
     let mode = sqlx::query_scalar::<_, String>(
         "SELECT default_mode FROM exercises WHERE id = ? AND user_id = ?",
     )
-    .bind(&plan_item.exercise_id)
-    .bind(&user_id)
+    .bind(plan_item.exercise_id)
+    .bind(user_id)
     .fetch_optional(pool)
     .await
     .map_err(crate::api::rest::ApiError::Database)?
@@ -419,15 +419,15 @@ pub(crate) async fn record_upsert(
                 WHERE id = ?
                 RETURNING *",
         )
-        .bind(&req.completed)
-        .bind(&req.weight)
-        .bind(&req.sets)
-        .bind(&req.reps)
-        .bind(&req.rest)
+        .bind(req.completed)
+        .bind(req.weight)
+        .bind(req.sets)
+        .bind(req.reps)
+        .bind(req.rest)
         .bind(&req.feeling)
         .bind(&req.strategy)
         .bind(&req.key_points)
-        .bind(&record.id)
+        .bind(record.id)
         .fetch_one(pool)
         .await
         .map_err(crate::api::rest::ApiError::Database)?,
@@ -444,15 +444,15 @@ pub(crate) async fn record_upsert(
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 RETURNING *",
             )
-            .bind(&plan_item.id)
-            .bind(&phase.id)
-            .bind(&plan_item.exercise_id)
+            .bind(plan_item.id)
+            .bind(phase.id)
+            .bind(plan_item.exercise_id)
             .bind(&today_dt)
-            .bind(&req.completed)
-            .bind(&req.weight)
-            .bind(&req.sets)
-            .bind(&req.reps)
-            .bind(&req.rest)
+            .bind(req.completed)
+            .bind(req.weight)
+            .bind(req.sets)
+            .bind(req.reps)
+            .bind(req.rest)
             .bind(&req.feeling)
             .bind(&req.strategy)
             .bind(&req.key_points)
@@ -478,8 +478,8 @@ async fn record_out(
 {
     let ex_name =
         sqlx::query_scalar::<_, String>("SELECT name FROM exercises WHERE id = ? AND user_id = ?")
-            .bind(&r.exercise_id)
-            .bind(&user_id)
+            .bind(r.exercise_id)
+            .bind(user_id)
             .fetch_optional(pool)
             .await
             .map_err(crate::api::rest::ApiError::Database)?
@@ -535,7 +535,7 @@ pub async fn list_by_date(
         WHERE e.user_id = ? AND r.record_date = ?
         ORDER BY r.exercise_id",
     )
-    .bind(&user.id)
+    .bind(user.id)
     .bind(&query.date)
     .fetch_all(&pool)
     .await
@@ -605,8 +605,8 @@ pub(crate) async fn record_update(
     let old = sqlx::query_as::<_, crate::models::Record>(
         "SELECT r.* FROM records r\n        INNER JOIN exercises e ON r.exercise_id = e.id\n        WHERE r.id = ? AND e.user_id = ?",
     )
-    .bind(&record_id)
-    .bind(&user_id)
+    .bind(record_id)
+    .bind(user_id)
     .fetch_optional(pool)
     .await
     .map_err(crate::api::rest::ApiError::Database)?
@@ -634,15 +634,15 @@ pub(crate) async fn record_update(
                 WHERE id = ?
                 RETURNING *",
     )
-    .bind(&weight)
-    .bind(&sets)
-    .bind(&reps)
-    .bind(&rest)
+    .bind(weight)
+    .bind(sets)
+    .bind(reps)
+    .bind(rest)
     .bind(&feeling)
     .bind(&strategy)
     .bind(&key_points)
-    .bind(&completed)
-    .bind(&record_id)
+    .bind(completed)
+    .bind(record_id)
     .fetch_one(pool)
     .await
     .map_err(crate::api::rest::ApiError::Database)?;
@@ -682,8 +682,8 @@ pub(crate) async fn record_delete(
     let owned = sqlx::query_scalar::<_, i64>(
         "SELECT r.id FROM records r\n        INNER JOIN exercises e ON r.exercise_id = e.id\n        WHERE r.id = ? AND e.user_id = ?",
     )
-    .bind(&record_id)
-    .bind(&user_id)
+    .bind(record_id)
+    .bind(user_id)
     .fetch_optional(pool)
     .await
     .map_err(crate::api::rest::ApiError::Database)?;
@@ -696,7 +696,7 @@ pub(crate) async fn record_delete(
     }
 
     let ret = sqlx::query("DELETE FROM records WHERE id = ?")
-        .bind(&record_id)
+        .bind(record_id)
         .execute(pool)
         .await
         .map_err(crate::api::rest::ApiError::Database)?;
@@ -783,7 +783,7 @@ pub(crate) async fn records_range(
           AND (? IS NULL OR r.exercise_id = ?)
         ORDER BY r.record_date ASC, r.id ASC",
     )
-    .bind(&user_id)
+    .bind(user_id)
     .bind(from)
     .bind(from)
     .bind(to)

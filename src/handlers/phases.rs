@@ -233,8 +233,8 @@ pub struct PhaseForm
 /// 1. 守卫：签名里 AuthUser(user): AuthUser 已自动完成
 /// 2. 查进行中：
 ///    let active = sqlx::query_as::<_, Phase>(
-///        "SELECT * FROM phases WHERE user_id = ? AND archived = 0 ORDER BY created_at DESC")
-///        .bind(user.id).fetch_all(&pool).await.map_err(AppError::Database)?;
+///    "SELECT * FROM phases WHERE user_id = ? AND archived = 0 ORDER BY created_at DESC")
+///    .bind(user.id).fetch_all(&pool).await.map_err(AppError::Database)?;
 /// 3. 查已归档（同上，archived = 1）
 /// 4. 拼 HTML：两个分区各一个 <h2> + 表格，active/archived 各自迭代 map
 /// 5. 返回完整页面字符串
@@ -352,7 +352,7 @@ pub async fn list(
 /// 只是显示个表单而已，也要登录吗？要！因为：
 ///   1. 页面顶部要显示"当前用户是谁"（可能还要显示登出按钮）
 ///   2. 未登录用户看到创建表单毫无意义——提交时反正会被 401 拦下
-/// 所以 M2 的页面，凡是"登录后才有意义"的都加 AuthUser 守卫。
+///      所以 M2 的页面，凡是"登录后才有意义"的都加 AuthUser 守卫。
 ///
 /// 【教学：这个表单要放什么？—— 表单字段 = PhaseForm 结构体字段】
 /// 学生问："create_form 要放些什么？要创建什么表单？"
@@ -449,10 +449,10 @@ pub async fn create_form(
 ///   1. 校验数据（name 不能为空）
 ///   2. INSERT 入库（带 user_id —— 归属当前用户！）
 ///   3. 重定向到列表页（Redirect::to("/phases")）
-/// 为什么提交成功后必须重定向？因为 POST 是"有副作用"的请求，
-/// 如果直接返回页面，用户按 F5 刷新会**再次提交**（重复创建）。
-/// 重定向后浏览器发 GET /phases，刷新就安全了。
-/// 这叫 PRG 模式（Post/Redirect/Get），Web 开发的铁律。
+///      为什么提交成功后必须重定向？因为 POST 是"有副作用"的请求，
+///      如果直接返回页面，用户按 F5 刷新会**再次提交**（重复创建）。
+///      重定向后浏览器发 GET /phases，刷新就安全了。
+///      这叫 PRG 模式（Post/Redirect/Get），Web 开发的铁律。
 ///
 /// 【教学：start_date 空串 → None 的转换】
 /// 表单提交的是 String（空串或日期），数据库列可空（TEXT NULL）。
@@ -660,8 +660,8 @@ pub async fn edit_form(
     let phase = sqlx::query_as::<_, crate::models::Phase>(
         "SELECT * FROM phases WHERE id = ? AND user_id = ?",
     )
-    .bind(&phase_id)
-    .bind(&user.id)
+    .bind(phase_id)
+    .bind(user.id)
     .fetch_optional(&pool)
     .await
     .map_err(crate::error::AppError::Database)?
@@ -831,7 +831,7 @@ pub async fn update(
 /// 正确方案：内部函数（非 handler）+ 两个薄 handler
 ///   - set_archived：真正干活，动作由参数传入
 ///   - archive / unarchive：薄包装，各传各的动作
-/// 这样"变化的部分"（动作）由调用方决定，axum 只注入请求里的东西。
+///     这样"变化的部分"（动作）由调用方决定，axum 只注入请求里的东西。
 enum ActionType
 {
     Archive,
@@ -879,7 +879,7 @@ async fn set_archived(
 ///   - 列表里不再显示在"进行中"区（移到"已归档"区）
 ///   - 归档阶段禁止再建计划/记录（M3/M4 的守卫会查 archived）
 ///   - 数据还在，随时可以 unarchive 恢复
-/// 这是"软删除"思想：用状态标记代替物理删除，保护历史数据。
+///     这是"软删除"思想：用状态标记代替物理删除，保护历史数据。
 ///
 /// 【教学：归档 = UPDATE 一个字段】
 /// 归档不是特殊操作，就是一次 UPDATE：

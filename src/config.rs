@@ -155,9 +155,9 @@ impl AppConfig
     /// 这带来两个好处：
     ///   1. 【可测试】测试时传假读取器，不碰真实环境变量，永远可复现
     ///   2. 【可扩展】将来加配置文件读取，只需新增 from_file()：
-    ///        内部照样调 from_reader(|name| 从 config.toml 读)
+    ///      内部照样调 from_reader(|name| 从 config.toml 读)
     ///      完全不用改 from_reader 的代码（这就是依赖注入的价值）
-    /// 一句话：from_env 管"从哪读"，from_reader 管"怎么算"。
+    ///      一句话：from_env 管"从哪读"，from_reader 管"怎么算"。
     fn from_reader<F>(read: F) -> Self
     where
         F: Fn(&str) -> Option<String>,

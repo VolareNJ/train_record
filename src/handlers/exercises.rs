@@ -169,7 +169,7 @@ pub async fn list(
     let part_options = sqlx::query_scalar::<_, String>(
         "SELECT DISTINCT body_part FROM exercises WHERE user_id = ? ORDER BY body_part",
     )
-    .bind(&user.id)
+    .bind(user.id)
     .fetch_all(&pool)
     .await
     .map_err(crate::error::AppError::Database)?
@@ -222,12 +222,12 @@ pub async fn list(
             // （id 兜底：老数据或 sort_order 并列时保持稳定顺序）
             "SELECT * FROM exercises WHERE user_id = ? ORDER BY body_part, sort_order, id",
         )
-        .bind(&user.id)
+        .bind(user.id)
         .fetch_all(&pool),
         Some(pt) => sqlx::query_as::<_, crate::models::Exercise>(
             "SELECT * FROM exercises WHERE user_id = ? AND body_part = ? ORDER BY sort_order, id",
         )
-        .bind(&user.id)
+        .bind(user.id)
         .bind(pt)
         .fetch_all(&pool),
     }
@@ -388,7 +388,7 @@ pub async fn list(
 /// 1. 签名：State + AuthUser
 /// 2. 返回 <form method="post" action="/exercises"> 的 HTML
 ///    （下拉框：body_part 6 项、default_mode 3 项、bar_weight 4 项；
-///     数字框：default_sets/default_reps；文本域：key_points）
+///    数字框：default_sets/default_reps；文本域：key_points）
 /// 3. default_mode 加 id + onchange（bar 在前 + selected，表默认 bar），
 ///    bar_weight 包进 <div id="bar_weight_row">，
 ///    页面底部放 <script> 切换显隐
@@ -676,8 +676,8 @@ pub async fn edit_form(
     let record_to_edit = sqlx::query_as::<_, crate::models::Exercise>(
         "SELECT * FROM exercises WHERE id = ? AND user_id = ?",
     )
-    .bind(&exercise_id)
-    .bind(&user.id)
+    .bind(exercise_id)
+    .bind(user.id)
     .fetch_optional(&pool)
     .await
     .map_err(crate::error::AppError::Database)?
@@ -686,12 +686,9 @@ pub async fn edit_form(
     // 【M5 修订：编辑页嵌入最近 180 天趋势图（stats.rs 公共函数复用）】
     //     位置：编辑训练动作标题下面、动作名称上面。
     //     None（< 2 条记录）→ 编辑页不放"记录太少"文案，静默省略图。
-    let chart_section = match crate::handlers::stats::exercise_chart_html(&pool, exercise_id)
+    let chart_section = crate::handlers::stats::exercise_chart_html(&pool, exercise_id)
         .await?
-    {
-        Some(html) => html,
-        None => String::new(),
-    };
+        .unwrap_or_default();
 
     Ok(axum::response::Html(format!(
         r#"
@@ -1012,9 +1009,9 @@ pub async fn update_config(
 ///   - 方案 B（M3/M4 完善）：删除前检查引用，有则拒绝
 ///     （COUNT template_items/plan_items/records WHERE exercise_id = ?），
 ///     与 phase 归档同理，保护历史。
-/// 本步用 A，但注释标明：M3/M4 建引用后应升级为 B。
-/// 这种"先做能跑的，标注演进点"是开发节奏的一部分——
-/// 不要现在为不存在的场景过度设计（YAGNI 原则）。
+///     本步用 A，但注释标明：M3/M4 建引用后应升级为 B。
+///     这种"先做能跑的，标注演进点"是开发节奏的一部分——
+///     不要现在为不存在的场景过度设计（YAGNI 原则）。
 ///
 /// 【教学：DELETE 的 rows_affected 判断】
 /// 和 UPDATE 一样：execute() 返回 SqliteQueryResult，

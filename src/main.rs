@@ -876,13 +876,13 @@ async fn home(
     let phase_count = sqlx::query_scalar::<_, i64>(
         "SELECT COUNT(*) FROM phases WHERE user_id = ? AND archived = 0",
     )
-    .bind(&user.id)
+    .bind(user.id)
     .fetch_one(&pool)
     .await
     .map_err(train_record::error::AppError::Database)?;
     let exercise_count =
         sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM exercises WHERE user_id = ?")
-            .bind(&user.id)
+            .bind(user.id)
             .fetch_one(&pool)
             .await
             .map_err(train_record::error::AppError::Database)?;
@@ -890,7 +890,7 @@ async fn home(
         "SELECT COUNT(*) FROM templates
     WHERE phase_id IN (SELECT id FROM phases WHERE user_id = ?)",
     )
-    .bind(&user.id)
+    .bind(user.id)
     .fetch_one(&pool)
     .await
     .map_err(train_record::error::AppError::Database)?;
@@ -898,7 +898,7 @@ async fn home(
         "SELECT COUNT(*) FROM plans
     WHERE phase_id IN (SELECT id FROM phases WHERE user_id = ?)",
     )
-    .bind(&user.id)
+    .bind(user.id)
     .fetch_one(&pool)
     .await
     .map_err(train_record::error::AppError::Database)?;
@@ -921,7 +921,7 @@ async fn home(
     let current_phase = sqlx::query_as::<_, train_record::models::Phase>(
         "SELECT * FROM phases WHERE user_id = ? AND archived = 0 ORDER BY created_at DESC LIMIT 1",
     )
-    .bind(&user.id)
+    .bind(user.id)
     .fetch_optional(&pool)
     .await
     .map_err(train_record::error::AppError::Database)?;

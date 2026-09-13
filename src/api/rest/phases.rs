@@ -137,7 +137,7 @@ pub(crate) async fn phase_list(
     let phases = sqlx::query_as::<_, crate::models::Phase>(
         "SELECT * FROM phases WHERE user_id = ? ORDER BY archived ASC, created_at DESC",
     )
-    .bind(&user_id)
+    .bind(user_id)
     .fetch_all(pool)
     .await
     .map_err(crate::api::rest::ApiError::Database)?;
@@ -206,7 +206,7 @@ pub(crate) async fn phase_create(
 
     // 查重（数据隔离 + 防重名）
     if sqlx::query_scalar::<_, i64>("SELECT id FROM phases WHERE user_id = ? AND name = ?")
-        .bind(&user_id)
+        .bind(user_id)
         .bind(&req.name)
         .fetch_optional(pool)
         .await
@@ -230,7 +230,7 @@ pub(crate) async fn phase_create(
         "INSERT INTO phases (user_id, name, note, start_date) VALUES (?, ?, ?, ?)
         RETURNING id",
     )
-    .bind(&user_id)
+    .bind(user_id)
     .bind(&req.name)
     .bind(&req.note)
     .bind(&start_date)
@@ -242,13 +242,13 @@ pub(crate) async fn phase_create(
     let phase = sqlx::query_as::<_, crate::models::Phase>(
         "SELECT * FROM phases WHERE id = ? AND user_id = ?",
     )
-    .bind(&new_id)
-    .bind(&user_id)
+    .bind(new_id)
+    .bind(user_id)
     .fetch_one(pool)
     .await
     .map_err(crate::api::rest::ApiError::Database)?;
 
-    Ok(phase_out(pool, &phase).await?)
+    phase_out(pool, &phase).await
 }
 
 // ============================================================
@@ -286,14 +286,14 @@ pub(crate) async fn phase_detail(
     let phase = sqlx::query_as::<_, crate::models::Phase>(
         "SELECT * FROM phases WHERE id = ? AND user_id = ?",
     )
-    .bind(&phase_id)
-    .bind(&user_id)
+    .bind(phase_id)
+    .bind(user_id)
     .fetch_optional(pool)
     .await
     .map_err(crate::api::rest::ApiError::Database)?
     .ok_or_else(|| crate::api::rest::ApiError::NotFound("阶段不存在".to_string()))?;
 
-    Ok(phase_out(pool, &phase).await?)
+    phase_out(pool, &phase).await
 }
 
 // ============================================================
@@ -360,8 +360,8 @@ pub(crate) async fn phase_update(
     let old = sqlx::query_as::<_, crate::models::Phase>(
         "SELECT * FROM phases WHERE id = ? AND user_id = ?",
     )
-    .bind(&phase_id)
-    .bind(&user_id)
+    .bind(phase_id)
+    .bind(user_id)
     .fetch_optional(pool)
     .await
     .map_err(crate::api::rest::ApiError::Database)?
@@ -393,8 +393,8 @@ pub(crate) async fn phase_update(
     .bind(&name)
     .bind(&note)
     .bind(&start_date)
-    .bind(&phase_id)
-    .bind(&user_id)
+    .bind(phase_id)
+    .bind(user_id)
     .execute(pool)
     .await
     .map_err(crate::api::rest::ApiError::Database)?;
@@ -410,13 +410,13 @@ pub(crate) async fn phase_update(
     let phase = sqlx::query_as::<_, crate::models::Phase>(
         "SELECT * FROM phases WHERE id = ? AND user_id = ?",
     )
-    .bind(&phase_id)
-    .bind(&user_id)
+    .bind(phase_id)
+    .bind(user_id)
     .fetch_one(pool)
     .await
     .map_err(crate::api::rest::ApiError::Database)?;
 
-    Ok(phase_out(pool, &phase).await?)
+    phase_out(pool, &phase).await
 }
 
 // ============================================================
@@ -474,8 +474,8 @@ pub(crate) async fn phase_set_archived(
 {
     let ret = sqlx::query("UPDATE phases SET archived = ? WHERE id = ? AND user_id = ?")
         .bind(archived)
-        .bind(&phase_id)
-        .bind(&user_id)
+        .bind(phase_id)
+        .bind(user_id)
         .execute(pool)
         .await
         .map_err(crate::api::rest::ApiError::Database)?;
@@ -490,11 +490,11 @@ pub(crate) async fn phase_set_archived(
     let phase = sqlx::query_as::<_, crate::models::Phase>(
         "SELECT * FROM phases WHERE id = ? AND user_id = ?",
     )
-    .bind(&phase_id)
-    .bind(&user_id)
+    .bind(phase_id)
+    .bind(user_id)
     .fetch_one(pool)
     .await
     .map_err(crate::api::rest::ApiError::Database)?;
 
-    Ok(phase_out(pool, &phase).await?)
+    phase_out(pool, &phase).await
 }

@@ -75,7 +75,7 @@ pub async fn history(
         INNER JOIN exercises e ON r.exercise_id = e.id
         WHERE e.user_id = ? ORDER BY record_date DESC",
     )
-    .bind(&user.id)
+    .bind(user.id)
     .fetch_all(&pool)
     .await
     .map_err(crate::error::AppError::Database)?;
@@ -117,7 +117,7 @@ pub async fn history(
     // 【M5 修订：按动作查看 —— 全部动作（id + 名字 + 部位）】
     let all_exercises =
         sqlx::query_as::<_, crate::models::Exercise>("SELECT * FROM exercises WHERE user_id = ?")
-            .bind(&user.id)
+            .bind(user.id)
             .fetch_all(&pool)
             .await
             .map_err(crate::error::AppError::Database)?;
@@ -302,7 +302,7 @@ pub async fn history(
 /// 1. 签名：State + AuthUser + Path(date): Path<String>
 /// 2. 校验日期格式（简单检查：长度 10、第 5/8 位是 '-'）
 /// 3. 查该天全部记录：
-///     records 表没有 user_id 列！数据隔离要走 JOIN：
+///    records 表没有 user_id 列！数据隔离要走 JOIN：
 ///    SELECT r.* FROM records r
 ///    INNER JOIN exercises e ON r.exercise_id = e.id
 ///    WHERE e.user_id = ? AND r.record_date = ?
@@ -312,7 +312,7 @@ pub async fn history(
 /// 4. 动作名：沿用 M4 模式——查全部动作 → HashMap<i64, String>
 ///    SELECT * FROM exercises WHERE user_id = ?
 ///    （为什么不用 JOIN？query_as 按列名匹配，JOIN 多出的列与
-///     Record 结构体不匹配——M4.md 第 1 步讲过，M5 理解验证第 5 题）
+///    Record 结构体不匹配——M4.md 第 1 步讲过，M5 理解验证第 5 题）
 /// 5. 每条记录渲染一行：动作名 | 重量 | 组×次 | 休息 | 1RM(Epley)
 ///    | 感受 | 策略 | 要领
 ///    1RM 调 calc::epley_1rm(record.weight, record.reps)
@@ -381,7 +381,7 @@ pub async fn history_day(
         WHERE e.user_id = ? AND r.record_date = ?
         ORDER BY e.sort_order ASC, r.id",
     )
-    .bind(&user.id)
+    .bind(user.id)
     .bind(&date)
     .fetch_all(&pool)
     .await
@@ -389,7 +389,7 @@ pub async fn history_day(
 
     let all_exercises =
         sqlx::query_as::<_, crate::models::Exercise>("SELECT * FROM exercises WHERE user_id = ?")
-            .bind(&user.id)
+            .bind(user.id)
             .fetch_all(&pool)
             .await
             .map_err(crate::error::AppError::Database)?
@@ -561,8 +561,8 @@ pub async fn exercise_stats(
     let exercise = sqlx::query_as::<_, crate::models::Exercise>(
         "SELECT * FROM exercises WHERE id = ? AND user_id = ?",
     )
-    .bind(&id)
-    .bind(&user.id)
+    .bind(id)
+    .bind(user.id)
     .fetch_optional(&pool)
     .await
     .map_err(crate::error::AppError::Database)?
@@ -572,7 +572,7 @@ pub async fn exercise_stats(
     let all_records = sqlx::query_as::<_, crate::models::Record>(
         "SELECT * FROM records WHERE exercise_id = ? ORDER BY record_date ASC, id",
     )
-    .bind(&id)
+    .bind(id)
     .fetch_all(&pool)
     .await
     .map_err(crate::error::AppError::Database)?
@@ -609,7 +609,7 @@ pub async fn exercise_stats(
         WHERE r.exercise_id = ?",
     )
     .bind(exercise.bar_weight)
-    .bind(&id)
+    .bind(id)
     .fetch_all(&pool)
     .await
     .map_err(crate::error::AppError::Database)?

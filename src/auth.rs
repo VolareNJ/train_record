@@ -120,7 +120,7 @@ pub fn hash_password(plain: &str) -> Result<String, crate::error::AppError>
 /// - 算法是固定的：argon2 就是确定的函数 f(密码, 盐, 参数)
 ///   同一个函数，不是每次换一个（所以不是"每次用不同算法"）
 /// - 确定性：同一函数 + 同一输入 → 永远同一输出
-/// 验证时输入和注册时完全一致（同密码 + 同盐）→ 输出必然一致 → 可比。
+///   验证时输入和注册时完全一致（同密码 + 同盐）→ 输出必然一致 → 可比。
 ///
 /// 盐为什么能"复用"？因为它就藏在哈希串里（自包含）：
 ///   $argon2id$v=19$m=19456,t=2,p=1$NzZkNDM3...$YWViZGMxMjM0...
@@ -140,8 +140,8 @@ pub fn hash_password(plain: &str) -> Result<String, crate::error::AppError>
 ///   彩虹表（预计算密码→哈希的大表）直接命中，弱密码秒破
 /// - 有随机盐：相同密码 → 不同哈希（看不出关联）；
 ///   彩虹表要为每颗盐各算一份，成本爆炸，只能逐个暴力破解
-/// 一句话：盐防的是"攻击者偷懒"；验证靠的是"复用同一颗盐"的确定性，
-/// 两者不冲突——随机只发生在生成那一刻，验证时是提取复用。
+///   一句话：盐防的是"攻击者偷懒"；验证靠的是"复用同一颗盐"的确定性，
+///   两者不冲突——随机只发生在生成那一刻，验证时是提取复用。
 ///
 /// 【实现步骤】
 /// 1. 解析存储的哈希串：PasswordHash::new(hash)，Err 转 AppError
@@ -332,7 +332,7 @@ pub async fn create_session(
         .bind(expire_dt)
         .execute(pool)
         .await
-        .map_err(|e| crate::error::AppError::Database(e))?;
+        .map_err(crate::error::AppError::Database)?;
     Ok(new_token)
 }
 
@@ -355,8 +355,8 @@ pub async fn create_session(
 ///                数据库类型  行转换类型
 /// - 第二个 User：每行转成什么类型（我们关心的）
 /// - 第一个 _：数据库类型（SQLite/MySQL/PostgreSQL）
-/// 写 _ 让编译器自己推断（pool: &sqlx::SqlitePool 已确定是 SQLite）
-/// 记忆点：见到 _ 就是"这里有个类型，但让编译器猜"。
+///   写 _ 让编译器自己推断（pool: &sqlx::SqlitePool 已确定是 SQLite）
+///   记忆点：见到 _ 就是"这里有个类型，但让编译器猜"。
 ///
 /// 【教学：fetch_optional 是"SQL 套 CASE WHEN EXISTS"吗？】
 /// 方向对，但机制不同——它不是 SQL 的一部分，而是 Rust 层处理：

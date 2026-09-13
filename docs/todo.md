@@ -68,10 +68,24 @@
 - 解法：在 `src/auth.rs` 加 `pub async fn get_user_by_username(pool, name)`，
   两处都改调它（M9 为了不碰 M8 已验收代码而暂缓）。
 
-### 1.7 clippy 存量风格建议清理（M9 记录，M10 前处理）
+### 1.7 clippy 存量风格建议清理 （M9 收尾已解决）
 
-- **现状**（M9 结束时实测）：`cargo clippy --all-targets` 有 351 条 `warning`
-  （rustc 层已是 0 警告；这些只是 clippy 的风格建议）。分类：
+- **结果**：`cargo clippy --all-targets` 从 693 条 warning（去重 347 条）降到 **0**；
+  `cargo check --all-targets` / `cargo test` 仍 0 警告，`cargo +nightly fmt --check` 干净。
+- **怎么清的**（单独一次风格提交，不掺功能改动）：
+  1. `cargo clippy --fix --allow-dirty --allow-staged --all-targets` 自动修 285 处
+     （266 `needless_borrow` + 12 `needless_question_mark` + 2 `redundant_closure`
+     + 2 `manual_unwrap_or_default` + 1 `useless_vec` + 1 `format_in_format_args`
+     + 1 `bool_assert_comparison`）
+  2. 62 条 doc 缩进建议（37 `doc_lazy_continuation` + 25 `doc_overindented_list_items`）
+     被 clippy 标成 MaybeIncorrect，`--fix` 不动 → 按 clippy 给的缩进建议手工改：
+     只调续行缩进，教学注释正文一字未删
+  3. 最后 3 条手工改：两处 `chart_section` 的 match 换成 `.unwrap_or_default()`；
+     `record_form` 里嵌套的 `format!` 提升为 `let plan_value_display = ...`
+     （外层模板的 `{plan_value_display}` 走隐式捕获）
+- **注意**：`docs/learning_path/M9_ref/smoke_test.rs` 跟着同步改了那一行断言。
+- **历史记录（清理前实测）**：`cargo clippy --all-targets` 693 条 warning
+  （去重 347 条；rustc 层当时已是 0 警告）。分类：
   - 266 条 `needless_borrow`：`.bind(&user.id)` → `.bind(user.id)`
     （i64/f64 是 Copy，多余的借用；**自动可修**）
   - 62 条 doc 注释列表缩进建议（`doc_lazy_continuation` 类）：
@@ -79,14 +93,9 @@
   - 12 条 `needless_question_mark`：`Ok(x?)` → `x`（可直接改）
   - 其余少量：`redundant closure`（`|e| AppError::Database(e)` → `AppError::Database`）、
     `unwrap_or_default`、`useless vec!`、`assert_eq!` 字面 bool 等
-- **为什么暂不处理**：266 条 needless_borrow 会改动大量 M8 已验收代码
+- **当时为什么暂缓**：266 条 needless_borrow 会改动大量 M8 已验收代码
   （尤其是学生手写的 `&` 风格）——建议单独一次“clippy 清理”提交，
   而不是混在功能改动里。
-- **处理方式**（届时）：
-  1. `cargo clippy --fix --allow-dirty --all-targets`（自动修大头）
-  2. 剩下的 doc 缩进 + 少量建议手工改（边改边 `cargo +nightly fmt`）
-  3. 验收：`cargo clippy --all-targets 2>&1 | grep -c "^warning"` → 0
-     且 `cargo check --all-targets` / `cargo test` 仍 0 警告
 - **新代码要求**（AGENTS.md 已写）：不得引入新的 clippy 警告。
 
 ### 1.1 模板间排序：`templates.sort_order` 真值分配 （M7 第 3 步已解决，4d2231a 之前）

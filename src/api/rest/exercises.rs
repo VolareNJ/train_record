@@ -108,7 +108,7 @@ async fn exercise_out(
     let records = sqlx::query_as::<_, crate::models::Record>(
         "SELECT * FROM records WHERE exercise_id = ? ORDER BY record_date ASC, id ASC",
     )
-    .bind(&ex.id)
+    .bind(ex.id)
     .fetch_all(pool)
     .await
     .map_err(crate::api::rest::ApiError::Database)?;
@@ -228,12 +228,12 @@ pub(crate) async fn exercise_list(
         None => sqlx::query_as::<_, crate::models::Exercise>(
             "SELECT * FROM exercises WHERE user_id = ? ORDER BY body_part, sort_order, id",
         )
-        .bind(&user_id)
+        .bind(user_id)
         .fetch_all(pool),
         Some(pt) => sqlx::query_as::<_, crate::models::Exercise>(
             "SELECT * FROM exercises WHERE user_id = ? AND body_part = ? ORDER BY sort_order, id",
         )
-        .bind(&user_id)
+        .bind(user_id)
         .bind(pt)
         .fetch_all(pool),
     }
@@ -290,7 +290,7 @@ pub(crate) async fn exercise_create(
 
     // 查重（数据隔离 + 防重名，和页面 create 同款）
     if sqlx::query_scalar::<_, i64>("SELECT id FROM exercises WHERE user_id = ? AND name = ?")
-        .bind(&user_id)
+        .bind(user_id)
         .bind(&req.name)
         .fetch_optional(pool)
         .await
@@ -309,14 +309,14 @@ pub(crate) async fn exercise_create(
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
         RETURNING id",
     )
-    .bind(&user_id)
+    .bind(user_id)
     .bind(&req.name)
     .bind(&req.body_part)
     .bind(&req.default_mode)
-    .bind(&req.bar_weight)
+    .bind(req.bar_weight)
     .bind(&req.default_unit)
-    .bind(&req.default_sets)
-    .bind(&req.default_reps)
+    .bind(req.default_sets)
+    .bind(req.default_reps)
     .bind(&req.key_points)
     .fetch_one(pool)
     .await
@@ -325,13 +325,13 @@ pub(crate) async fn exercise_create(
     let ex = sqlx::query_as::<_, crate::models::Exercise>(
         "SELECT * FROM exercises WHERE id = ? AND user_id = ?",
     )
-    .bind(&new_id)
-    .bind(&user_id)
+    .bind(new_id)
+    .bind(user_id)
     .fetch_one(pool)
     .await
     .map_err(crate::api::rest::ApiError::Database)?;
 
-    Ok(exercise_out(pool, &ex).await?)
+    exercise_out(pool, &ex).await
 }
 
 // ============================================================
@@ -384,14 +384,14 @@ pub(crate) async fn exercise_detail(
     let ex = sqlx::query_as::<_, crate::models::Exercise>(
         "SELECT * FROM exercises WHERE id = ? AND user_id = ?",
     )
-    .bind(&exercise_id)
-    .bind(&user_id)
+    .bind(exercise_id)
+    .bind(user_id)
     .fetch_optional(pool)
     .await
     .map_err(crate::api::rest::ApiError::Database)?
     .ok_or_else(|| crate::api::rest::ApiError::NotFound("动作不存在".to_string()))?;
 
-    Ok(exercise_out(pool, &ex).await?)
+    exercise_out(pool, &ex).await
 }
 
 // ============================================================
@@ -421,8 +421,8 @@ pub(crate) async fn exercise_update(
     let old = sqlx::query_as::<_, crate::models::Exercise>(
         "SELECT * FROM exercises WHERE id = ? AND user_id = ?",
     )
-    .bind(&exercise_id)
-    .bind(&user_id)
+    .bind(exercise_id)
+    .bind(user_id)
     .fetch_optional(pool)
     .await
     .map_err(crate::api::rest::ApiError::Database)?
@@ -452,13 +452,13 @@ pub(crate) async fn exercise_update(
     .bind(&name)
     .bind(&body_part)
     .bind(&default_mode)
-    .bind(&bar_weight)
+    .bind(bar_weight)
     .bind(&default_unit)
-    .bind(&default_sets)
-    .bind(&default_reps)
+    .bind(default_sets)
+    .bind(default_reps)
     .bind(&key_points)
-    .bind(&exercise_id)
-    .bind(&user_id)
+    .bind(exercise_id)
+    .bind(user_id)
     .execute(pool)
     .await
     .map_err(crate::api::rest::ApiError::Database)?;
@@ -473,13 +473,13 @@ pub(crate) async fn exercise_update(
     let ex = sqlx::query_as::<_, crate::models::Exercise>(
         "SELECT * FROM exercises WHERE id = ? AND user_id = ?",
     )
-    .bind(&exercise_id)
-    .bind(&user_id)
+    .bind(exercise_id)
+    .bind(user_id)
     .fetch_one(pool)
     .await
     .map_err(crate::api::rest::ApiError::Database)?;
 
-    Ok(exercise_out(pool, &ex).await?)
+    exercise_out(pool, &ex).await
 }
 
 // ============================================================
@@ -519,8 +519,8 @@ pub(crate) async fn exercise_delete(
 ) -> Result<(), crate::api::rest::ApiError>
 {
     let ret = sqlx::query("DELETE FROM exercises WHERE id = ? AND user_id = ?")
-        .bind(&exercise_id)
-        .bind(&user_id)
+        .bind(exercise_id)
+        .bind(user_id)
         .execute(pool)
         .await
         .map_err(crate::api::rest::ApiError::Database)?;

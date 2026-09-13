@@ -147,8 +147,8 @@ pub fn mode_display(
 ///    再查全部动作 → 建 HashMap<i64, String>（id → 名字）索引：
 ///    SELECT * FROM exercises WHERE user_id = ?
 ///    （M3 同款模式：查两次 + 内存索引。为什么不用 JOIN？
-///     query_as 按列名匹配结构体，JOIN 多出的 exercise_name 列
-///     与 PlanItem 不匹配，无法反序列化）
+///    query_as 按列名匹配结构体，JOIN 多出的 exercise_name 列
+///    与 PlanItem 不匹配，无法反序列化）
 /// 6. 每个计划项查"最近一条记录"判断状态 + 上次策略：
 ///    SELECT * FROM records WHERE plan_item_id = ?
 ///    ORDER BY record_date DESC, id DESC LIMIT 1
@@ -170,7 +170,7 @@ pub async fn today(
     let current_phase = match sqlx::query_as::<_, crate::models::Phase>(
         "SELECT * FROM phases WHERE user_id = ? AND archived = 0 ORDER BY created_at DESC LIMIT 1",
     )
-    .bind(&user.id)
+    .bind(user.id)
     .fetch_optional(&pool)
     .await
     .map_err(crate::error::AppError::Database)?
@@ -203,7 +203,7 @@ pub async fn today(
     let today_plan = match sqlx::query_as::<_, crate::models::Plan>(
         "SELECT * FROM plans WHERE phase_id = ? AND date = ?",
     )
-    .bind(&current_phase.id)
+    .bind(current_phase.id)
     .bind(&today_dt)
     .fetch_optional(&pool)
     .await
@@ -238,13 +238,13 @@ pub async fn today(
     let today_plan_items = sqlx::query_as::<_, crate::models::PlanItem>(
         "SELECT * FROM plan_items WHERE plan_id = ? ORDER BY sort_order ASC",
     )
-    .bind(&today_plan.id)
+    .bind(today_plan.id)
     .fetch_all(&pool)
     .await
     .map_err(crate::error::AppError::Database)?;
     let id_to_ex =
         sqlx::query_as::<_, crate::models::Exercise>("SELECT * FROM exercises WHERE user_id = ?")
-            .bind(&user.id)
+            .bind(user.id)
             .fetch_all(&pool)
             .await
             .map_err(crate::error::AppError::Database)?
@@ -509,8 +509,8 @@ pub async fn record_form(
         INNER JOIN phases ph ON p.phase_id = ph.id
         WHERE p.id = ? AND ph.user_id = ?",
     )
-    .bind(&plan_id)
-    .bind(&user.id)
+    .bind(plan_id)
+    .bind(user.id)
     .fetch_optional(&pool)
     .await
     .map_err(crate::error::AppError::Database)?
@@ -521,8 +521,8 @@ pub async fn record_form(
     let phase = sqlx::query_as::<_, crate::models::Phase>(
         "SELECT * FROM phases WHERE id = ? AND user_id = ?",
     )
-    .bind(&current_plan.phase_id)
-    .bind(&user.id)
+    .bind(current_plan.phase_id)
+    .bind(user.id)
     .fetch_optional(&pool)
     .await
     .map_err(crate::error::AppError::Database)?
@@ -539,8 +539,8 @@ pub async fn record_form(
     let plan_item = sqlx::query_as::<_, crate::models::PlanItem>(
         "SELECT * FROM plan_items WHERE id = ? AND plan_id = ?",
     )
-    .bind(&item_id)
-    .bind(&current_plan.id)
+    .bind(item_id)
+    .bind(current_plan.id)
     .fetch_optional(&pool)
     .await
     .map_err(crate::error::AppError::Database)?
@@ -550,8 +550,8 @@ pub async fn record_form(
     let exercise_details = sqlx::query_as::<_, crate::models::Exercise>(
         "SELECT * FROM exercises WHERE id = ? AND user_id = ?",
     )
-    .bind(&plan_item.exercise_id)
-    .bind(&user.id)
+    .bind(plan_item.exercise_id)
+    .bind(user.id)
     .fetch_optional(&pool)
     .await
     .map_err(crate::error::AppError::Database)?
@@ -566,7 +566,7 @@ pub async fn record_form(
         "SELECT * FROM records WHERE plan_item_id = ? AND record_date = date('now','localtime')
         ORDER BY id DESC LIMIT 1",
     )
-    .bind(&item_id)
+    .bind(item_id)
     .fetch_optional(&pool)
     .await
     .map_err(crate::error::AppError::Database)?;
@@ -582,7 +582,7 @@ pub async fn record_form(
         AND completed = 1
          ORDER BY record_date DESC, id DESC LIMIT 1",
     )
-    .bind(&plan_item.exercise_id)
+    .bind(plan_item.exercise_id)
     .fetch_optional(&pool)
     .await
     .map_err(crate::error::AppError::Database)?;
@@ -790,12 +790,38 @@ pub async fn record_form(
     // 【M5 修订：记录页嵌入最近 180 天趋势图（stats.rs 公共函数复用）】
     //     位置：动作名称下面、上次参考上面。
     //     None（< 2 条记录）→ 表单页不放"记录太少"文案，静默省略图。
-    let chart_section =
-        match crate::handlers::stats::exercise_chart_html(&pool, exercise_details.id).await?
-        {
-            Some(html) => html,
-            None => String::new(),
-        };
+    let chart_section = crate::handlers::stats::exercise_chart_html(&pool, exercise_details.id)
+        .await?
+        .unwrap_or_default();
+    // 计划值行（模式 + 组数*次数）：单独算好再进模板，
+    // 避免 format! 里再套 format!（clippy::format_in_format_args）
+    let plan_value_display = format!(
+        "{mode} | {sets}*{reps}",
+        mode = mode_display(
+            // 【M6 修订：计重三字段直接取 exercise 默认（PlanItem 不再维护）】
+            &exercise_details.default_mode,
+            // 【M5 修订：support 无重量 → 回退体重（自重动作）】
+            plan_item.plan_weight.unwrap_or_else(|| {
+                if exercise_details.default_mode == "support"
+                {
+                    user.body_weight.unwrap_or(0.0)
+                }
+                else
+                {
+                    0.0
+                }
+            }),
+            exercise_details.bar_weight,
+            user.body_weight,
+            &exercise_details.default_unit,
+        ),
+        sets = plan_item
+            .plan_sets
+            .map_or("-".to_string(), |v| v.to_string()),
+        reps = plan_item
+            .plan_reps
+            .map_or("-".to_string(), |v| v.to_string()),
+    );
     Ok(axum::response::Html(format!(
         r#"<!DOCTYPE html>
         <html lang="zh">
@@ -901,33 +927,6 @@ pub async fn record_form(
                 )
             })
             .unwrap_or_default(),
-        plan_value_display = format!(
-            "{mode} | {sets}*{reps}",
-            mode = mode_display(
-                // 【M6 修订：计重三字段直接取 exercise 默认（PlanItem 不再维护）】
-                &exercise_details.default_mode,
-                // 【M5 修订：support 无重量 → 回退体重（自重动作）】
-                plan_item.plan_weight.unwrap_or_else(|| {
-                    if exercise_details.default_mode == "support"
-                    {
-                        user.body_weight.unwrap_or(0.0)
-                    }
-                    else
-                    {
-                        0.0
-                    }
-                }),
-                exercise_details.bar_weight,
-                user.body_weight,
-                &exercise_details.default_unit,
-            ),
-            sets = plan_item
-                .plan_sets
-                .map_or("-".to_string(), |v| v.to_string()),
-            reps = plan_item
-                .plan_reps
-                .map_or("-".to_string(), |v| v.to_string()),
-        ),
         // 【M5 修订：单位下拉预填 —— 动作 default_unit 决定初始选中】
         // 动作默认 lb（如美式器械）→ 下拉默认 lb；默认 kg → kg。
         // localStorage 偏好（用户手动切换）仍会覆盖此预填（JS 层处理）。
@@ -1038,12 +1037,12 @@ pub async fn record_form(
 /// 4. 查该计划项最近一条记录（决定 INSERT 还是 UPDATE）
 /// 5. 有记录 → UPDATE：
 ///    UPDATE records SET weight=?, sets=?, reps=?, rest=?,
-///      feeling=?, strategy=?, key_points=?, mode=?
+///    feeling=?, strategy=?, key_points=?, mode=?
 ///    WHERE id = ?（按查到的记录 id）
 /// 6. 无记录 → INSERT：
 ///    INSERT INTO records
-///      (plan_item_id, phase_id, exercise_id, record_date,
-///       weight, sets, reps, rest, feeling, strategy, key_points, mode)
+///    (plan_item_id, phase_id, exercise_id, record_date,
+///    weight, sets, reps, rest, feeling, strategy, key_points, mode)
 ///    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ///    （phase_id/exercise_id 从计划项 JOIN 取；record_date = 今天）
 /// 7. 重定向回 /today（今日页刷新后显示  已训练）
@@ -1063,8 +1062,8 @@ pub async fn record_save(
         INNER JOIN phases ph ON p.phase_id = ph.id
         WHERE p.id = ? AND ph.user_id = ?",
     )
-    .bind(&plan_id)
-    .bind(&user.id)
+    .bind(plan_id)
+    .bind(user.id)
     .fetch_optional(&pool)
     .await
     .map_err(crate::error::AppError::Database)?
@@ -1075,8 +1074,8 @@ pub async fn record_save(
     let phase = sqlx::query_as::<_, crate::models::Phase>(
         "SELECT * FROM phases WHERE id = ? AND user_id = ?",
     )
-    .bind(&current_plan.phase_id)
-    .bind(&user.id)
+    .bind(current_plan.phase_id)
+    .bind(user.id)
     .fetch_optional(&pool)
     .await
     .map_err(crate::error::AppError::Database)?
@@ -1095,8 +1094,8 @@ pub async fn record_save(
     let plan_item = sqlx::query_as::<_, crate::models::PlanItem>(
         "SELECT * FROM plan_items WHERE id = ? AND plan_id = ?",
     )
-    .bind(&item_id)
-    .bind(&current_plan.id)
+    .bind(item_id)
+    .bind(current_plan.id)
     .fetch_optional(&pool)
     .await
     .map_err(crate::error::AppError::Database)?
@@ -1134,7 +1133,7 @@ pub async fn record_save(
         "SELECT * FROM records WHERE plan_item_id = ?
          ORDER BY record_date DESC, id DESC LIMIT 1",
     )
-    .bind(&item_id)
+    .bind(item_id)
     .fetch_optional(&pool)
     .await
     .map_err(crate::error::AppError::Database)?;
@@ -1166,15 +1165,15 @@ pub async fn record_save(
                 WHERE id = ?",
             )
             .bind(completed)
-            .bind(&weight)
-            .bind(&sets)
-            .bind(&reps)
-            .bind(&rest)
+            .bind(weight)
+            .bind(sets)
+            .bind(reps)
+            .bind(rest)
             .bind(&form.feeling)
             .bind(&form.strategy)
             .bind(&form.key_points)
             .bind(&form.mode)
-            .bind(&record.id)
+            .bind(record.id)
             .execute(&pool)
             .await
             .map_err(crate::error::AppError::Database)?;
@@ -1191,15 +1190,15 @@ pub async fn record_save(
                 weight, sets, reps, rest, feeling, strategy, key_points, mode)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
-            .bind(&plan_item.id)
-            .bind(&phase.id)
-            .bind(&plan_item.exercise_id)
+            .bind(plan_item.id)
+            .bind(phase.id)
+            .bind(plan_item.exercise_id)
             .bind(&today_dt)
             .bind(completed)
-            .bind(&weight)
-            .bind(&sets)
-            .bind(&reps)
-            .bind(&rest)
+            .bind(weight)
+            .bind(sets)
+            .bind(reps)
+            .bind(rest)
             .bind(&form.feeling)
             .bind(&form.strategy)
             .bind(&form.key_points)
@@ -1221,8 +1220,8 @@ pub async fn record_save(
     {
         sqlx::query("UPDATE exercises SET key_points = ? WHERE id = ? AND user_id = ?")
             .bind(&form.key_points)
-            .bind(&plan_item.exercise_id)
-            .bind(&user.id)
+            .bind(plan_item.exercise_id)
+            .bind(user.id)
             .execute(&pool)
             .await
             .map_err(crate::error::AppError::Database)?;
@@ -1242,8 +1241,8 @@ pub async fn record_save(
     .bind(&form.mode)
     .bind(&form.bar_weight)
     .bind(&form.unit)
-    .bind(&plan_item.exercise_id)
-    .bind(&user.id)
+    .bind(plan_item.exercise_id)
+    .bind(user.id)
     .execute(&pool)
     .await
     .map_err(crate::error::AppError::Database)?;
@@ -1261,10 +1260,10 @@ pub async fn record_save(
             "UPDATE exercises SET default_sets = ?, default_reps = ?
         WHERE id = ? AND user_id = ?",
         )
-        .bind(&sets)
-        .bind(&reps)
-        .bind(&plan_item.exercise_id)
-        .bind(&user.id)
+        .bind(sets)
+        .bind(reps)
+        .bind(plan_item.exercise_id)
+        .bind(user.id)
         .execute(&pool)
         .await
         .map_err(crate::error::AppError::Database)?;

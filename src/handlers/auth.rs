@@ -152,8 +152,8 @@ pub async fn login_page() -> axum::response::Html<String>
 ///   Err 通道既承载"系统故障"，也承载"业务拒绝"：
 ///   - 数据库坏了      → AppError::Database   （浏览器看到 500 错误）
 ///   - 查无此人/密码错  → AppError::Validation  （浏览器看到登录失败）
-///   查不到用户不是程序出错，而是登录流程的业务失败，
-///   但 handler 只有 Ok/Err 两条路，所以只能走 Err 通道把"登录失败"送回浏览器。
+///     查不到用户不是程序出错，而是登录流程的业务失败，
+///     但 handler 只有 Ok/Err 两条路，所以只能走 Err 通道把"登录失败"送回浏览器。
 ///
 /// ok_or vs ok_or_else（学生踩过的坑）：
 ///   ok_or(值)        = 直接传错误值（提前构造好了）
@@ -303,10 +303,10 @@ pub async fn login_page() -> axum::response::Html<String>
 /// 【实现步骤】
 /// 1. 查用户：
 ///    sqlx::query_as::<_, User>("SELECT * FROM users WHERE username = ?")
-///   .bind(&form.username)
-///   .fetch_optional(&pool)
-///   .await
-///   .map_err(AppError::Database)?
+///    .bind(&form.username)
+///    .fetch_optional(&pool)
+///    .await
+///    .map_err(AppError::Database)?
 /// 2. 用户不存在 → .ok_or_else(|| AppError::Validation("用户名或密码错误".to_string()))?
 /// 3. 校验密码 → 失败返回同样的 Validation 错误
 /// 4. 创建 session：let token = crate::auth::create_session(&pool, user.id).await?;
@@ -317,8 +317,8 @@ pub async fn login_page() -> axum::response::Html<String>
 ///    let mut headers = HeaderMap::new();
 ///    headers.insert(SET_COOKIE, cookie.parse().map_err(...)?);
 /// 7. 返回 (headers, Redirect::to("/"))
-/// 返回类型说明：登录成功返回「响应头 + 重定向」的元组
-/// （响应头里放 Set-Cookie，重定向到首页）
+///    返回类型说明：登录成功返回「响应头 + 重定向」的元组
+///    （响应头里放 Set-Cookie，重定向到首页）
 pub async fn login(
     axum::extract::State(state): axum::extract::State<crate::AppState>,
     axum::extract::Form(form): axum::extract::Form<LoginForm>,
@@ -331,7 +331,7 @@ pub async fn login(
             .bind(&form.username)
             .fetch_optional(&pool)
             .await
-            .map_err(|e| crate::error::AppError::Database(e))?;
+            .map_err(crate::error::AppError::Database)?;
 
     let user = user_op
         .ok_or_else(|| crate::error::AppError::Validation("用户名不存在或密码错误".to_string()))?;
@@ -432,8 +432,8 @@ pub async fn login(
 /// 4. 设置清除 cookie：let cookie = "session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0";
 ///    （Max-Age=0 = 立即过期，浏览器删除这个 cookie）
 /// 5. 返回 (headers, Redirect::to("/login"))
-/// 返回类型说明：登出返回「响应头 + 重定向」的元组
-/// （响应头里放清除 cookie，重定向到登录页）
+///    返回类型说明：登出返回「响应头 + 重定向」的元组
+///    （响应头里放清除 cookie，重定向到登录页）
 pub async fn logout(
     axum::extract::State(state): axum::extract::State<crate::AppState>,
     headers: axum::http::HeaderMap,
@@ -570,8 +570,8 @@ pub fn extract_token(headers: &axum::http::HeaderMap) -> Option<String>
 ///    ? 的两步工作——"解包 Result" + "错误类型转换（From）"。
 ///    这里 get_user_by_session 返回 Result<User, AppError>，
 ///    require_user 签名也是 Result<User, AppError>：
-///      错误类型相同 → 不需要 From 转换
-///      想要的就是整个 Result → 不需要解包
+///    错误类型相同 → 不需要 From 转换
+///    想要的就是整个 Result → 不需要解包
 ///    ? 没有工作要做，所以直接交付整个 Result。
 ///
 /// 3. 如果用 ? 会怎样？（对比）
@@ -587,7 +587,7 @@ pub fn extract_token(headers: &axum::http::HeaderMap) -> Option<String>
 /// 1. let token = extract_token(headers).ok_or(AppError::Unauthorized)?;
 /// 2. crate::auth::get_user_by_session(&pool, &token).await
 ///    （注意传 &token：get_user_by_session 收 &str，token 是 String，
-///      必须传引用才能匹配参数类型）
+///    必须传引用才能匹配参数类型）
 pub async fn require_user(
     state: &crate::AppState,
     headers: &axum::http::HeaderMap,
@@ -651,12 +651,12 @@ pub async fn require_user(
 /// 2. 管理员检查：if !user.is_admin { return Err(AppError::Validation("需要管理员权限".to_string())); }
 /// 3. 查所有用户：
 ///    sqlx::query_as::<_, User>("SELECT * FROM users ORDER BY id")
-///        .fetch_all(&pool).await.map_err(AppError::Database)?
+///    .fetch_all(&pool).await.map_err(AppError::Database)?
 /// 4. 迭代器拼 HTML 表格行：
 ///    users.iter()
-///        .map(|u| format!("<tr><td>{}</td><td>{}</td><td>{}</td></tr>",
-///            u.id, u.username, if u.is_admin { "管理员" } else { "普通用户" }))
-///        .collect::<Vec<_>>().join("\n")
+///    .map(|u| format!("<tr><td>{}</td><td>{}</td><td>{}</td></tr>",
+///    u.id, u.username, if u.is_admin { "管理员" } else { "普通用户" }))
+///    .collect::<Vec<_>>().join("\n")
 /// 5. 用 format! 拼完整 HTML 页面返回
 pub async fn admin_users(
     axum::extract::State(state): axum::extract::State<crate::AppState>,
@@ -780,11 +780,11 @@ pub async fn admin_users(
 /// 3. 哈希密码：let password_hash = crate::auth::hash_password(&form.password)?;
 /// 4. 是否管理员：let is_admin = form.is_admin.as_deref() == Some("1");
 /// 5. 插入：
-/// sqlx::query("INSERT INTO users (username, password_hash, is_admin) VALUES (?, ?, ?)")
-///     .bind(&form.username).bind(&password_hash).bind(is_admin)
-///        .execute(&pool).await.map_err(AppError::Database)?
+///    sqlx::query("INSERT INTO users (username, password_hash, is_admin) VALUES (?, ?, ?)")
+///    .bind(&form.username).bind(&password_hash).bind(is_admin)
+///    .execute(&pool).await.map_err(AppError::Database)?
 /// 6. 重定向回管理页：Ok(Redirect::to("/admin/users"))
-/// 返回类型说明：创建成功返回重定向（回到用户管理页）
+///    返回类型说明：创建成功返回重定向（回到用户管理页）
 ///
 /// 【教学：401 vs 403 —— 两个"拒绝"的区别】
 ///   require_user 失败          → 401（还没登录，你是谁？）
@@ -1047,7 +1047,7 @@ pub async fn update_body_weight(
 
     sqlx::query("UPDATE users SET body_weight = ? WHERE id = ?")
         .bind(weight)
-        .bind(&user.id)
+        .bind(user.id)
         .execute(&pool)
         .await
         .map_err(crate::error::AppError::Database)?;

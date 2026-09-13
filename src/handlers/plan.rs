@@ -158,8 +158,8 @@ pub async fn list_templates(
     let phase_ret = sqlx::query_as::<_, crate::models::Phase>(
         "SELECT * FROM phases WHERE id = ? AND user_id = ?",
     )
-    .bind(&phase_id)
-    .bind(&user.id)
+    .bind(phase_id)
+    .bind(user.id)
     .fetch_optional(&pool)
     .await
     .map_err(crate::error::AppError::Database)?
@@ -184,7 +184,7 @@ pub async fn list_templates(
     let template_vec = sqlx::query_as::<_, crate::models::Template>(
         "SELECT * FROM templates WHERE phase_id = ? ORDER BY sort_order, id",
     )
-    .bind(&phase_ret.id)
+    .bind(phase_ret.id)
     .fetch_all(&pool)
     .await
     .map_err(crate::error::AppError::Database)?;
@@ -273,8 +273,8 @@ pub async fn template_create_form(
     let phase_ret = sqlx::query_as::<_, crate::models::Phase>(
         "SELECT * FROM phases WHERE id = ? AND user_id = ?",
     )
-    .bind(&phase_id)
-    .bind(&user.id)
+    .bind(phase_id)
+    .bind(user.id)
     .fetch_optional(&pool)
     .await
     .map_err(crate::error::AppError::Database)?
@@ -283,7 +283,7 @@ pub async fn template_create_form(
     // ② 查全部动作 → checkbox 行（name = 动作 id，value = 1）
     let all_exercises =
         sqlx::query_as::<_, crate::models::Exercise>("SELECT * FROM exercises WHERE user_id = ?")
-            .bind(&user.id)
+            .bind(user.id)
             .fetch_all(&pool)
             .await
             .map_err(crate::error::AppError::Database)?;
@@ -389,8 +389,8 @@ pub async fn template_create(
     let target_phase = sqlx::query_as::<_, crate::models::Phase>(
         "SELECT * FROM phases WHERE id = ? AND user_id = ?",
     )
-    .bind(&phase_id)
-    .bind(&user.id)
+    .bind(phase_id)
+    .bind(user.id)
     .fetch_optional(&pool)
     .await
     .map_err(crate::error::AppError::Database)?
@@ -413,7 +413,7 @@ pub async fn template_create(
     let next_sort = sqlx::query_scalar::<_, i64>(
         "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM templates WHERE phase_id = ?",
     )
-    .bind(&phase_id)
+    .bind(phase_id)
     .fetch_one(&pool)
     .await?;
 
@@ -427,7 +427,7 @@ pub async fn template_create(
     (phase_id, name, sort_order) VALUES (?, ?, ?)
     RETURNING id",
     )
-    .bind(&phase_id)
+    .bind(phase_id)
     .bind(&form.name)
     .bind(next_sort)
     .fetch_one(&mut *tx)
@@ -450,7 +450,7 @@ pub async fn template_create(
         sqlx::query(
             "INSERT INTO template_items (template_id, exercise_id, sort_order) VALUES (?, ?, ?)",
         )
-        .bind(&template_id)
+        .bind(template_id)
         .bind(ex_id) // ex_id 已经是 &i64，不用再 &
         .bind(idx as i64) // ← usize 必须转 i64
         .execute(&mut *tx) // ← 事务要 &mut *tx（Transaction 可变解引用）
@@ -485,7 +485,7 @@ pub async fn template_create(
 /// 4. 查全部动作 → 两个下拉框选项（部位 + 动作）
 /// 5. 拼表单：模板名 input + 表格（hidden checkbox name={id} value=1 checked
 ///    + ↑↓ + 删除）+ 添加动作区 + 保存
-///    动作数据嵌入 JSON（EX_OPTIONS），JS 的 addRow 克隆行模板
+///      动作数据嵌入 JSON（EX_OPTIONS），JS 的 addRow 克隆行模板
 pub async fn template_edit_form(
     axum::extract::State(state): axum::extract::State<crate::AppState>,
     crate::handlers::auth::AuthUser(user): crate::handlers::auth::AuthUser,
@@ -500,8 +500,8 @@ pub async fn template_edit_form(
         "SELECT t.* FROM templates t INNER JOIN phases p ON t.phase_id = p.id
     WHERE t.id = ? AND p.user_id = ?",
     )
-    .bind(&template_id)
-    .bind(&user.id)
+    .bind(template_id)
+    .bind(user.id)
     .fetch_optional(&pool)
     .await
     .map_err(crate::error::AppError::Database)?
@@ -513,7 +513,7 @@ pub async fn template_edit_form(
     let current_items = sqlx::query_as::<_, crate::models::TemplateItem>(
         "SELECT * FROM template_items WHERE template_id = ? ORDER BY sort_order, id",
     )
-    .bind(&template_id)
+    .bind(template_id)
     .fetch_all(&pool)
     .await
     .map_err(crate::error::AppError::Database)?;
@@ -521,7 +521,7 @@ pub async fn template_edit_form(
     // ③ 查【全部】动作（供下拉框 + 表格行名 + JSON）
     let all_exercises =
         sqlx::query_as::<_, crate::models::Exercise>("SELECT * FROM exercises WHERE user_id = ?")
-            .bind(&user.id)
+            .bind(user.id)
             .fetch_all(&pool)
             .await
             .map_err(crate::error::AppError::Database)?;
@@ -786,7 +786,7 @@ pub async fn template_edit_form(
 ///   1. 更新父表（改名）：UPDATE templates SET name = ? WHERE id = ?
 ///   2. 删掉所有旧子表行：DELETE FROM template_items WHERE template_id = ?
 ///   3. 重新插入所有勾选的动作（和 create 一样的循环）
-/// 三步在一个事务里 → 不会出现"删了没插上"的半截状态。
+///      三步在一个事务里 → 不会出现"删了没插上"的半截状态。
 ///
 /// 实现步骤：
 /// 1. 签名：State + AuthUser + Path(template_id) + Form(form)
@@ -809,8 +809,8 @@ pub async fn template_update(
         "SELECT t.* FROM templates t INNER JOIN phases p ON t.phase_id = p.id
     WHERE t.id = ? AND p.user_id = ?",
     )
-    .bind(&template_id)
-    .bind(&user.id)
+    .bind(template_id)
+    .bind(user.id)
     .fetch_optional(&pool)
     .await
     .map_err(crate::error::AppError::Database)?
@@ -822,8 +822,8 @@ pub async fn template_update(
     let target_phase = sqlx::query_as::<_, crate::models::Phase>(
         "SELECT * FROM phases WHERE id = ? AND user_id = ?",
     )
-    .bind(&current_template.phase_id)
-    .bind(&user.id)
+    .bind(current_template.phase_id)
+    .bind(user.id)
     .fetch_optional(&pool)
     .await
     .map_err(crate::error::AppError::Database)?
@@ -852,7 +852,7 @@ pub async fn template_update(
     // 3.1 更新父表（改名）——只改这一行，不会插入新记录
     sqlx::query("UPDATE templates SET name = ? WHERE id = ?")
         .bind(&form.name)
-        .bind(&template_id)
+        .bind(template_id)
         .execute(&mut *tx)
         .await
         .map_err(crate::error::AppError::Database)?;
@@ -869,7 +869,7 @@ pub async fn template_update(
 
     // 3.2 删掉所有旧子表行（先删后插：清空重来，避免"残留旧动作"）
     sqlx::query("DELETE FROM template_items WHERE template_id = ?")
-        .bind(&template_id)
+        .bind(template_id)
         .execute(&mut *tx)
         .await
         .map_err(crate::error::AppError::Database)?;
@@ -884,7 +884,7 @@ pub async fn template_update(
         sqlx::query(
             "INSERT INTO template_items (template_id, exercise_id, sort_order) VALUES (?, ?, ?)",
         )
-        .bind(&template_id)
+        .bind(template_id)
         .bind(ex_id)
         .bind(idx as i64) // ← order 排序后的下标即 sort_order
         .execute(&mut *tx) // ← 事务要 &mut *tx（Transaction 可变解引用）
@@ -916,7 +916,7 @@ pub async fn template_update(
 /// 1. 签名：State + AuthUser + Path(template_id)
 /// 2. 验证归属（JOIN phases 查 user_id）
 /// 3. 事务：DELETE FROM template_items WHERE template_id = ?
-///        → DELETE FROM templates WHERE id = ?
+///    → DELETE FROM templates WHERE id = ?
 /// 4. commit → 重定向回模板列表
 pub async fn template_delete(
     axum::extract::State(state): axum::extract::State<crate::AppState>,
@@ -932,8 +932,8 @@ pub async fn template_delete(
         "SELECT t.* FROM templates t INNER JOIN phases p ON t.phase_id = p.id
     WHERE t.id = ? AND p.user_id = ?",
     )
-    .bind(&template_id)
-    .bind(&user.id)
+    .bind(template_id)
+    .bind(user.id)
     .fetch_optional(&pool)
     .await
     .map_err(crate::error::AppError::Database)?
@@ -950,14 +950,14 @@ pub async fn template_delete(
 
     // 2.1 删孩子：模板的所有动作项
     sqlx::query("DELETE FROM template_items WHERE template_id = ?")
-        .bind(&template_id)
+        .bind(template_id)
         .execute(&mut *tx)
         .await
         .map_err(crate::error::AppError::Database)?;
 
     // 2.2 删父亲：模板本身
     sqlx::query("DELETE FROM templates WHERE id = ?")
-        .bind(&template_id)
+        .bind(template_id)
         .execute(&mut *tx)
         .await
         .map_err(crate::error::AppError::Database)?;
@@ -1000,8 +1000,8 @@ pub async fn list_plans(
     let phase_ret = sqlx::query_as::<_, crate::models::Phase>(
         "SELECT * FROM phases WHERE id = ? AND user_id = ?",
     )
-    .bind(&phase_id)
-    .bind(&user.id)
+    .bind(phase_id)
+    .bind(user.id)
     .fetch_optional(&pool)
     .await
     .map_err(crate::error::AppError::Database)?
@@ -1022,7 +1022,7 @@ pub async fn list_plans(
     //    批量查"日期 → 计划 id"映射（一次查询，避免逐日 N+1）。
     let plan_date_map: std::collections::HashMap<String, i64> =
         sqlx::query_as::<_, (String, i64)>("SELECT date, id FROM plans WHERE phase_id = ?")
-            .bind(&phase_ret.id)
+            .bind(phase_ret.id)
             .fetch_all(&pool)
             .await
             .map_err(crate::error::AppError::Database)?
@@ -1190,8 +1190,8 @@ pub async fn plan_create_form(
     let target_phase = sqlx::query_as::<_, crate::models::Phase>(
         "SELECT * FROM phases WHERE id = ? AND user_id = ?",
     )
-    .bind(&phase_id)
-    .bind(&user.id)
+    .bind(phase_id)
+    .bind(user.id)
     .fetch_optional(&pool)
     .await
     .map_err(crate::error::AppError::Database)?
@@ -1208,7 +1208,7 @@ pub async fn plan_create_form(
     let template_rows = sqlx::query_as::<_, crate::models::Template>(
         "SELECT * FROM templates WHERE phase_id = ? ORDER BY sort_order, id",
     )
-    .bind(&phase_id)
+    .bind(phase_id)
     .fetch_all(&pool)
     .await
     .map_err(crate::error::AppError::Database)?
@@ -1229,7 +1229,7 @@ pub async fn plan_create_form(
     //    （serde_urlencoded map 语义会覆盖，见 PlanCreateForm 注释）
     let all_exercises =
         sqlx::query_as::<_, crate::models::Exercise>("SELECT * FROM exercises WHERE user_id = ?")
-            .bind(&user.id)
+            .bind(user.id)
             .fetch_all(&pool)
             .await
             .map_err(crate::error::AppError::Database)?;
@@ -1363,8 +1363,8 @@ pub async fn plan_create(
     let target_phase = sqlx::query_as::<_, crate::models::Phase>(
         "SELECT * FROM phases WHERE id = ? AND user_id = ?",
     )
-    .bind(&phase_id)
-    .bind(&user.id)
+    .bind(phase_id)
+    .bind(user.id)
     .fetch_optional(&pool)
     .await
     .map_err(crate::error::AppError::Database)?
@@ -1381,7 +1381,7 @@ pub async fn plan_create(
     //    提前拦截给用户一个明确的错误，而不是等数据库报 UNIQUE 冲突
     let exists =
         sqlx::query_scalar::<_, i64>("SELECT id FROM plans WHERE phase_id = ? AND date = ?")
-            .bind(&phase_id)
+            .bind(phase_id)
             .bind(&form.date)
             .fetch_optional(&pool)
             .await
@@ -1419,7 +1419,7 @@ pub async fn plan_create(
     {
         let ex =
             sqlx::query_as::<_, crate::models::Exercise>("SELECT * FROM exercises WHERE id = ?")
-                .bind(&ex_id)
+                .bind(ex_id)
                 .fetch_one(pool)
                 .await
                 .map_err(crate::error::AppError::Database)?;
@@ -1457,7 +1457,7 @@ pub async fn plan_create(
     let plan_id = sqlx::query_scalar::<_, i64>(
         "INSERT INTO plans (phase_id, date, note) VALUES (?, ?, ?) RETURNING id",
     )
-    .bind(&phase_id)
+    .bind(phase_id)
     .bind(&form.date)
     .bind(&form.note)
     .fetch_one(&mut *tx)
@@ -1472,7 +1472,7 @@ pub async fn plan_create(
         let template_items = sqlx::query_as::<_, crate::models::TemplateItem>(
             "SELECT * FROM template_items WHERE template_id = ? ORDER BY sort_order",
         )
-        .bind(&tid)
+        .bind(tid)
         .fetch_all(&mut *tx)
         .await
         .map_err(crate::error::AppError::Database)?;
@@ -1487,8 +1487,8 @@ pub async fn plan_create(
                 plan_mode, plan_bar_weight, plan_key_points)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             )
-            .bind(&plan_id)
-            .bind(&ti.exercise_id)
+            .bind(plan_id)
+            .bind(ti.exercise_id)
             .bind(idx as i64)
             .bind(sets)
             .bind(reps)
@@ -1514,7 +1514,7 @@ pub async fn plan_create(
                 plan_mode, plan_bar_weight, plan_key_points)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             )
-            .bind(&plan_id)
+            .bind(plan_id)
             .bind(ex_id)
             .bind(idx as i64)
             .bind(sets)
@@ -1557,17 +1557,17 @@ pub async fn plan_create(
 // ============================================================
 // 计划详情 + 编辑（GET /plans/{id}）【M4 修订：原 plan_edit_form 并入】
 // ============================================================
-/// 显示计划详情，并直接以表格形式编辑（任务 0）
+///    显示计划详情，并直接以表格形式编辑（任务 0）
 ///
 /// 【M4 修订说明（任务 0）】
 /// 旧版：plan_detail 只读表格 + 独立的 plan_edit_form 编辑页（checkbox 列表）。
 /// 新版：两页合并 —— GET /plans/{id} 直接是"表格形式的编辑页"：
 ///   - 上面：日期 + 备注 input（随表单提交）
 ///   - 中间：表格（动作 | 组数 | 次数 | 实际强度 | 计重方式 | 杆重/支撑 |
-///           观测强度换算 | 休息 | 要领 | 备注 | 操作）
+///     观测强度换算 | 休息 | 要领 | 备注 | 操作）
 ///   - 每行一个 hidden checkbox（name=动作id，value=1，checked）
 ///     → 提交时 exercise_ids() 收集到"仍存在于 DOM 的行"；
-///       删除行 = JS remove DOM → checkbox 随之消失 → 不提交
+///     删除行 = JS remove DOM → checkbox 随之消失 → 不提交
 ///   - 每行 ↑↓ 按钮：HTML5 form 属性关联外部隐藏 form（form 不能嵌套）
 ///   - 下方"添加动作"区：身体部位下拉 + 动作下拉 + 添加按钮（JS addRow）
 ///   - 动作数据以 JSON 嵌入（EX_OPTIONS），JS 动态加行
@@ -1584,8 +1584,8 @@ pub async fn plan_detail(
         "SELECT p.* FROM plans p INNER JOIN phases ph ON p.phase_id = ph.id
     WHERE p.id = ? AND ph.user_id = ?",
     )
-    .bind(&plan_id)
-    .bind(&user.id)
+    .bind(plan_id)
+    .bind(user.id)
     .fetch_optional(&pool)
     .await
     .map_err(crate::error::AppError::Database)?
@@ -1597,7 +1597,7 @@ pub async fn plan_detail(
     let plan_items = sqlx::query_as::<_, crate::models::PlanItem>(
         "SELECT * FROM plan_items WHERE plan_id = ? ORDER BY sort_order, id",
     )
-    .bind(&plan_id)
+    .bind(plan_id)
     .fetch_all(&pool)
     .await
     .map_err(crate::error::AppError::Database)?;
@@ -1606,7 +1606,7 @@ pub async fn plan_detail(
     //    需要 name（显示）+ body_part（部位）+ 默认值（新动作回显）
     let all_exercises =
         sqlx::query_as::<_, crate::models::Exercise>("SELECT * FROM exercises WHERE user_id = ?")
-            .bind(&user.id)
+            .bind(user.id)
             .fetch_all(&pool)
             .await
             .map_err(crate::error::AppError::Database)?;
@@ -1629,7 +1629,7 @@ pub async fn plan_detail(
              ) latest ON r.exercise_id = latest.exercise_id
              WHERE (r.record_date || '#' || printf('%010d', r.id)) = latest.k",
     )
-        .bind(&user.id)
+        .bind(user.id)
     .fetch_all(&pool)
         .await
         .map_err(crate::error::AppError::Database)?
@@ -2244,8 +2244,8 @@ pub async fn plan_update(
         "SELECT p.* FROM plans p INNER JOIN phases ph ON p.phase_id = ph.id
     WHERE p.id = ? AND ph.user_id = ?",
     )
-    .bind(&plan_id)
-    .bind(&user.id)
+    .bind(plan_id)
+    .bind(user.id)
     .fetch_optional(&pool)
     .await
     .map_err(crate::error::AppError::Database)?
@@ -2257,8 +2257,8 @@ pub async fn plan_update(
     let target_phase = sqlx::query_as::<_, crate::models::Phase>(
         "SELECT * FROM phases WHERE id = ? AND user_id = ?",
     )
-    .bind(&current_plan.phase_id)
-    .bind(&user.id)
+    .bind(current_plan.phase_id)
+    .bind(user.id)
     .fetch_optional(&pool)
     .await
     .map_err(crate::error::AppError::Database)?
@@ -2275,9 +2275,9 @@ pub async fn plan_update(
     let exists = sqlx::query_scalar::<_, i64>(
         "SELECT id FROM plans WHERE phase_id = ? AND date = ? AND id != ?",
     )
-    .bind(&current_plan.phase_id)
+    .bind(current_plan.phase_id)
     .bind(&form.date)
-    .bind(&plan_id)
+    .bind(plan_id)
     .fetch_optional(&pool)
     .await
     .map_err(crate::error::AppError::Database)?;
@@ -2299,7 +2299,7 @@ pub async fn plan_update(
     sqlx::query("UPDATE plans SET date = ?, note = ? WHERE id = ?")
         .bind(&form.date)
         .bind(&form.note)
-        .bind(&plan_id)
+        .bind(plan_id)
         .execute(&mut *tx)
         .await
         .map_err(crate::error::AppError::Database)?;
@@ -2320,7 +2320,7 @@ pub async fn plan_update(
         "SELECT r.exercise_id, r.id FROM records r
         WHERE r.plan_item_id IN (SELECT id FROM plan_items WHERE plan_id = ?)",
     )
-    .bind(&plan_id)
+    .bind(plan_id)
     .fetch_all(&pool)
     .await
     .map_err(crate::error::AppError::Database)?
@@ -2337,13 +2337,13 @@ pub async fn plan_update(
         "UPDATE records SET plan_item_id = NULL
         WHERE plan_item_id IN (SELECT id FROM plan_items WHERE plan_id = ?)",
     )
-    .bind(&plan_id)
+    .bind(plan_id)
     .execute(&mut *tx)
     .await
     .map_err(crate::error::AppError::Database)?;
 
     sqlx::query("DELETE FROM plan_items WHERE plan_id = ?")
-        .bind(&plan_id)
+        .bind(plan_id)
         .execute(&mut *tx)
         .await
         .map_err(crate::error::AppError::Database)?;
@@ -2367,7 +2367,7 @@ pub async fn plan_update(
             plan_rest, plan_key_points, plan_note)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
-        .bind(&plan_id)
+        .bind(plan_id)
         .bind(ex_id)
         .bind(idx as i64) // ← order 排序后的下标即 sort_order
         .bind(form.plan_sets(ex_id))
@@ -2443,8 +2443,8 @@ pub async fn plan_delete(
         "SELECT p.* FROM plans p INNER JOIN phases ph ON p.phase_id = ph.id
     WHERE p.id = ? AND ph.user_id = ?",
     )
-    .bind(&plan_id)
-    .bind(&user.id)
+    .bind(plan_id)
+    .bind(user.id)
     .fetch_optional(&pool)
     .await
     .map_err(crate::error::AppError::Database)?
@@ -2465,19 +2465,19 @@ pub async fn plan_delete(
         "UPDATE records SET plan_item_id = NULL
         WHERE plan_item_id IN (SELECT id FROM plan_items WHERE plan_id = ?)",
     )
-    .bind(&plan_id)
+    .bind(plan_id)
     .execute(&mut *tx)
     .await
     .map_err(crate::error::AppError::Database)?;
 
     sqlx::query("DELETE FROM plan_items WHERE plan_id = ?")
-        .bind(&plan_id)
+        .bind(plan_id)
         .execute(&mut *tx)
         .await
         .map_err(crate::error::AppError::Database)?;
 
     sqlx::query("DELETE FROM plans WHERE id = ?")
-        .bind(&plan_id)
+        .bind(plan_id)
         .execute(&mut *tx)
         .await
         .map_err(crate::error::AppError::Database)?;
@@ -2529,8 +2529,8 @@ pub async fn template_sort(
         "SELECT t.* FROM templates t INNER JOIN phases p ON t.phase_id = p.id
     WHERE t.id = ? AND p.user_id = ?",
     )
-    .bind(&template_id)
-    .bind(&user.id)
+    .bind(template_id)
+    .bind(user.id)
     .fetch_optional(&pool)
     .await
     .map_err(crate::error::AppError::Database)?
@@ -2540,7 +2540,7 @@ pub async fn template_sort(
     let siblings = sqlx::query_as::<_, crate::models::Template>(
         "SELECT * FROM templates WHERE phase_id = ? ORDER BY sort_order, id",
     )
-    .bind(&current.phase_id)
+    .bind(current.phase_id)
     .fetch_all(&pool)
     .await
     .map_err(crate::error::AppError::Database)?;
@@ -2633,8 +2633,8 @@ pub async fn template_item_move(
         "SELECT t.* FROM templates t INNER JOIN phases p ON t.phase_id = p.id
     WHERE t.id = ? AND p.user_id = ?",
     )
-    .bind(&template_id)
-    .bind(&user.id)
+    .bind(template_id)
+    .bind(user.id)
     .fetch_optional(&pool)
     .await
     .map_err(crate::error::AppError::Database)?
@@ -2644,7 +2644,7 @@ pub async fn template_item_move(
     let siblings = sqlx::query_as::<_, crate::models::TemplateItem>(
         "SELECT * FROM template_items WHERE template_id = ? ORDER BY sort_order, id",
     )
-    .bind(&template_id)
+    .bind(template_id)
     .fetch_all(&pool)
     .await
     .map_err(crate::error::AppError::Database)?;
@@ -2734,8 +2734,8 @@ pub async fn plan_item_move(
         "SELECT p.* FROM plans p INNER JOIN phases ph ON p.phase_id = ph.id
     WHERE p.id = ? AND ph.user_id = ?",
     )
-    .bind(&plan_id)
-    .bind(&user.id)
+    .bind(plan_id)
+    .bind(user.id)
     .fetch_optional(&pool)
     .await
     .map_err(crate::error::AppError::Database)?
@@ -2745,7 +2745,7 @@ pub async fn plan_item_move(
     let siblings = sqlx::query_as::<_, crate::models::PlanItem>(
         "SELECT * FROM plan_items WHERE plan_id = ? ORDER BY sort_order, id",
     )
-    .bind(&plan_id)
+    .bind(plan_id)
     .fetch_all(&pool)
     .await
     .map_err(crate::error::AppError::Database)?;
@@ -2917,7 +2917,7 @@ pub struct PlanCreateForm
     ///   - 想用 `exercise_ids: Vec<i64>` 收集数组：直接 422 报错
     ///     `invalid type: string "6", expected a sequence`
     ///   - 加 `[]` 后缀（`exercise_ids[]=6`）也不生效
-    /// 结论：**同名重复键无法收集成数组**，这是 serde_urlencoded 的固有行为。
+    ///     结论：**同名重复键无法收集成数组**，这是 serde_urlencoded 的固有行为。
     ///
     ///  本项目方案：checkbox name = 动作 id（唯一键），value = "1"
     ///   <input type="checkbox" name="6" value="1"> 卧推
