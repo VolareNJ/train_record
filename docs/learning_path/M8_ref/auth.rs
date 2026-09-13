@@ -17,7 +17,7 @@
 //   POST /api/v1/logout  登出 → 销毁 session
 //   GET  /api/v1/me      当前用户（API 认证自检）
 //
-// 📌 阶段要求：M8 你来实现本文件所有函数。
+// 阶段要求：M8 你来实现本文件所有函数。
 //   完整实现已备份在 docs/learning_path/M8_ref/，实现完成后对照检查。
 // ============================================================
 
@@ -71,7 +71,7 @@ impl axum::extract::FromRequestParts<AppState> for ApiAuthUser
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection>
-    {
+{
         // 【实现步骤】
         // 1. let pool = state.pool.read().await.clone();
         // 2. let token = extract_token(&parts.headers).ok_or(ApiError::Unauthorized)?;
@@ -80,7 +80,7 @@ impl axum::extract::FromRequestParts<AppState> for ApiAuthUser
         //    （session 失效/过期也是"未登录"→ 统一 401，
         //     不把内部错误细节暴露给 API 调用者）
         // 4. Ok(ApiAuthUser(user))
-        //
+//
         // 提示：auth::get_user_by_session 返回 Result<User, AppError>，
         //   AppError 不能直接 ? 转成 ApiError（没有 From 实现），
         //   需要 map_err 转成 ApiError::Unauthorized。
@@ -91,7 +91,7 @@ impl axum::extract::FromRequestParts<AppState> for ApiAuthUser
             .map_err(|_| ApiError::Unauthorized)?;
         Ok(ApiAuthUser(user))
     }
-}
+    }
 
 // ============================================================
 // 【教学：LoginReq —— API 登录请求体】
@@ -105,7 +105,7 @@ pub struct LoginReq
 {
     pub username: String,
     pub password: String,
-}
+    }
 
 // ============================================================
 // 【教学：UserOut —— 用户信息 DTO（安全输出）】
@@ -119,20 +119,20 @@ pub struct UserOut
     pub username: String,
     pub is_admin: bool,
     pub body_weight: Option<f64>,
-}
+    }
 
 impl From<&User> for UserOut
 {
     fn from(u: &User) -> Self
-    {
+{
         Self {
             id: u.id,
             username: u.username.clone(),
             is_admin: u.is_admin,
             body_weight: u.body_weight,
-        }
     }
-}
+    }
+    }
 
 // ============================================================
 // 登录（POST /api/v1/login）
@@ -179,13 +179,13 @@ pub async fn login(
     Json(req): Json<LoginReq>,
 ) -> Result<(HeaderMap, Json<serde_json::Value>), ApiError>
 {
-    let pool = state.pool.read().await.clone();
+        let pool = state.pool.read().await.clone();
 
     // 1. 查用户（按用户名，用户表没有 user_id 概念）
     let user_op = sqlx::query_as::<_, User>("SELECT * FROM users WHERE username = ?")
         .bind(&req.username)
         .fetch_optional(&pool)
-        .await
+            .await
         .map_err(ApiError::Database)?;
 
     let user = user_op.ok_or_else(|| ApiError::Validation("用户名不存在或密码错误".to_string()))?;
@@ -194,13 +194,13 @@ pub async fn login(
     let is_correct = auth::verify_password(&req.password, &user.password_hash)
         .map_err(|_| ApiError::Other("密码验证失败".to_string()))?;
     if !is_correct
-    {
+{
         return Err(ApiError::Validation("用户名不存在或密码错误".to_string()));
     }
 
     // 3. 创建 session（逻辑层复用）
     let token = auth::create_session(&pool, user.id)
-        .await
+            .await
         .map_err(|_| ApiError::Other("创建会话失败".to_string()))?;
 
     // 4. 拼 cookie + 响应头
@@ -224,7 +224,7 @@ pub async fn login(
             "token": token,
         })),
     ))
-}
+    }
 
 // ============================================================
 // 登出（POST /api/v1/logout）
@@ -251,11 +251,11 @@ pub async fn logout(
     headers: HeaderMap,
 ) -> Result<(HeaderMap, Json<serde_json::Value>), ApiError>
 {
-    let pool = state.pool.read().await.clone();
+        let pool = state.pool.read().await.clone();
 
     // 有 token 才销毁（温柔跳过，见上方教学）
     if let Some(token) = extract_token(&headers)
-    {
+{
         auth::destroy_session(&pool, &token)
             .await
             .map_err(|_| ApiError::Other("销毁会话失败".to_string()))?;
@@ -271,7 +271,7 @@ pub async fn logout(
     );
 
     Ok((resp_headers, Json(serde_json::json!({ "ok": true }))))
-}
+    }
 
 // ============================================================
 // 当前用户（GET /api/v1/me）
@@ -293,4 +293,4 @@ pub async fn me(
 ) -> Result<Json<UserOut>, ApiError>
 {
     Ok(Json(UserOut::from(&user)))
-}
+    }

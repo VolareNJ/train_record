@@ -19,7 +19,7 @@
 //   1. 定义 ApiError（API 错误 → JSON，不是 302！）
 //   2. 组装 api::router()（所有 /api/v1/... 路由）
 //
-// 📌 阶段要求：M8 你来实现本文件所有函数与 ApiError。
+// 阶段要求：M8 你来实现本文件所有函数与 ApiError。
 //   完整实现已备份在 docs/learning_path/M8_ref/，实现完成后对照检查。
 // ============================================================
 
@@ -93,14 +93,14 @@ pub enum ApiError
 impl IntoResponse for ApiError
 {
     fn into_response(self) -> Response
-    {
+{
         // 【教学：match 拆解错误 → (状态码, 消息) 元组】
         // 状态码决定 HTTP 语义，消息决定 JSON body 内容。
         let (status, message) = match self
-        {
+{
             // 数据库错误：记录日志（方便排查），对外统一"数据库错误"
             ApiError::Database(e) =>
-            {
+{
                 tracing::error!("API 数据库错误: {e}");
                 (StatusCode::INTERNAL_SERVER_ERROR, "数据库错误".to_string())
             },
@@ -110,12 +110,12 @@ impl IntoResponse for ApiError
             ApiError::Validation(msg) => (StatusCode::BAD_REQUEST, msg),
             ApiError::Forbidden(msg) => (StatusCode::FORBIDDEN, msg),
             ApiError::Other(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
-        };
+};
         // 【教学：关键 —— 返回 JSON 而不是 302！】
         // (status, Json(...)) 元组也实现了 IntoResponse，
         // axum 自动把 Json 序列化成 body，status 设成状态码。
         (status, Json(json!({ "error": message }))).into_response()
-    }
+}
 }
 
 // ============================================================

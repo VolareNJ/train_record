@@ -19,16 +19,6 @@
 // 契约一旦发布就统一按 Code 判断，所以这里的选择会一直跟着接口走。
 // ============================================================
 
-use tonic::{Request, Response, Status};
-
-use super::pool_of;
-use crate::{
-    AppState,
-    api::grpc::{auth as guard, pb},
-    auth as session,
-    models::User,
-};
-
 // ============================================================
 // 【教学：service 实现体的组成】
 // ============================================================
@@ -40,24 +30,24 @@ use crate::{
 #[derive(Clone)]
 pub struct AuthServiceImpl
 {
-    pub(crate) state: AppState,
+    pub(crate) state: crate::AppState,
 }
 
 impl AuthServiceImpl
 {
     /// 构造函数：把共享状态塞进来（server.rs 里组装时调用）
-    pub fn new(state: AppState) -> Self
-    {
+    pub fn new(state: crate::AppState) -> Self
+{
         Self { state }
-    }
+}
 }
 
 #[tonic::async_trait]
-impl pb::auth_service_server::AuthService for AuthServiceImpl
+impl crate::api::grpc::pb::auth_service_server::AuthService for AuthServiceImpl
 {
-    // ============================================================
-    // Login（一元 RPC，★ 挖空练习）
-    // ============================================================
+// ============================================================
+    // Login（一元 RPC， 挖空练习）
+// ============================================================
     /// 登录：验证用户名密码 → 创建会话 → 返回用户信息 + token
     ///
     /// 【实现步骤】
@@ -90,81 +80,88 @@ impl pb::auth_service_server::AuthService for AuthServiceImpl
     #[allow(unused_variables)]
     async fn login(
         &self,
-        request: Request<pb::LoginRequest>,
-    ) -> Result<Response<pb::LoginResponse>, Status>
-    {
+        request: tonic::Request<crate::api::grpc::pb::LoginRequest>,
+    ) -> Result<tonic::Response<crate::api::grpc::pb::LoginResponse>, tonic::Status>
+{
         let req = request.into_inner();
-        let pool = pool_of(&self.state).await;
+        let pool = crate::api::grpc::service::pool_of(&self.state).await;
 
         // 查用户（按用户名，用户表没有 user_id 概念）
-        let user = sqlx::query_as::<_, User>("SELECT * FROM users WHERE username = ?")
+        let user =
+            sqlx::query_as::<_, crate::models::User>("SELECT * FROM users WHERE username = ?")
             .bind(&req.username)
             .fetch_optional(&pool)
             .await
             .map_err(|e| {
                 tracing::error!("gRPC 登录查询失败: {e}");
-                Status::internal("数据库错误")
+                    tonic::Status::internal("数据库错误")
             })?
-            .ok_or_else(|| Status::unauthenticated("用户名不存在或密码错误"))?;
+                .ok_or_else(|| tonic::Status::unauthenticated("用户名不存在或密码错误"))?;
 
         // 验密码（复用逻辑层）
-        let ok = session::verify_password(&req.password, &user.password_hash)
-            .map_err(|_| Status::internal("密码验证失败"))?;
+        let ok = crate::auth::verify_password(&req.password, &user.password_hash)
+            .map_err(|_| tonic::Status::internal("密码验证失败"))?;
         if !ok
-        {
-            return Err(Status::unauthenticated("用户名不存在或密码错误"));
-        }
+{
+            return Err(tonic::Status::unauthenticated("用户名不存在或密码错误"));
+}
 
         // 建会话（复用逻辑层，返回 token）
-        let token = session::create_session(&pool, user.id)
+        let token = crate::auth::create_session(&pool, user.id)
             .await
-            .map_err(|_| Status::internal("创建会话失败"))?;
+            .map_err(|_| tonic::Status::internal("创建会话失败"))?;
 
-        Ok(Response::new(pb::LoginResponse {
+        Ok(tonic::Response::new(crate::api::grpc::pb::LoginResponse {
             // 消息字段是 Option（proto 里 `User user = 1;`）→ 包 Some
-            user: Some(pb::User::from(&user)),
+            user: Some(crate::api::grpc::pb::User::from(&user)),
             token,
         }))
-    }
+}
 
-    // ============================================================
+// ============================================================
     // Logout（一元 RPC，已实现，读作参考）
-    // ============================================================
+// ============================================================
     /// 登出：销毁服务端 session（token 立即失效）
     ///
     /// 【教学：为什么这里**不**要求登录？】
     /// 与 REST 的 logout 同款逻辑：没带 token 也算"登出成功"——
     /// 目的已经达到（客户端不该拿到 401 然后困惑"我到底登出没有"）。
     /// 判断口诀（M8 学过）：缺失 = 拒绝请求，还是"没活可干"？这里是后者。
-    async fn logout(&self, request: Request<pb::LogoutRequest>)
-    -> Result<Response<pb::Ack>, Status>
-    {
-        let pool = pool_of(&self.state).await;
+    async fn logout(
+        &self,
+        request: tonic::Request<crate::api::grpc::pb::LogoutRequest>,
+    ) -> Result<tonic::Response<crate::api::grpc::pb::Ack>, tonic::Status>
+{
+        let pool = crate::api::grpc::service::pool_of(&self.state).await;
 
         // 有 token 才销毁（温柔跳过）
-        if let Some(token) = guard::token_from_metadata(&request)
-        {
-            session::destroy_session(&pool, &token)
-                .await
-                .map_err(|_| Status::internal("销毁会话失败"))?;
-        }
+        if let Some(token) = crate::api::grpc::auth::token_from_metadata(&request)
+{
+            crate::auth::destroy_session(&pool, &token)
+            .await
+                .map_err(|_| tonic::Status::internal("销毁会话失败"))?;
+}
 
-        Ok(Response::new(pb::Ack { ok: true }))
-    }
+        Ok(tonic::Response::new(crate::api::grpc::pb::Ack { ok: true }))
+}
 
-    // ============================================================
+// ============================================================
     // GetMe（一元 RPC，已实现）
-    // ============================================================
+// ============================================================
     /// 当前登录用户（客户端启动时自检 token 是否有效）
-    async fn get_me(&self, request: Request<pb::GetMeRequest>)
-    -> Result<Response<pb::User>, Status>
-    {
+    async fn get_me(
+        &self,
+        request: tonic::Request<crate::api::grpc::pb::GetMeRequest>,
+    ) -> Result<tonic::Response<crate::api::grpc::pb::User>, tonic::Status>
+{
         // ① 守卫：没登录 / token 失效 → Err(UNAUTHENTICATED)，方法体根本不会继续执行
-        let user = guard::require_user(&request, &self.state).await?;
+        let user = crate::api::grpc::auth::require_user(&request, &self.state).await?;
 
         // ②③ 没有数据库操作，直接转消息返回
-        Ok(Response::new(pb::User::from(&user)))
-    }
+        Ok(tonic::Response::new(crate::api::grpc::pb::User::from(
+            &user,
+        )))
+}
 }
 
 // 【教学：上面出现过两个名字很像的 User】

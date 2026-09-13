@@ -152,8 +152,9 @@ train_record/
 │   └── train_record.proto    # M9：gRPC 契约（6 service / 32 方法）
 ├── build.rs                  # M9：构建期调 protoc 生成 Rust 代码
 ├── Cargo.toml
-└── src/
-    ├── main.rs               # 入口，启动两个服务器（HTTP + gRPC）
+├── src/
+    │   ├── lib.rs                # M9：库入口（模块树 + AppState）—— lib + bin 分离
+    │   ├── main.rs               # 入口，启动两个服务器（HTTP + gRPC）
     ├── config.rs             # 配置（端口、GRPC_PORT、数据库路径、SecretKey）
     ├── db.rs                 # SQLite 连接池、数据库初始化/迁移
     ├── error.rs              # 统一错误类型（页面层，302/422 语义）
@@ -204,6 +205,9 @@ train_record/
 > **业务 SQL 只应有一份**：两个 API 出口都调用 `api/rest/` 里的 `pub(crate)`
 > 共享函数（“协议无关实现”，27 个，签名里只有 pool/user_id/业务参数）。
 > 未来若两个出口都变胖，再把这些函数上提到 `src/service/`（见 `todo.md`）。
+>
+> 【lib + bin 分离（M9）】模块树与 `AppState` 在 `src/lib.rs`；`src/main.rs` 只是启动脚本。
+> 好处：集成测试/示例/未来其他 crate 可以直接引用应用本体（bin 里引用库写 `train_record::xxx`）。
 
 ---
 

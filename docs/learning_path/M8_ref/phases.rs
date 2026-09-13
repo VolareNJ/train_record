@@ -21,7 +21,7 @@
 // 页面层用 SQL：SELECT CAST(julianday('now','localtime') - julianday(?) AS INTEGER)
 // start_date 为空（未设置）→ days = 0
 //
-// 📌 阶段要求：M8 你来实现本文件所有函数。
+// 阶段要求：M8 你来实现本文件所有函数。
 //   完整实现已备份在 docs/learning_path/M8_ref/，实现完成后对照检查。
 // ============================================================
 use axum::{
@@ -78,7 +78,7 @@ pub struct PhaseCreateReq
 async fn calc_days(pool: &SqlitePool, start_date: &Option<String>) -> Result<i64, ApiError>
 {
     match start_date
-    {
+{
         Some(d) => sqlx::query_scalar::<_, i64>(
             "SELECT CAST(julianday('now','localtime') - julianday(?) AS INTEGER)",
         )
@@ -87,7 +87,7 @@ async fn calc_days(pool: &SqlitePool, start_date: &Option<String>) -> Result<i64
         .await
         .map_err(ApiError::Database),
         None => Ok(0),
-    }
+}
 }
 
 // ============================================================
@@ -133,10 +133,10 @@ pub async fn list(
 
     let phases = sqlx::query_as::<_, Phase>(
         "SELECT * FROM phases WHERE user_id = ? ORDER BY archived ASC, created_at DESC",
-    )
+        )
     .bind(&user.id)
     .fetch_all(&pool)
-    .await
+        .await
     .map_err(ApiError::Database)?;
 
     // 【教学：map + collect —— 逐个转换】
@@ -145,9 +145,9 @@ pub async fn list(
     // M8 教学简化：用 for 循环收集（直观、无新依赖）。
     let mut out = Vec::with_capacity(phases.len());
     for p in &phases
-    {
+{
         out.push(phase_out(&pool, p).await?);
-    }
+}
 
     Ok(Json(out))
 }
@@ -185,49 +185,49 @@ pub async fn create(
 
     // 校验：name 非空
     if req.name.trim().is_empty()
-    {
+{
         return Err(ApiError::Validation("阶段名称不能为空".to_string()));
-    }
+}
 
     // 查重（数据隔离 + 防重名）
     if sqlx::query_scalar::<_, i64>("SELECT id FROM phases WHERE user_id = ? AND name = ?")
-        .bind(&user.id)
+    .bind(&user.id)
         .bind(&req.name)
         .fetch_optional(&pool)
         .await
         .map_err(ApiError::Database)?
         .is_some()
-    {
+{
         return Err(ApiError::Validation("阶段名已存在".to_string()));
-    }
+}
 
     // 转换 start_date：空串 → None（和页面表单一致）
     let start_date = match req.start_date.as_deref()
-    {
+{
         Some(s) if !s.trim().is_empty() => Some(s.trim().to_string()),
         _ => None,
-    };
+};
 
     // INSERT + RETURNING id（拿回新 id）
     let new_id = sqlx::query_scalar::<_, i64>(
         "INSERT INTO phases (user_id, name, note, start_date) VALUES (?, ?, ?, ?)
         RETURNING id",
-    )
+        )
     .bind(&user.id)
-    .bind(&req.name)
+        .bind(&req.name)
     .bind(&req.note)
     .bind(&start_date)
     .fetch_one(&pool)
-    .await
+        .await
     .map_err(ApiError::Database)?;
 
     // 查完整行 → 转 DTO → 返回
     let phase = sqlx::query_as::<_, Phase>("SELECT * FROM phases WHERE id = ? AND user_id = ?")
         .bind(&new_id)
-        .bind(&user.id)
-        .fetch_one(&pool)
+    .bind(&user.id)
+    .fetch_one(&pool)
         .await
-        .map_err(ApiError::Database)?;
+    .map_err(ApiError::Database)?;
 
     Ok(Json(phase_out(&pool, &phase).await?))
 }
@@ -256,7 +256,7 @@ pub async fn detail(
 
     let phase = sqlx::query_as::<_, Phase>("SELECT * FROM phases WHERE id = ? AND user_id = ?")
         .bind(&id)
-        .bind(&user.id)
+    .bind(&user.id)
         .fetch_optional(&pool)
         .await
         .map_err(ApiError::Database)?
@@ -273,7 +273,7 @@ pub async fn detail(
 //   - 缺字段 → None（不改）
 //   - 传 null → None（不改）
 //   - 传值    → Some（更新）
-// ⚠️ 注意：这和"把字段设为 null"（清空 start_date）冲突——
+// 注意：这和"把字段设为 null"（清空 start_date）冲突——
 // M8 教学简化：PATCH 不支持清空 start_date（传 null 视为不改）。
 // 若需要清空，用 ""（空串）→ 转 None 存库。
 #[derive(Deserialize)]
@@ -317,7 +317,7 @@ pub async fn update(
     // ① 查旧行（数据隔离）
     let old = sqlx::query_as::<_, Phase>("SELECT * FROM phases WHERE id = ? AND user_id = ?")
         .bind(&id)
-        .bind(&user.id)
+    .bind(&user.id)
         .fetch_optional(&pool)
         .await
         .map_err(ApiError::Database)?
@@ -328,43 +328,43 @@ pub async fn update(
     let note = req.note.unwrap_or(old.note);
     // start_date：请求传了非空 → 更新；传了空串 → None；没传 → 旧值
     let start_date = match req.start_date
-    {
+{
         Some(s) if !s.trim().is_empty() => Some(s.trim().to_string()),
         Some(_) => None,
         None => old.start_date,
-    };
+};
 
     // 校验 name 非空
     if name.trim().is_empty()
-    {
+{
         return Err(ApiError::Validation("阶段名称不能为空".to_string()));
-    }
+}
 
     // ③ 全量 UPDATE
     let ret = sqlx::query(
         "UPDATE phases SET name = ?, note = ?, start_date = ? WHERE id = ? AND user_id = ?",
-    )
+        )
     .bind(&name)
     .bind(&note)
     .bind(&start_date)
-    .bind(&id)
+        .bind(&id)
     .bind(&user.id)
     .execute(&pool)
-    .await
+        .await
     .map_err(ApiError::Database)?;
 
     if ret.rows_affected() == 0
-    {
+{
         return Err(ApiError::NotFound("阶段不存在".to_string()));
-    }
+}
 
     // ④ 查新行返回
     let phase = sqlx::query_as::<_, Phase>("SELECT * FROM phases WHERE id = ? AND user_id = ?")
         .bind(&id)
-        .bind(&user.id)
-        .fetch_one(&pool)
+    .bind(&user.id)
+    .fetch_one(&pool)
         .await
-        .map_err(ApiError::Database)?;
+    .map_err(ApiError::Database)?;
 
     Ok(Json(phase_out(&pool, &phase).await?))
 }
@@ -418,22 +418,22 @@ async fn set_archived(
     let ret = sqlx::query("UPDATE phases SET archived = ? WHERE id = ? AND user_id = ?")
         .bind(archived)
         .bind(&id)
-        .bind(&user.id)
-        .execute(&pool)
+    .bind(&user.id)
+    .execute(&pool)
         .await
-        .map_err(ApiError::Database)?;
+    .map_err(ApiError::Database)?;
 
     if ret.rows_affected() == 0
-    {
+{
         return Err(ApiError::NotFound("阶段不存在".to_string()));
-    }
+}
 
     let phase = sqlx::query_as::<_, Phase>("SELECT * FROM phases WHERE id = ? AND user_id = ?")
         .bind(&id)
-        .bind(&user.id)
-        .fetch_one(&pool)
+    .bind(&user.id)
+    .fetch_one(&pool)
         .await
-        .map_err(ApiError::Database)?;
+    .map_err(ApiError::Database)?;
 
     Ok(Json(phase_out(&pool, &phase).await?))
 }

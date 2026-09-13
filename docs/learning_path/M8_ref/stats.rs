@@ -13,7 +13,7 @@
 // 好处：改训练量（weight/reps）历史 1RM 自动变，不用回写历史。
 // API 层复用 calc::epley_1rm（M5 第 1 步写的纯函数）。
 //
-// 📌 阶段要求：M8 你来实现本文件所有函数。
+// 阶段要求：M8 你来实现本文件所有函数。
 //   完整实现已备份在 docs/learning_path/M8_ref/，实现完成后对照检查。
 // ============================================================
 use axum::{
@@ -93,13 +93,13 @@ pub async fn calendar(
 
     // 校验：年份 4 位数字、月份 2 位数字
     if year.len() != 4 || !year.chars().all(|c| c.is_ascii_digit())
-    {
+{
         return Err(ApiError::Validation("年份格式错误".to_string()));
-    }
+}
     if month.len() != 2 || !month.chars().all(|c| c.is_ascii_digit())
-    {
+{
         return Err(ApiError::Validation("月份格式错误".to_string()));
-    }
+}
 
     let prefix = format!("{year}-{month}");
 
@@ -112,8 +112,8 @@ pub async fn calendar(
     .bind(&user.id)
     .bind(format!("{prefix}%"))
     .fetch_all(&pool)
-    .await
-    .map_err(ApiError::Database)?;
+            .await
+            .map_err(ApiError::Database)?;
 
     Ok(Json(CalendarOut {
         year,
@@ -130,7 +130,7 @@ pub async fn calendar(
 /// 【教学：数据隔离 —— records 表没有 user_id，走 JOIN exercises】
 /// 页面层同款 SQL（M5 注释里的"数据隔离纪律"）：
 ///   SELECT ... FROM records r
-///   INNER JOIN exercises e ON r.exercise_id = e.id
+///    INNER JOIN exercises e ON r.exercise_id = e.id
 ///   WHERE e.user_id = ?
 /// records 只挂 exercise_id/plan_item_id，用户归属经 exercises 确定。
 ///
@@ -210,14 +210,14 @@ pub async fn history_day(
     .bind(&user.id)
     .bind(&date)
     .fetch_all(&pool)
-    .await
-    .map_err(ApiError::Database)?;
+            .await
+            .map_err(ApiError::Database)?;
 
     // 动作名索引（id → 名字）
     let ex_names: std::collections::HashMap<i64, String> =
         sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE user_id = ?")
-            .bind(&user.id)
-            .fetch_all(&pool)
+    .bind(&user.id)
+    .fetch_all(&pool)
             .await
             .map_err(ApiError::Database)?
             .into_iter()
@@ -260,10 +260,10 @@ pub async fn history_day(
                     strategy: strategy.clone(),
                     key_points: key_points.clone(),
                     one_rm: epley_1rm(*weight, *reps),
-                }
+}
             },
-        )
-        .collect();
+    )
+            .collect();
 
     Ok(Json(out))
 }
@@ -326,20 +326,20 @@ pub async fn exercise_stats(
     // 归属验证
     let ex = sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE id = ? AND user_id = ?")
         .bind(&id)
-        .bind(&user.id)
+    .bind(&user.id)
         .fetch_optional(&pool)
-        .await
-        .map_err(ApiError::Database)?
+            .await
+            .map_err(ApiError::Database)?
         .ok_or_else(|| ApiError::NotFound("动作不存在".to_string()))?;
 
     // 全部记录（升序 → 趋势自然有序）
     let records = sqlx::query_as::<_, Record>(
         "SELECT * FROM records WHERE exercise_id = ? ORDER BY record_date ASC, id ASC",
     )
-    .bind(&id)
+        .bind(&id)
     .fetch_all(&pool)
-    .await
-    .map_err(ApiError::Database)?;
+            .await
+            .map_err(ApiError::Database)?;
 
     // 组装（1rm 实时算）
     let recs_out = records
@@ -361,7 +361,7 @@ pub async fn exercise_stats(
             id: ex.id,
             name: ex.name.clone(),
             body_part: ex.body_part.clone(),
-        },
+            },
         records: recs_out,
         best_1rm,
     }))
@@ -373,9 +373,9 @@ pub async fn exercise_stats(
 fn validate_date(date: &str) -> Result<(), ApiError>
 {
     match date.split('-').collect::<Vec<&str>>().as_slice()
-    {
+{
         [yyyy, mm, dd] =>
-        {
+{
             yyyy.parse::<i64>()
                 .map_err(|_| ApiError::Validation("年份必须是数字".to_string()))?;
             mm.parse::<i64>()
@@ -383,9 +383,9 @@ fn validate_date(date: &str) -> Result<(), ApiError>
             dd.parse::<i64>()
                 .map_err(|_| ApiError::Validation("日必须是数字".to_string()))?;
             Ok(())
-        },
+            },
         _ => Err(ApiError::Validation(
             "日期格式必须是 YYYY-MM-DD".to_string(),
         )),
-    }
+}
 }

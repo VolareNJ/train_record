@@ -54,7 +54,7 @@
 
 ```json
 { "error": "错误消息" }
-```
+   ```
 
 | HTTP 状态码 | 含义 | 触发场景 |
 |---|---|---|
@@ -68,11 +68,11 @@
 
 ### 1.4 数据模型 ID 关系速览
 
-```
+   ```
 phases (阶段) 1──N templates (模板) 1──N template_items (模板项)
 phases (阶段) 1──N plans (计划)     1──N plan_items (计划项) 1──N records (训练记录)
 exercises (动作库) 1──N records (训练记录，按 exercise_id)
-```
+   ```
 
 - 所有列表/详情查询均按当前登录用户隔离（`WHERE ... user_id = ?`）
 - 日期格式一律 `YYYY-MM-DD`（如 `2026-08-31`）
@@ -95,7 +95,7 @@ PATCH = 部分更新：**不传的字段保持旧值**（null 和缺字段都视
   "username": "admin",
   "password": "admin123"
 }
-```
+   ```
 
 成功 `200`：
 
@@ -103,13 +103,13 @@ PATCH = 部分更新：**不传的字段保持旧值**（null 和缺字段都视
 {
   "user": {
     "id": 1,
-    "username": "admin",
+  "username": "admin",
     "is_admin": true,
     "body_weight": 75.5
   },
   "token": "550e8400-e29b-41d4-a716-446655440000"
 }
-```
+   ```
 
 响应头同时带 `Set-Cookie`（浏览器可用）。iced 客户端用 `token` 字段即可。
 
@@ -153,16 +153,16 @@ PATCH = 部分更新：**不传的字段保持旧值**（null 和缺字段都视
 
 ```json
 [
-  {
+{
     "id": 3,
     "name": "增肌期",
     "note": "冬训增肌",
     "start_date": "2026-08-01",
     "archived": false,
     "days": 30
-  }
+}
 ]
-```
+   ```
 
 `days` = 今天 − `start_date` 的自然日差（`start_date` 为 null → 0）。
 
@@ -172,11 +172,11 @@ PATCH = 部分更新：**不传的字段保持旧值**（null 和缺字段都视
 
 ```json
 {
-  "name": "增肌期",
-  "note": "冬训增肌",
+    "name": "增肌期",
+    "note": "冬训增肌",
   "start_date": "2026-08-01"
 }
-```
+   ```
 
 - `start_date` 可省略或 `null`（未设置）；传空串 `""` 也视为未设置
 - 失败：`400` 名称空 / 重名（"阶段名已存在"）
@@ -197,7 +197,7 @@ PATCH = 部分更新：**不传的字段保持旧值**（null 和缺字段都视
   "note": "新备注",
   "start_date": "2026-08-15"
 }
-```
+   ```
 
 - 不传字段保持旧值；`start_date` 传空串 → 清空
 - 失败：`400` 名称空；`404` 不存在
@@ -212,7 +212,7 @@ PATCH = 部分更新：**不传的字段保持旧值**（null 和缺字段都视
 
 - 同上，`archived` 置回 `false`
 
-> ⚠️ 归档阶段是只读的：其下模板/计划/记录的**写操作**会返回 `403 {"error": "归档阶段不可编辑"}`。
+> 归档阶段是只读的：其下模板/计划/记录的**写操作**会返回 `403 {"error": "归档阶段不可编辑"}`。
 
 ---
 
@@ -228,7 +228,7 @@ PATCH = 部分更新：**不传的字段保持旧值**（null 和缺字段都视
 
 ```json
 [
-  {
+{
     "id": 6,
     "name": "平板杠铃卧推",
     "body_part": "胸",
@@ -240,9 +240,9 @@ PATCH = 部分更新：**不传的字段保持旧值**（null 和缺字段都视
     "key_points": "沉肩、肩胛后缩",
     "last_record_date": "2026-08-30",
     "best_1rm": 97.5
-  }
+}
 ]
-```
+   ```
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
@@ -261,14 +261,14 @@ PATCH = 部分更新：**不传的字段保持旧值**（null 和缺字段都视
 {
   "name": "深蹲",
   "body_part": "腿",
-  "default_mode": "bar",
-  "bar_weight": 20.0,
-  "default_unit": "kg",
-  "default_sets": 3,
-  "default_reps": 8,
+    "default_mode": "bar",
+    "bar_weight": 20.0,
+    "default_unit": "kg",
+    "default_sets": 3,
+    "default_reps": 8,
   "key_points": "核心收紧，膝盖与脚尖同向"
 }
-```
+   ```
 
 - 默认值：`default_mode="bar"`、`bar_weight=20.0`、`default_unit="kg"`、`default_sets=3`、`default_reps=8`、`key_points=""`
 - 失败：`400` 名称或部位空 / 重名
@@ -285,16 +285,16 @@ PATCH = 部分更新：**不传的字段保持旧值**（null 和缺字段都视
 
 ```json
 {
-  "name": "平板杠铃卧推",
-  "body_part": "胸",
-  "default_mode": "bar",
-  "bar_weight": 20.0,
-  "default_unit": "kg",
+    "name": "平板杠铃卧推",
+    "body_part": "胸",
+    "default_mode": "bar",
+    "bar_weight": 20.0,
+    "default_unit": "kg",
   "default_sets": 4,
-  "default_reps": 8,
+    "default_reps": 8,
   "key_points": "新要领"
 }
-```
+   ```
 
 - 成功 `200`：更新后的 `ExerciseOut`；失败 `400`/`404`
 
@@ -302,7 +302,7 @@ PATCH = 部分更新：**不传的字段保持旧值**（null 和缺字段都视
 
 - 成功 `200`：`{"ok": true}`
 - 失败 `404`
-- ⚠️ 若动作已被模板/计划/记录引用，SQLite 外键约束会报 `500`（与页面层一致，引用检查是未来增强点）
+- 若动作已被模板/计划/记录引用，SQLite 外键约束会报 `500`（与页面层一致，引用检查是未来增强点）
 
 ---
 
@@ -318,16 +318,16 @@ PATCH = 部分更新：**不传的字段保持旧值**（null 和缺字段都视
 
 ```json
 [
-  {
+{
     "id": 2,
     "phase_id": 3,
     "name": "推日",
     "items": [
       { "id": 10, "exercise_id": 6, "exercise_name": "平板杠铃卧推", "plan_sets": 4, "plan_reps": 8 }
-    ]
-  }
 ]
-```
+}
+]
+   ```
 
 ### 5.2 创建模板 `POST /api/v1/phases/{phase_id}/templates`
 
@@ -335,13 +335,13 @@ PATCH = 部分更新：**不传的字段保持旧值**（null 和缺字段都视
 
 ```json
 {
-  "name": "推日",
-  "items": [
+    "name": "推日",
+    "items": [
     { "exercise_id": 6 },
     { "exercise_id": 7 }
-  ]
+]
 }
-```
+   ```
 
 - `items` 数组顺序 = 动作顺序（`sort_order` 自动按 enumerate 生成）
 - `items` 不能为空；`exercise_id` 必须已存在于动作库（否则外键约束 → `500`）
@@ -366,28 +366,28 @@ PATCH = 部分更新：**不传的字段保持旧值**（null 和缺字段都视
 
 ```json
 [
-  {
+{
     "id": 5,
     "phase_id": 3,
     "date": "2026-08-31",
     "note": "推日，冲重量",
     "items": [
-      {
+{
         "id": 21,
         "exercise_id": 6,
         "exercise_name": "平板杠铃卧推",
-        "body_part": "胸",
+    "body_part": "胸",
         "plan_sets": 4,
         "plan_reps": 8,
         "plan_weight": 60.0,
         "plan_rest": 90,
         "plan_key_points": "最后一组力竭",
         "plan_note": "本周第二次卧推"
-      }
-    ]
-  }
+}
 ]
-```
+}
+]
+   ```
 
 `PlanItemOut` 的 `plan_*` 均可为 `null`（未预设）。
 
@@ -397,24 +397,24 @@ PATCH = 部分更新：**不传的字段保持旧值**（null 和缺字段都视
 
 ```json
 {
-  "date": "2026-08-31",
-  "note": "推日，冲重量",
-  "items": [
-    {
-      "exercise_id": 6,
-      "plan_sets": 4,
-      "plan_reps": 8,
-      "plan_weight": 60.0,
-      "plan_rest": 90,
-      "plan_key_points": "最后一组力竭",
+    "date": "2026-08-31",
+    "note": "推日，冲重量",
+    "items": [
+{
+        "exercise_id": 6,
+        "plan_sets": 4,
+        "plan_reps": 8,
+        "plan_weight": 60.0,
+        "plan_rest": 90,
+        "plan_key_points": "最后一组力竭",
       "plan_note": null
-    }
-  ]
 }
-```
+]
+}
+   ```
 
 - `date` 必填且 `YYYY-MM-DD`；`note` 可空串；`items` 非空
-- ⚠️ 同一阶段同一日期**唯一**（DB `UNIQUE(phase_id, date)`）——重复日期会 500，客户端应先查 5.5 判断
+- 同一阶段同一日期**唯一**（DB `UNIQUE(phase_id, date)`）——重复日期会 500，客户端应先查 5.5 判断
 - 成功 `200`：完整 `PlanOut`
 
 ### 5.7 计划详情 `GET /api/v1/plans/{id}`
@@ -451,16 +451,16 @@ iced 客户端的**主屏数据源**。成功 `200`：
     "name": "增肌期",
     "days": 30
   },
-  "date": "2026-08-31",
+    "date": "2026-08-31",
   "plan": {
     "id": 5,
     "note": "推日，冲重量",
     "items": [
-      {
+{
         "id": 21,
         "exercise_id": 6,
         "exercise_name": "平板杠铃卧推",
-        "body_part": "胸",
+    "body_part": "胸",
         "plan_sets": 4,
         "plan_reps": 8,
         "plan_weight": 60.0,
@@ -474,19 +474,19 @@ iced 客户端的**主屏数据源**。成功 `200`：
           "rest": 90,
           "feeling": "状态不错",
           "strategy": "下次加 2.5kg"
-        }
-      }
-    ]
-  }
 }
-```
+}
+]
+}
+}
+   ```
 
 | 空态 | 含义 |
 |---|---|
 | `phase: null` | 没有进行中的阶段（或全部归档）→ 客户端提示"先去建阶段" |
 | `plan: null` | 今天没有计划 → 客户端提示"今天没安排"并给"创建计划"入口 |
 | `items[i].last_record: null` | 该动作今天还没练 → 显示"未训练"，保存时走 INSERT |
-| `items[i].last_record` 有值 | 已练过 → 显示"✅ 已完成"（`completed` 由保存时的字段决定） |
+|`items[i].last_record` 有值 | 已练过 → 显示" 已完成"（`completed` 由保存时的字段决定） |
 
 ### 6.2 记录 upsert `POST /api/v1/plans/{plan_id}/items/{item_id}/records`
 
@@ -496,40 +496,40 @@ iced 客户端的**主屏数据源**。成功 `200`：
 
 ```json
 {
-  "weight": 60.0,
-  "sets": 4,
-  "reps": 8,
-  "rest": 90,
-  "feeling": "状态不错",
+          "weight": 60.0,
+          "sets": 4,
+          "reps": 8,
+          "rest": 90,
+          "feeling": "状态不错",
   "strategy": "下次加 2.5kg",
   "key_points": "",
   "completed": true
 }
-```
+   ```
 
 - `weight/sets/reps` 必填；`rest/feeling/strategy/key_points` 缺省 `0`/空串；`completed` 缺省 `false`
 - 负数 → `400 "重量/组数/次数/休息不能为负数"`
 - 归档阶段 → `403`；计划/计划项不存在 → `404`
-- ⚠️ 计划项验证是**双条件**（`item_id` 必须属于 `plan_id`），URL 里两个 id 都要传对
+- 计划项验证是**双条件**（`item_id` 必须属于 `plan_id`），URL 里两个 id 都要传对
 - 成功 `200`：保存后的 `RecordOut`
 
 ```json
 {
-  "id": 88,
-  "exercise_id": 6,
-  "exercise_name": "平板杠铃卧推",
+          "id": 88,
+        "exercise_id": 6,
+        "exercise_name": "平板杠铃卧推",
   "record_date": "2026-08-31",
-  "weight": 60.0,
-  "sets": 4,
-  "reps": 8,
-  "rest": 90,
-  "feeling": "状态不错",
+          "weight": 60.0,
+          "sets": 4,
+          "reps": 8,
+          "rest": 90,
+          "feeling": "状态不错",
   "strategy": "下次加 2.5kg",
   "key_points": "",
   "mode": "bar",
   "completed": true
 }
-```
+   ```
 
 > 注意：与页面层不同，API 保存**不回写**动作库（要领/计重配置/默认组次都不动）。
 > 若 iced 客户端需要"保存时同步要领"等功能，这是 M9 扩展点。
@@ -547,15 +547,15 @@ iced 客户端的**主屏数据源**。成功 `200`：
 ```json
 {
   "weight": 62.5,
-  "sets": 4,
-  "reps": 8,
-  "rest": 90,
-  "feeling": "状态不错",
+          "sets": 4,
+          "reps": 8,
+          "rest": 90,
+          "feeling": "状态不错",
   "strategy": "下次加 2.5kg",
   "key_points": "",
   "completed": true
 }
-```
+   ```
 
 - 成功 `200`：更新后的 `RecordOut`；负数 → `400`；不存在 → `404`
 
@@ -581,7 +581,7 @@ iced 客户端的**主屏数据源**。成功 `200`：
   "month": "08",
   "train_days": ["2026-08-01", "2026-08-15", "2026-08-30"]
 }
-```
+   ```
 
 - 客户端拿 `train_days` 自己画日历（iced 场景）
 
@@ -592,25 +592,25 @@ iced 客户端的**主屏数据源**。成功 `200`：
 
 ```json
 [
-  {
-    "id": 88,
-    "exercise_id": 6,
-    "exercise_name": "平板杠铃卧推",
+{
+          "id": 88,
+        "exercise_id": 6,
+        "exercise_name": "平板杠铃卧推",
     "body_part": "胸",
-    "mode": "bar",
-    "weight": 60.0,
-    "sets": 4,
-    "reps": 8,
-    "rest": 90,
-    "feeling": "状态不错",
-    "strategy": "下次加 2.5kg",
-    "key_points": "",
+  "mode": "bar",
+          "weight": 60.0,
+          "sets": 4,
+          "reps": 8,
+          "rest": 90,
+          "feeling": "状态不错",
+  "strategy": "下次加 2.5kg",
+  "key_points": "",
     "1rm": 75.0
-  }
+}
 ]
-```
+   ```
 
-> ⚠️ JSON 键名是 **`"1rm"`**（小写，Rust 标识符不能以数字开头，serde 用 rename）。
+> JSON 键名是 **`"1rm"`**（小写，Rust 标识符不能以数字开头，serde 用 rename）。
 
 ### 7.3 动作统计 `GET /api/v1/exercises/{id}/stats`
 
@@ -625,7 +625,7 @@ iced 客户端的**主屏数据源**。成功 `200`：
   ],
   "best_1rm": 75.0
 }
-```
+   ```
 
 - `records` 按日期升序（趋势图直接可用）；`1rm` 每条实时算（Epley）
 - 失败：`404` 动作不存在
@@ -643,7 +643,7 @@ iced 客户端的**主屏数据源**。成功 `200`：
 // reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
 // serde = { version = "1", features = ["derive"] }
 // serde_json = "1"
-```
+   ```
 
 ### 8.2 认证流程
 
@@ -662,7 +662,7 @@ let resp = client.get("http://host/api/v1/today")
 
 // ③ 启动自检：GET /api/v1/me
 //    200 → 登录态有效；401 → 清 token 跳登录
-```
+   ```
 
 ### 8.3 错误处理模式
 
@@ -674,10 +674,10 @@ match resp.status().as_u16() {
         // 解析 {"error": "..."}，把消息直接展示给用户
         let err = resp.json::<serde_json::Value>().await?;
         show_error(err["error"].as_str().unwrap_or("未知错误"));
-    }
+}
     _ => show_error("服务器错误，稍后再试"),
 }
-```
+   ```
 
 ### 8.4 数据流建议（对应页面）
 
@@ -708,34 +708,34 @@ match resp.status().as_u16() {
 
 | 方法 | 路径 | 说明 | 需登录 |
 |---|---|---|---|
-| POST | `/api/v1/login` | 登录，返回 user + token | ✗ |
-| POST | `/api/v1/logout` | 登出 | ✗ |
-| GET | `/api/v1/me` | 当前用户 | ✓ |
-| GET | `/api/v1/phases` | 阶段列表 | ✓ |
-| POST | `/api/v1/phases` | 创建阶段 | ✓ |
-| GET | `/api/v1/phases/{id}` | 阶段详情 | ✓ |
-| PATCH | `/api/v1/phases/{id}` | 更新阶段 | ✓ |
-| POST | `/api/v1/phases/{id}/archive` | 归档阶段 | ✓ |
-| POST | `/api/v1/phases/{id}/unarchive` | 启用阶段 | ✓ |
-| GET | `/api/v1/exercises?body_part=` | 动作列表 | ✓ |
-| POST | `/api/v1/exercises` | 创建动作 | ✓ |
-| GET | `/api/v1/exercises/{id}` | 动作详情（含 1RM） | ✓ |
-| PATCH | `/api/v1/exercises/{id}` | 更新动作 | ✓ |
-| DELETE | `/api/v1/exercises/{id}` | 删除动作 | ✓ |
-| GET | `/api/v1/phases/{phase_id}/templates` | 模板列表 | ✓ |
-| POST | `/api/v1/phases/{phase_id}/templates` | 创建模板 | ✓ |
-| PATCH | `/api/v1/templates/{id}` | 更新模板 | ✓ |
-| DELETE | `/api/v1/templates/{id}` | 删除模板 | ✓ |
-| GET | `/api/v1/phases/{phase_id}/plans?date=` | 计划列表 | ✓ |
-| POST | `/api/v1/phases/{phase_id}/plans` | 创建计划 | ✓ |
-| GET | `/api/v1/plans/{id}` | 计划详情 | ✓ |
-| PATCH | `/api/v1/plans/{id}` | 更新计划 | ✓ |
-| DELETE | `/api/v1/plans/{id}` | 删除计划 | ✓ |
-| GET | `/api/v1/today` | 今日训练卡片 | ✓ |
-| POST | `/api/v1/plans/{plan_id}/items/{item_id}/records` | 记录 upsert | ✓ |
-| GET | `/api/v1/records?date=` | 按日期查记录 | ✓ |
-| PATCH | `/api/v1/records/{id}` | 更新记录 | ✓ |
-| DELETE | `/api/v1/records/{id}` | 删除记录 | ✓ |
-| GET | `/api/v1/history?year=&month=` | 历史日历 | ✓ |
-| GET | `/api/v1/history/{date}` | 某天详情 | ✓ |
-| GET | `/api/v1/exercises/{id}/stats` | 动作统计 | ✓ |
+|POST | `/api/v1/login` | 登录，返回 user + token | 否 |
+|POST | `/api/v1/logout` | 登出 | 否 |
+|GET | `/api/v1/me` | 当前用户 | 是 |
+|GET | `/api/v1/phases` | 阶段列表 | 是 |
+|POST | `/api/v1/phases` | 创建阶段 | 是 |
+|GET | `/api/v1/phases/{id}` | 阶段详情 | 是 |
+|PATCH | `/api/v1/phases/{id}` | 更新阶段 | 是 |
+|POST | `/api/v1/phases/{id}/archive` | 归档阶段 | 是 |
+|POST | `/api/v1/phases/{id}/unarchive` | 启用阶段 | 是 |
+|GET | `/api/v1/exercises?body_part=` | 动作列表 | 是 |
+|POST | `/api/v1/exercises` | 创建动作 | 是 |
+|GET | `/api/v1/exercises/{id}` | 动作详情（含 1RM） | 是 |
+|PATCH | `/api/v1/exercises/{id}` | 更新动作 | 是 |
+|DELETE | `/api/v1/exercises/{id}` | 删除动作 | 是 |
+|GET | `/api/v1/phases/{phase_id}/templates` | 模板列表 | 是 |
+|POST | `/api/v1/phases/{phase_id}/templates` | 创建模板 | 是 |
+|PATCH | `/api/v1/templates/{id}` | 更新模板 | 是 |
+|DELETE | `/api/v1/templates/{id}` | 删除模板 | 是 |
+|GET | `/api/v1/phases/{phase_id}/plans?date=` | 计划列表 | 是 |
+|POST | `/api/v1/phases/{phase_id}/plans` | 创建计划 | 是 |
+|GET | `/api/v1/plans/{id}` | 计划详情 | 是 |
+|PATCH | `/api/v1/plans/{id}` | 更新计划 | 是 |
+|DELETE | `/api/v1/plans/{id}` | 删除计划 | 是 |
+|GET | `/api/v1/today` | 今日训练卡片 | 是 |
+|POST | `/api/v1/plans/{plan_id}/items/{item_id}/records` | 记录 upsert | 是 |
+|GET | `/api/v1/records?date=` | 按日期查记录 | 是 |
+|PATCH | `/api/v1/records/{id}` | 更新记录 | 是 |
+|DELETE | `/api/v1/records/{id}` | 删除记录 | 是 |
+|GET | `/api/v1/history?year=&month=` | 历史日历 | 是 |
+|GET | `/api/v1/history/{date}` | 某天详情 | 是 |
+|GET | `/api/v1/exercises/{id}/stats` | 动作统计 | 是 |

@@ -13,33 +13,22 @@
 // 写代码时不用手动 .map_err —— 前提是 error.rs 里那个 From 实现写对了。
 // ============================================================
 
-use tonic::{Request, Response, Status};
-
-use super::pool_of;
-use crate::{
-    AppState,
-    api::{
-        grpc::{auth, pb},
-        rest::phases as rest_phases,
-    },
-};
-
 #[derive(Clone)]
 pub struct PhaseServiceImpl
 {
-    pub(crate) state: AppState,
+    pub(crate) state: crate::AppState,
 }
 
 impl PhaseServiceImpl
 {
-    pub fn new(state: AppState) -> Self
-    {
+    pub fn new(state: crate::AppState) -> Self
+{
         Self { state }
-    }
+}
 }
 
 #[tonic::async_trait]
-impl pb::phase_service_server::PhaseService for PhaseServiceImpl
+impl crate::api::grpc::pb::phase_service_server::PhaseService for PhaseServiceImpl
 {
     /// 阶段列表（含"已坚持 N 天"）
     ///
@@ -50,33 +39,40 @@ impl pb::phase_service_server::PhaseService for PhaseServiceImpl
     /// （因为 convert.rs 里有 `impl From<&PhaseOut> for pb::Phase`）
     async fn list_phases(
         &self,
-        request: Request<pb::ListPhasesRequest>,
-    ) -> Result<Response<pb::ListPhasesResponse>, Status>
-    {
-        let user = auth::require_user(&request, &self.state).await?;
-        let pool = pool_of(&self.state).await;
+        request: tonic::Request<crate::api::grpc::pb::ListPhasesRequest>,
+    ) -> Result<tonic::Response<crate::api::grpc::pb::ListPhasesResponse>, tonic::Status>
+{
+        let user = crate::api::grpc::auth::require_user(&request, &self.state).await?;
+        let pool = crate::api::grpc::service::pool_of(&self.state).await;
 
-        let phases = rest_phases::phase_list(&pool, user.id).await?;
+        let phases = crate::api::rest::phases::phase_list(&pool, user.id).await?;
 
-        Ok(Response::new(pb::ListPhasesResponse {
-            phases: phases.iter().map(pb::Phase::from).collect(),
-        }))
-    }
+        Ok(tonic::Response::new(
+            crate::api::grpc::pb::ListPhasesResponse {
+                phases: phases
+                    .iter()
+                    .map(crate::api::grpc::pb::Phase::from)
+                    .collect(),
+    },
+        ))
+}
 
     /// 阶段详情
     async fn get_phase(
         &self,
-        request: Request<pb::GetPhaseRequest>,
-    ) -> Result<Response<pb::Phase>, Status>
-    {
-        let user = auth::require_user(&request, &self.state).await?;
+        request: tonic::Request<crate::api::grpc::pb::GetPhaseRequest>,
+    ) -> Result<tonic::Response<crate::api::grpc::pb::Phase>, tonic::Status>
+{
+        let user = crate::api::grpc::auth::require_user(&request, &self.state).await?;
         let req = request.into_inner();
-        let pool = pool_of(&self.state).await;
+        let pool = crate::api::grpc::service::pool_of(&self.state).await;
 
-        let out = rest_phases::phase_detail(&pool, user.id, req.id).await?;
+        let out = crate::api::rest::phases::phase_detail(&pool, user.id, req.id).await?;
 
-        Ok(Response::new(pb::Phase::from(&out)))
-    }
+        Ok(tonic::Response::new(crate::api::grpc::pb::Phase::from(
+            &out,
+        )))
+}
 
     /// 创建阶段
     ///
@@ -86,18 +82,20 @@ impl pb::phase_service_server::PhaseService for PhaseServiceImpl
     ///     rest_phases::PhaseCreateReq::from(&req)
     async fn create_phase(
         &self,
-        request: Request<pb::CreatePhaseRequest>,
-    ) -> Result<Response<pb::Phase>, Status>
-    {
-        let user = auth::require_user(&request, &self.state).await?;
+        request: tonic::Request<crate::api::grpc::pb::CreatePhaseRequest>,
+    ) -> Result<tonic::Response<crate::api::grpc::pb::Phase>, tonic::Status>
+{
+        let user = crate::api::grpc::auth::require_user(&request, &self.state).await?;
         let req = request.into_inner();
-        let pool = pool_of(&self.state).await;
+        let pool = crate::api::grpc::service::pool_of(&self.state).await;
 
-        let create_req = rest_phases::PhaseCreateReq::from(&req);
-        let out = rest_phases::phase_create(&pool, user.id, &create_req).await?;
+        let create_req = crate::api::rest::phases::PhaseCreateReq::from(&req);
+        let out = crate::api::rest::phases::phase_create(&pool, user.id, &create_req).await?;
 
-        Ok(Response::new(pb::Phase::from(&out)))
-    }
+        Ok(tonic::Response::new(crate::api::grpc::pb::Phase::from(
+            &out,
+        )))
+}
 
     /// 更新阶段（PATCH 语义：只改传了的字段）
     ///
@@ -109,22 +107,25 @@ impl pb::phase_service_server::PhaseService for PhaseServiceImpl
     /// 这就是 proto3 `optional`（显式存在性）存在的意义。
     async fn update_phase(
         &self,
-        request: Request<pb::UpdatePhaseRequest>,
-    ) -> Result<Response<pb::Phase>, Status>
-    {
-        let user = auth::require_user(&request, &self.state).await?;
+        request: tonic::Request<crate::api::grpc::pb::UpdatePhaseRequest>,
+    ) -> Result<tonic::Response<crate::api::grpc::pb::Phase>, tonic::Status>
+{
+        let user = crate::api::grpc::auth::require_user(&request, &self.state).await?;
         let req = request.into_inner();
-        let pool = pool_of(&self.state).await;
+        let pool = crate::api::grpc::service::pool_of(&self.state).await;
 
-        let update_req = rest_phases::PhaseUpdateReq::from(&req);
-        let out = rest_phases::phase_update(&pool, user.id, req.id, &update_req).await?;
+        let update_req = crate::api::rest::phases::PhaseUpdateReq::from(&req);
+        let out =
+            crate::api::rest::phases::phase_update(&pool, user.id, req.id, &update_req).await?;
 
-        Ok(Response::new(pb::Phase::from(&out)))
-    }
+        Ok(tonic::Response::new(crate::api::grpc::pb::Phase::from(
+            &out,
+        )))
+}
 
-    // ============================================================
-    // SetPhaseArchived（一元 RPC，★ 挖空练习）
-    // ============================================================
+// ============================================================
+    // SetPhaseArchived（一元 RPC， 挖空练习）
+// ============================================================
     /// 归档 / 启用阶段（archived = true 归档，false 启用）
     ///
     /// 【教学：一个方法顶 REST 两个端点】
@@ -141,15 +142,19 @@ impl pb::phase_service_server::PhaseService for PhaseServiceImpl
     /// 5. Ok(Response::new(pb::Phase::from(&out)))
     async fn set_phase_archived(
         &self,
-        request: Request<pb::SetPhaseArchivedRequest>,
-    ) -> Result<Response<pb::Phase>, Status>
-    {
-        let user = auth::require_user(&request, &self.state).await?;
+        request: tonic::Request<crate::api::grpc::pb::SetPhaseArchivedRequest>,
+    ) -> Result<tonic::Response<crate::api::grpc::pb::Phase>, tonic::Status>
+{
+        let user = crate::api::grpc::auth::require_user(&request, &self.state).await?;
         let req = request.into_inner();
-        let pool = pool_of(&self.state).await;
+        let pool = crate::api::grpc::service::pool_of(&self.state).await;
 
-        let out = rest_phases::phase_set_archived(&pool, user.id, req.id, req.archived).await?;
+        let out =
+            crate::api::rest::phases::phase_set_archived(&pool, user.id, req.id, req.archived)
+                .await?;
 
-        Ok(Response::new(pb::Phase::from(&out)))
-    }
+        Ok(tonic::Response::new(crate::api::grpc::pb::Phase::from(
+            &out,
+        )))
+}
 }

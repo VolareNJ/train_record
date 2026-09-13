@@ -16,7 +16,7 @@
 //   页面表单"留空提交 "" 导致 f64 400"的坑在 API 层不存在：
 //   客户端传 JSON 数字，serde 直接给 f64/i64，类型安全。
 //
-// 📌 阶段要求：M8 你来实现本文件所有函数。
+// 阶段要求：M8 你来实现本文件所有函数。
 //   完整实现已备份在 docs/learning_path/M8_ref/，实现完成后对照检查。
 // ============================================================
 use axum::{
@@ -154,9 +154,9 @@ trait Pipe: Sized
 impl<T: Sized> Pipe for T
 {
     fn pipe<R>(self, f: impl FnOnce(Self) -> R) -> R
-    {
+{
         f(self)
-    }
+}
 }
 
 // ============================================================
@@ -192,27 +192,27 @@ pub async fn list(
     let part_filter = query.body_part.as_deref().filter(|p| !p.is_empty());
 
     let exercises = match part_filter
-    {
+{
         None => sqlx::query_as::<_, Exercise>(
             "SELECT * FROM exercises WHERE user_id = ? ORDER BY body_part, sort_order, id",
-        )
+    )
         .bind(&user.id)
         .fetch_all(&pool),
         Some(pt) => sqlx::query_as::<_, Exercise>(
             "SELECT * FROM exercises WHERE user_id = ? AND body_part = ? ORDER BY sort_order, id",
-        )
+    )
         .bind(&user.id)
         .bind(pt)
         .fetch_all(&pool),
-    }
+}
     .await
     .map_err(ApiError::Database)?;
 
     let mut out = Vec::with_capacity(exercises.len());
     for ex in &exercises
-    {
+{
         out.push(exercise_out(&pool, ex).await?);
-    }
+}
 
     Ok(Json(out))
 }
@@ -240,21 +240,21 @@ pub async fn create(
     let pool = state.pool.read().await.clone();
 
     if req.name.trim().is_empty() || req.body_part.trim().is_empty()
-    {
+{
         return Err(ApiError::Validation("动作名和部位不能为空".to_string()));
-    }
+}
 
     // 查重（数据隔离 + 防重名，和页面 create 同款）
     if sqlx::query_scalar::<_, i64>("SELECT id FROM exercises WHERE user_id = ? AND name = ?")
         .bind(&user.id)
         .bind(&req.name)
         .fetch_optional(&pool)
-        .await
+    .await
         .map_err(ApiError::Database)?
         .is_some()
-    {
+{
         return Err(ApiError::Validation("动作名已存在".to_string()));
-    }
+}
 
     let new_id = sqlx::query_scalar::<_, i64>(
         "INSERT INTO exercises
@@ -263,8 +263,8 @@ pub async fn create(
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
         RETURNING id",
     )
-    .bind(&user.id)
-    .bind(&req.name)
+        .bind(&user.id)
+        .bind(&req.name)
     .bind(&req.body_part)
     .bind(&req.default_mode)
     .bind(&req.bar_weight)
@@ -279,9 +279,9 @@ pub async fn create(
     let ex = sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE id = ? AND user_id = ?")
         .bind(&new_id)
         .bind(&user.id)
-        .fetch_one(&pool)
-        .await
-        .map_err(ApiError::Database)?;
+    .fetch_one(&pool)
+    .await
+    .map_err(ApiError::Database)?;
 
     Ok(Json(exercise_out(&pool, &ex).await?))
 }
@@ -327,7 +327,7 @@ pub async fn detail(
         .bind(&id)
         .bind(&user.id)
         .fetch_optional(&pool)
-        .await
+    .await
         .map_err(ApiError::Database)?
         .ok_or_else(|| ApiError::NotFound("动作不存在".to_string()))?;
 
@@ -351,7 +351,7 @@ pub async fn update(
         .bind(&id)
         .bind(&user.id)
         .fetch_optional(&pool)
-        .await
+    .await
         .map_err(ApiError::Database)?
         .ok_or_else(|| ApiError::NotFound("动作不存在".to_string()))?;
 
@@ -365,9 +365,9 @@ pub async fn update(
     let key_points = req.key_points.unwrap_or(old.key_points);
 
     if name.trim().is_empty() || body_part.trim().is_empty()
-    {
+{
         return Err(ApiError::Validation("动作名和部位不能为空".to_string()));
-    }
+}
 
     let ret = sqlx::query(
         "UPDATE exercises SET name = ?, body_part = ?, default_mode = ?, bar_weight = ?,
@@ -382,23 +382,23 @@ pub async fn update(
     .bind(&default_sets)
     .bind(&default_reps)
     .bind(&key_points)
-    .bind(&id)
-    .bind(&user.id)
+        .bind(&id)
+        .bind(&user.id)
     .execute(&pool)
     .await
     .map_err(ApiError::Database)?;
 
     if ret.rows_affected() == 0
-    {
+{
         return Err(ApiError::NotFound("动作不存在".to_string()));
-    }
+}
 
     let ex = sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE id = ? AND user_id = ?")
         .bind(&id)
         .bind(&user.id)
-        .fetch_one(&pool)
-        .await
-        .map_err(ApiError::Database)?;
+    .fetch_one(&pool)
+    .await
+    .map_err(ApiError::Database)?;
 
     Ok(Json(exercise_out(&pool, &ex).await?))
 }
@@ -431,14 +431,14 @@ pub async fn delete(
     let ret = sqlx::query("DELETE FROM exercises WHERE id = ? AND user_id = ?")
         .bind(&id)
         .bind(&user.id)
-        .execute(&pool)
-        .await
-        .map_err(ApiError::Database)?;
+    .execute(&pool)
+    .await
+    .map_err(ApiError::Database)?;
 
     if ret.rows_affected() == 0
-    {
+{
         return Err(ApiError::NotFound("动作不存在".to_string()));
-    }
+}
 
     Ok(Json(serde_json::json!({ "ok": true })))
 }

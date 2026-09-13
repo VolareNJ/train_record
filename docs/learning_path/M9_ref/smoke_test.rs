@@ -24,19 +24,12 @@
 
 #![cfg(test)]
 
-use std::sync::Arc;
-
-use tokio::sync::RwLock;
-
-use super::pb;
-use crate::{AppState, config::AppConfig, db};
-
 /// 造一份"干净的测试环境"：临时库 + 一个 admin 用户 + 随机端口的服务器
 async fn spawn_test_server() -> (String, sqlx::SqlitePool)
 {
     // 1. 临时数据库（uuid 命名，避免并发/残留干扰）
     let db_path = format!("/tmp/m9_smoke_{}.db", uuid::Uuid::new_v4());
-    let config = AppConfig {
+    let config = crate::config::AppConfig {
         port: 0,
         grpc_port: 0,
         database_path: db_path,
@@ -46,7 +39,9 @@ async fn spawn_test_server() -> (String, sqlx::SqlitePool)
         body_part_order: vec!["腿".to_string(), "背".to_string(), "胸".to_string()],
     };
 
-    let pool = db::init_pool(&config).await.expect("测试数据库初始化失败");
+    let pool = crate::db::init_pool(&config)
+    .await
+        .expect("测试数据库初始化失败");
 
     // 2. 造一个可登录的用户（admin / admin123）
     let hash = crate::auth::hash_password("admin123").expect("密码哈希失败");
@@ -66,13 +61,13 @@ async fn spawn_test_server() -> (String, sqlx::SqlitePool)
     drop(probe);
 
     // 4. 起服务器（与 main.rs 同一条路径：server::serve）
-    let state = AppState {
-        pool: Arc::new(RwLock::new(pool.clone())),
+    let state = crate::AppState {
+        pool: std::sync::Arc::new(tokio::sync::RwLock::new(pool.clone())),
         config,
     };
     tokio::spawn(async move {
         if let Err(e) = super::server::serve(state, addr).await
-        {
+{
             eprintln!("测试服务器退出: {e}");
         }
     });
@@ -80,17 +75,17 @@ async fn spawn_test_server() -> (String, sqlx::SqlitePool)
     // 5. 等服务器就绪（重试连接，最多 ~2 秒）
     let url = format!("http://{addr}");
     for _ in 0..20
-    {
-        if pb::auth_service_client::AuthServiceClient::connect(url.clone())
-            .await
+{
+        if crate::api::grpc::pb::auth_service_client::AuthServiceClient::connect(url.clone())
+    .await
             .is_ok()
-        {
+{
             return (url, pool);
         }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    }
+        }
     panic!("测试服务器启动超时");
-}
+        }
 
 /// 给请求带上 token（M10 客户端每个调用都要做这一步）
 fn authed<T>(msg: T, token: &str) -> tonic::Request<T>
@@ -101,37 +96,38 @@ fn authed<T>(msg: T, token: &str) -> tonic::Request<T>
         format!("Bearer {token}").parse().expect("metadata 非法"),
     );
     req
-}
+        }
 
 #[tokio::test]
 async fn grpc_smoke()
 {
     let (url, _pool) = spawn_test_server().await;
 
-    // ============================================================
+// ============================================================
     // 0. 未登录必须拿到 UNAUTHENTICATED（不是 302、不是 OK）
-    // ============================================================
-    let mut auth_client = pb::auth_service_client::AuthServiceClient::connect(url.clone())
-        .await
+// ============================================================
+    let mut auth_client =
+        crate::api::grpc::pb::auth_service_client::AuthServiceClient::connect(url.clone())
+    .await
         .expect("连接失败");
     let err = auth_client
-        .get_me(pb::GetMeRequest {})
-        .await
+        .get_me(crate::api::grpc::pb::GetMeRequest {})
+    .await
         .expect_err("未登录居然成功了？");
     assert_eq!(err.code(), tonic::Code::Unauthenticated, "状态码应为 16");
 
-    // ============================================================
+// ============================================================
     // 1. 登录 → 拿 token → GetMe（一元 RPC + 认证链路）
-    // ============================================================
+// ============================================================
     let login = auth_client
         .login(authed(
-            pb::LoginRequest {
+            crate::api::grpc::pb::LoginRequest {
                 username: "admin".to_string(),
                 password: "admin123".to_string(),
             },
             "",
         ))
-        .await
+    .await
         .expect("登录失败")
         .into_inner();
     let token = login.token.clone();
@@ -142,8 +138,8 @@ async fn grpc_smoke()
     );
 
     let me = auth_client
-        .get_me(authed(pb::GetMeRequest {}, &token))
-        .await
+        .get_me(authed(crate::api::grpc::pb::GetMeRequest {}, &token))
+    .await
         .expect("GetMe 失败")
         .into_inner();
     assert_eq!(me.username, "admin");
@@ -151,39 +147,40 @@ async fn grpc_smoke()
 
     // 密码错 → UNAUTHENTICATED（且提示与"用户不存在"一致，防用户名枚举）
     let bad = auth_client
-        .login(pb::LoginRequest {
-            username: "admin".to_string(),
+        .login(crate::api::grpc::pb::LoginRequest {
+                username: "admin".to_string(),
             password: "wrong".to_string(),
         })
-        .await
+    .await
         .expect_err("错密码居然登录成功？");
     assert_eq!(bad.code(), tonic::Code::Unauthenticated);
 
-    // ============================================================
+// ============================================================
     // 2. 阶段：创建 → 列表 → 详情 → 归档（一元 RPC + 派生字段 days）
-    // ============================================================
-    let mut phase_client = pb::phase_service_client::PhaseServiceClient::connect(url.clone())
-        .await
+// ============================================================
+    let mut phase_client =
+        crate::api::grpc::pb::phase_service_client::PhaseServiceClient::connect(url.clone())
+    .await
         .expect("连接失败");
 
     let phase = phase_client
         .create_phase(authed(
-            pb::CreatePhaseRequest {
+            crate::api::grpc::pb::CreatePhaseRequest {
                 name: "M9 测试阶段".to_string(),
                 note: "冒烟".to_string(),
                 start_date: Some("2026-08-01".to_string()),
             },
             &token,
         ))
-        .await
+    .await
         .expect("创建阶段失败")
         .into_inner();
     assert!(phase.id > 0);
     assert!(phase.days >= 0, "days 是服务器算好的派生字段");
 
     let phases = phase_client
-        .list_phases(authed(pb::ListPhasesRequest {}, &token))
-        .await
+        .list_phases(authed(crate::api::grpc::pb::ListPhasesRequest {}, &token))
+    .await
         .expect("阶段列表失败")
         .into_inner();
     assert_eq!(phases.phases.len(), 1);
@@ -191,7 +188,7 @@ async fn grpc_smoke()
     // PATCH 语义：只传 note，name 必须保持原值（optional 的意义）
     let patched = phase_client
         .update_phase(authed(
-            pb::UpdatePhaseRequest {
+            crate::api::grpc::pb::UpdatePhaseRequest {
                 id: phase.id,
                 name: None,
                 note: Some("改过备注".to_string()),
@@ -199,22 +196,23 @@ async fn grpc_smoke()
             },
             &token,
         ))
-        .await
+    .await
         .expect("更新阶段失败")
         .into_inner();
     assert_eq!(patched.name, "M9 测试阶段", "没传的字段不能被清空");
     assert_eq!(patched.note, "改过备注");
 
-    // ============================================================
+// ============================================================
     // 3. 动作：创建 → 列表（按部位筛选）→ 详情
-    // ============================================================
-    let mut ex_client = pb::exercise_service_client::ExerciseServiceClient::connect(url.clone())
-        .await
+// ============================================================
+    let mut ex_client =
+        crate::api::grpc::pb::exercise_service_client::ExerciseServiceClient::connect(url.clone())
+    .await
         .expect("连接失败");
 
     let ex = ex_client
         .create_exercise(authed(
-            pb::CreateExerciseRequest {
+            crate::api::grpc::pb::CreateExerciseRequest {
                 name: "深蹲".to_string(),
                 body_part: "腿".to_string(),
                 // 全部不传 → 服务器默认值（复用了 REST 层的 default_* 函数）
@@ -227,7 +225,7 @@ async fn grpc_smoke()
             },
             &token,
         ))
-        .await
+    .await
         .expect("创建动作失败")
         .into_inner();
     assert_eq!(
@@ -240,48 +238,49 @@ async fn grpc_smoke()
 
     let filtered = ex_client
         .list_exercises(authed(
-            pb::ListExercisesRequest {
+            crate::api::grpc::pb::ListExercisesRequest {
                 body_part: Some("腿".to_string()),
             },
             &token,
         ))
-        .await
+    .await
         .expect("动作列表失败")
         .into_inner();
     assert_eq!(filtered.exercises.len(), 1);
 
     let none_found = ex_client
         .list_exercises(authed(
-            pb::ListExercisesRequest {
+            crate::api::grpc::pb::ListExercisesRequest {
                 body_part: Some("胸".to_string()),
             },
             &token,
         ))
-        .await
+    .await
         .expect("动作列表失败")
         .into_inner();
     assert!(none_found.exercises.is_empty(), "按部位筛选应生效");
 
-    // ============================================================
+// ============================================================
     // 4. 计划：创建（嵌套 items）→ 详情 → 列表
-    // ============================================================
-    let mut plan_client = pb::plan_service_client::PlanServiceClient::connect(url.clone())
-        .await
+// ============================================================
+    let mut plan_client =
+        crate::api::grpc::pb::plan_service_client::PlanServiceClient::connect(url.clone())
+    .await
         .expect("连接失败");
 
     let today = sqlx::query_scalar::<_, String>("SELECT date('now', 'localtime')")
         .fetch_one(&_pool)
-        .await
+    .await
         .expect("取今天失败");
 
     let plan = plan_client
         .create_plan(authed(
-            pb::CreatePlanRequest {
+            crate::api::grpc::pb::CreatePlanRequest {
                 phase_id: phase.id,
                 date: today.clone(),
                 note: "腿日".to_string(),
                 items: vec![
-                    pb::PlanItemInput {
+                    crate::api::grpc::pb::PlanItemInput {
                         exercise_id: ex.id,
                         plan_sets: Some(5),
                         plan_reps: Some(5),
@@ -289,8 +288,8 @@ async fn grpc_smoke()
                         plan_rest: Some(180),
                         plan_key_points: Some("核心收紧".to_string()),
                         plan_note: None,
-                    },
-                    pb::PlanItemInput {
+            },
+                    crate::api::grpc::pb::PlanItemInput {
                         exercise_id: ex.id,
                         plan_sets: Some(3),
                         plan_reps: Some(10),
@@ -298,12 +297,12 @@ async fn grpc_smoke()
                         plan_rest: None,
                         plan_key_points: None,
                         plan_note: Some("收尾组".to_string()),
-                    },
+            },
                 ],
             },
             &token,
         ))
-        .await
+    .await
         .expect("创建计划失败")
         .into_inner();
     assert_eq!(plan.items.len(), 2);
@@ -312,16 +311,17 @@ async fn grpc_smoke()
     assert_eq!(plan.items[1].plan_sets, Some(3));
     assert_eq!(plan.items[0].exercise_name, "深蹲", "服务器 JOIN 出动作名");
 
-    // ============================================================
+// ============================================================
     // 5. 今日卡片（GetToday：三层嵌套转换 + Option 空态）
-    // ============================================================
-    let mut rec_client = pb::record_service_client::RecordServiceClient::connect(url.clone())
-        .await
+// ============================================================
+    let mut rec_client =
+        crate::api::grpc::pb::record_service_client::RecordServiceClient::connect(url.clone())
+    .await
         .expect("连接失败");
 
     let today_view = rec_client
-        .get_today(authed(pb::GetTodayRequest {}, &token))
-        .await
+        .get_today(authed(crate::api::grpc::pb::GetTodayRequest {}, &token))
+    .await
         .expect("GetToday 失败")
         .into_inner();
     assert_eq!(today_view.date, today);
@@ -334,13 +334,13 @@ async fn grpc_smoke()
         "还没练过 → last_record 不传"
     );
 
-    // ============================================================
+// ============================================================
     // 6. 记录 upsert（一元写 + 复用 REST 的 upsert 语义）
-    // ============================================================
+// ============================================================
     let item_id = view_plan.items[0].id;
     let saved = rec_client
         .upsert_record(authed(
-            pb::UpsertRecordRequest {
+            crate::api::grpc::pb::UpsertRecordRequest {
                 plan_id: plan.id,
                 plan_item_id: item_id,
                 weight: 62.5,
@@ -354,7 +354,7 @@ async fn grpc_smoke()
             },
             &token,
         ))
-        .await
+    .await
         .expect("记录失败")
         .into_inner();
     assert!(saved.id > 0);
@@ -364,7 +364,7 @@ async fn grpc_smoke()
     // 再 upsert 一次同一条 → 应该是 UPDATE（id 不变），不是新增
     let again = rec_client
         .upsert_record(authed(
-            pb::UpsertRecordRequest {
+            crate::api::grpc::pb::UpsertRecordRequest {
                 plan_id: plan.id,
                 plan_item_id: item_id,
                 weight: 65.0,
@@ -378,7 +378,7 @@ async fn grpc_smoke()
             },
             &token,
         ))
-        .await
+    .await
         .expect("二次记录失败")
         .into_inner();
     assert_eq!(again.id, saved.id, "同一天同动作应更新而非新增");
@@ -386,38 +386,38 @@ async fn grpc_smoke()
     // 当天记录（含部位 → 转换来源是 RecordRow）
     let day = rec_client
         .get_day_records(authed(
-            pb::GetDayRecordsRequest {
+            crate::api::grpc::pb::GetDayRecordsRequest {
                 date: today.clone(),
             },
             &token,
         ))
-        .await
+    .await
         .expect("当天记录失败")
         .into_inner();
     assert_eq!(day.records.len(), 1);
     assert_eq!(day.records[0].body_part, "腿", "RecordRow 来源应带部位");
     assert_eq!(day.records[0].weight, 65.0);
 
-    // ============================================================
+// ============================================================
     // 7. 服务器流：动作 1RM 序列
-    // ============================================================
+// ============================================================
     let mut series = ex_client
         .stream_exercise_series(authed(
-            pb::ExerciseSeriesRequest {
-                exercise_id: ex.id,
+            crate::api::grpc::pb::ExerciseSeriesRequest {
+                        exercise_id: ex.id,
                 from_date: None,
                 to_date: None,
             },
             &token,
         ))
-        .await
+    .await
         .expect("订阅序列失败")
         .into_inner();
     let mut points = Vec::new();
     while let Some(point) = series.message().await.expect("读流失败")
-    {
+{
         points.push(point);
-    }
+        }
     assert_eq!(points.len(), 1, "目前只有一条训练记录");
     assert_eq!(points[0].exercise_id, ex.id);
     assert!(points[0].one_rm > 0.0);
@@ -425,14 +425,14 @@ async fn grpc_smoke()
     // 区间过滤（把这次记录排除掉）
     let mut series_empty = ex_client
         .stream_exercise_series(authed(
-            pb::ExerciseSeriesRequest {
-                exercise_id: ex.id,
+            crate::api::grpc::pb::ExerciseSeriesRequest {
+                        exercise_id: ex.id,
                 from_date: Some("2000-01-01".to_string()),
                 to_date: Some("2000-12-31".to_string()),
             },
             &token,
         ))
-        .await
+    .await
         .expect("订阅序列失败")
         .into_inner();
     assert!(
@@ -440,39 +440,39 @@ async fn grpc_smoke()
         "区间外应没有数据"
     );
 
-    // ============================================================
+// ============================================================
     // 8. 客户端流：批量提交（训练结束一次性上传）
-    // ============================================================
+// ============================================================
     let second_item = view_plan.items[1].id;
     let batch = vec![
-        pb::UpsertRecordRequest {
-            plan_id: plan.id,
-            plan_item_id: item_id,
+        crate::api::grpc::pb::UpsertRecordRequest {
+                plan_id: plan.id,
+                plan_item_id: item_id,
             weight: 70.0,
             sets: 3,
-            reps: 5,
-            rest: 180,
-            feeling: String::new(),
-            strategy: String::new(),
-            key_points: String::new(),
-            completed: true,
-        },
-        pb::UpsertRecordRequest {
-            plan_id: plan.id,
+                reps: 5,
+                rest: 180,
+                feeling: String::new(),
+                strategy: String::new(),
+                key_points: String::new(),
+                completed: true,
+            },
+        crate::api::grpc::pb::UpsertRecordRequest {
+                plan_id: plan.id,
             plan_item_id: second_item,
             weight: 40.0,
             sets: 3,
             reps: 10,
             rest: 90,
-            feeling: String::new(),
-            strategy: String::new(),
-            key_points: String::new(),
-            completed: true,
-        },
+                feeling: String::new(),
+                strategy: String::new(),
+                key_points: String::new(),
+                completed: true,
+            },
     ];
     let summary = rec_client
         .submit_workout(authed(tokio_stream::iter(batch), &token))
-        .await
+    .await
         .expect("批量提交失败")
         .into_inner();
     assert_eq!(summary.saved_count, 2);
@@ -482,14 +482,14 @@ async fn grpc_smoke()
         "70kg*5 → 1RM 约 81.7"
     );
 
-    // ============================================================
+// ============================================================
     // 9. 双向流：一组一上报、一组一回执
-    // ============================================================
+// ============================================================
     let (tx, rx) = tokio::sync::mpsc::channel(4);
     tokio::spawn(async move {
         for weight in [80.0f64, 85.0]
-        {
-            let item = pb::UpsertRecordRequest {
+{
+            let item = crate::api::grpc::pb::UpsertRecordRequest {
                 plan_id: plan.id,
                 plan_item_id: item_id,
                 weight,
@@ -500,11 +500,11 @@ async fn grpc_smoke()
                 strategy: String::new(),
                 key_points: String::new(),
                 completed: true,
-            };
+    };
             if tx.send(item).await.is_err()
-            {
+{
                 return;
-            }
+        }
         }
         // 发完让 tx 落地（drop）→ 服务器看到 half-close → 结束响应流
     });
@@ -513,36 +513,37 @@ async fn grpc_smoke()
             tokio_stream::wrappers::ReceiverStream::new(rx),
             &token,
         ))
-        .await
+    .await
         .expect("建立双向流失败")
         .into_inner();
 
     let mut feedbacks = Vec::new();
     while let Some(fb) = live.message().await.expect("读回执失败")
-    {
+{
         feedbacks.push(fb);
-    }
+        }
     assert_eq!(feedbacks.len(), 2, "两组应各回一条回执");
     assert_eq!(feedbacks[0].completed_count, 1);
     assert_eq!(feedbacks[1].completed_count, 2);
     assert!(feedbacks[1].new_pr, "85kg 是本动作的新纪录");
 
-    // ============================================================
+// ============================================================
     // 10. 统计：日历 + 流式导出
-    // ============================================================
-    let mut stats_client = pb::stats_service_client::StatsServiceClient::connect(url.clone())
-        .await
+// ============================================================
+    let mut stats_client =
+        crate::api::grpc::pb::stats_service_client::StatsServiceClient::connect(url.clone())
+    .await
         .expect("连接失败");
 
     let calendar = stats_client
         .get_calendar(authed(
-            pb::GetCalendarRequest {
+            crate::api::grpc::pb::GetCalendarRequest {
                 year: None,
                 month: None,
             },
             &token,
         ))
-        .await
+    .await
         .expect("日历失败")
         .into_inner();
     assert!(
@@ -552,58 +553,61 @@ async fn grpc_smoke()
 
     let mut export = stats_client
         .stream_records(authed(
-            pb::StreamRecordsRequest {
+            crate::api::grpc::pb::StreamRecordsRequest {
                 from_date: None,
                 to_date: None,
                 exercise_id: Some(ex.id),
             },
             &token,
         ))
-        .await
+    .await
         .expect("导出失败")
         .into_inner();
     let mut exported = 0;
     while let Some(rec) = export.message().await.expect("读导出流失败")
-    {
+{
         assert_eq!(rec.exercise_id, ex.id);
         exported += 1;
-    }
+        }
     assert!(exported >= 1, "导出应至少有一条记录");
 
-    // ============================================================
+// ============================================================
     // 11. 数据隔离：另一个用户看不到这些数据（NOT_FOUND 而不是返回别人的）
-    // ============================================================
+// ============================================================
     let hash = crate::auth::hash_password("other123").expect("哈希失败");
     let other_id: i64 = sqlx::query_scalar(
         "INSERT INTO users (username, password_hash, is_admin) VALUES ('other', ?, 0) RETURNING id",
     )
     .bind(&hash)
-    .fetch_one(&_pool)
+        .fetch_one(&_pool)
     .await
     .expect("插入第二个用户失败");
     let other_token = crate::auth::create_session(&_pool, other_id)
-        .await
+    .await
         .expect("建会话失败");
 
     let err = phase_client
-        .get_phase(authed(pb::GetPhaseRequest { id: phase.id }, &other_token))
-        .await
+        .get_phase(authed(
+            crate::api::grpc::pb::GetPhaseRequest { id: phase.id },
+            &other_token,
+        ))
+    .await
         .expect_err("别的用户居然看到了我的阶段？");
     assert_eq!(err.code(), tonic::Code::NotFound);
 
-    // ============================================================
+// ============================================================
     // 12. 登出后 token 失效
-    // ============================================================
+// ============================================================
     let _ = auth_client
-        .logout(authed(pb::LogoutRequest {}, &token))
-        .await
+        .logout(authed(crate::api::grpc::pb::LogoutRequest {}, &token))
+    .await
         .expect("登出失败")
         .into_inner();
     let err = auth_client
-        .get_me(authed(pb::GetMeRequest {}, &token))
-        .await
+        .get_me(authed(crate::api::grpc::pb::GetMeRequest {}, &token))
+    .await
         .expect_err("登出后 token 还能用？");
     assert_eq!(err.code(), tonic::Code::Unauthenticated);
 
     println!("gRPC 冒烟测试全部通过：一元 / 服务器流 / 客户端流 / 双向流 + 认证 + 隔离");
-}
+        }

@@ -6,38 +6,27 @@
 //   · 日历：一个月最多 31 个日期（小，一元足够）
 //   · 训练记录导出：一年可能几千条（大，适合流式）
 // 判断标准不是"数据大不大"，而是**客户端能不能边收边用**：
-//   · 画折线图 → 收到一个点就能画一个（流式 ✓，见 exercises::stream_exercise_series）
-//   · 导出到文件 → 收到一条就能写一条（流式 ✓，就是本文件的 stream_records）
-//   · 画日历 → 必须先知道整月（一元 ✓）
+//   · 画折线图 → 收到一个点就能画一个（流式 ，见 exercises::stream_exercise_series）
+//   · 导出到文件 → 收到一条就能写一条（流式 ，就是本文件的 stream_records）
+//   · 画日历 → 必须先知道整月（一元 ）
 // ============================================================
-
-use tonic::{Request, Response, Status};
-
-use super::pool_of;
-use crate::{
-    AppState,
-    api::{
-        grpc::{auth, convert, pb},
-        rest::{records as rest_records, stats as rest_stats},
-    },
-};
 
 #[derive(Clone)]
 pub struct StatsServiceImpl
 {
-    pub(crate) state: AppState,
+    pub(crate) state: crate::AppState,
 }
 
 impl StatsServiceImpl
 {
-    pub fn new(state: AppState) -> Self
-    {
+    pub fn new(state: crate::AppState) -> Self
+{
         Self { state }
-    }
+}
 }
 
 #[tonic::async_trait]
-impl pb::stats_service_server::StatsService for StatsServiceImpl
+impl crate::api::grpc::pb::stats_service_server::StatsService for StatsServiceImpl
 {
     /// 历史日历：某月有训练的日期列表（不传年月 = 当前年月）
     ///
@@ -48,28 +37,35 @@ impl pb::stats_service_server::StatsService for StatsServiceImpl
     /// 客户端要"看别的月份"就显式传 '2026' / '03'。
     async fn get_calendar(
         &self,
-        request: Request<pb::GetCalendarRequest>,
-    ) -> Result<Response<pb::CalendarView>, Status>
-    {
-        let user = auth::require_user(&request, &self.state).await?;
+        request: tonic::Request<crate::api::grpc::pb::GetCalendarRequest>,
+    ) -> Result<tonic::Response<crate::api::grpc::pb::CalendarView>, tonic::Status>
+{
+        let user = crate::api::grpc::auth::require_user(&request, &self.state).await?;
         let req = request.into_inner();
-        let pool = pool_of(&self.state).await;
+        let pool = crate::api::grpc::service::pool_of(&self.state).await;
 
-        let out =
-            rest_stats::calendar_view(&pool, user.id, req.year.as_deref(), req.month.as_deref())
+        let out = crate::api::rest::stats::calendar_view(
+            &pool,
+            user.id,
+            req.year.as_deref(),
+            req.month.as_deref(),
+        )
                 .await?;
 
-        Ok(Response::new(pb::CalendarView::from(&out)))
-    }
+        Ok(tonic::Response::new(
+            crate::api::grpc::pb::CalendarView::from(&out),
+        ))
+}
 
-    // ============================================================
+// ============================================================
     // 服务器流式响应类型（同 exercises.rs 的解释）
-    // ============================================================
-    type StreamRecordsStream = tokio_stream::Iter<std::vec::IntoIter<Result<pb::Record, Status>>>;
+// ============================================================
+    type StreamRecordsStream =
+        tokio_stream::Iter<std::vec::IntoIter<Result<crate::api::grpc::pb::Record, tonic::Status>>>;
 
-    // ============================================================
-    // StreamRecords（服务器流式，★ 挖空练习）
-    // ============================================================
+// ============================================================
+    // StreamRecords（服务器流式， 挖空练习）
+// ============================================================
     /// 按条件导出训练记录（流式：一条一条发）
     ///
     /// 【教学：这个 RPC 是"REST 没有的能力"的典型例子】
@@ -107,30 +103,30 @@ impl pb::stats_service_server::StatsService for StatsServiceImpl
     /// 那个查询是按动作全量取的，见 exercises.rs 的实现步骤）。
     async fn stream_records(
         &self,
-        request: Request<pb::StreamRecordsRequest>,
-    ) -> Result<Response<Self::StreamRecordsStream>, Status>
-    {
-        let user = auth::require_user(&request, &self.state).await?;
+        request: tonic::Request<crate::api::grpc::pb::StreamRecordsRequest>,
+    ) -> Result<tonic::Response<Self::StreamRecordsStream>, tonic::Status>
+{
+        let user = crate::api::grpc::auth::require_user(&request, &self.state).await?;
         let req = request.into_inner();
-        let pool = pool_of(&self.state).await;
+        let pool = crate::api::grpc::service::pool_of(&self.state).await;
 
         // 过滤都交给 SQL（走索引、不白传数据）
-        let rows = rest_records::records_range(
+        let rows = crate::api::rest::records::records_range(
             &pool,
             user.id,
             req.from_date.as_deref(),
             req.to_date.as_deref(),
             req.exercise_id,
         )
-        .await?;
+                .await?;
 
         // 转换 + 协议包装（分开两级 map，读起来更清楚）
         let items = rows
             .iter()
-            .map(convert::record_from_row)
+            .map(crate::api::grpc::convert::record_from_row)
             .map(Ok)
             .collect::<Vec<_>>();
 
-        Ok(Response::new(tokio_stream::iter(items)))
-    }
+        Ok(tonic::Response::new(tokio_stream::iter(items)))
+}
 }

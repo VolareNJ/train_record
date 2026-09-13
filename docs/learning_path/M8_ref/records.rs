@@ -15,7 +15,7 @@
 // 有 → UPDATE（改同一行），无 → INSERT 新行。
 // （页面 record_save 同款逻辑，但 API 简化：不做要领回写动作库）
 //
-// 📌 阶段要求：M8 你来实现本文件所有函数。
+// 阶段要求：M8 你来实现本文件所有函数。
 //   完整实现已备份在 docs/learning_path/M8_ref/，实现完成后对照检查。
 // ============================================================
 use axum::{
@@ -131,71 +131,71 @@ pub async fn today(
     // 2. 今天
     let today_dt = sqlx::query_scalar::<_, String>("SELECT date('now', 'localtime')")
         .fetch_one(&pool)
-        .await
-        .map_err(ApiError::Database)?;
+    .await
+    .map_err(ApiError::Database)?;
 
     // 3. 今日计划
     let today_plan = match &current_phase
-    {
+{
         Some(phase) =>
-        {
+{
             sqlx::query_as::<_, Plan>("SELECT * FROM plans WHERE phase_id = ? AND date = ?")
                 .bind(&phase.id)
                 .bind(&today_dt)
-                .fetch_optional(&pool)
-                .await
+    .fetch_optional(&pool)
+    .await
                 .map_err(ApiError::Database)?
         },
         None => None,
-    };
+};
 
     // 4-6. 组装（有阶段且有计划才查 items）
     let phase_out = match &current_phase
-    {
+{
         None => None,
         Some(phase) =>
-        {
+{
             // 坚持天数（start_date 为空 → 0）
             let days = match &phase.start_date
-            {
+{
                 Some(start_date) => sqlx::query_scalar::<_, i64>(
                     "SELECT CAST(julianday('now','localtime') - julianday(?) AS INTEGER)",
-                )
+    )
                 .bind(start_date)
-                .fetch_one(&pool)
-                .await
+        .fetch_one(&pool)
+    .await
                 .map_err(ApiError::Database)?,
                 None => 0,
-            };
+};
             Some(TodayPhaseOut {
                 id: phase.id,
                 name: phase.name.clone(),
                 days,
             })
         },
-    };
+};
 
     let plan_out = match &today_plan
-    {
+{
         None => None,
         Some(plan) =>
-        {
+{
             // 计划项
             let plan_items = sqlx::query_as::<_, PlanItem>(
                 "SELECT * FROM plan_items WHERE plan_id = ? ORDER BY sort_order ASC",
-            )
+    )
             .bind(&plan.id)
             .fetch_all(&pool)
-            .await
-            .map_err(ApiError::Database)?;
+    .await
+    .map_err(ApiError::Database)?;
 
             // 动作索引（id → (name, body_part)）
             let ex_index: std::collections::HashMap<i64, (String, String)> =
                 sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE user_id = ?")
-                    .bind(&user.id)
-                    .fetch_all(&pool)
-                    .await
-                    .map_err(ApiError::Database)?
+    .bind(&user.id)
+            .fetch_all(&pool)
+    .await
+                .map_err(ApiError::Database)?
                     .into_iter()
                     .map(|e| (e.id, (e.name, e.body_part)))
                     .collect();
@@ -203,15 +203,15 @@ pub async fn today(
             // 每个计划项的最近记录
             let mut items = Vec::with_capacity(plan_items.len());
             for item in &plan_items
-            {
+{
                 let last = sqlx::query_as::<_, Record>(
                     "SELECT * FROM records WHERE plan_item_id = ?
                  ORDER BY record_date DESC, id DESC LIMIT 1",
-                )
+    )
                 .bind(&item.id)
-                .fetch_optional(&pool)
-                .await
-                .map_err(ApiError::Database)?;
+    .fetch_optional(&pool)
+    .await
+    .map_err(ApiError::Database)?;
 
                 let (ex_name, body_part) = ex_index
                     .get(&item.exercise_id)
@@ -238,7 +238,7 @@ pub async fn today(
                         strategy: r.strategy,
                     }),
                 });
-            }
+}
 
             Some(TodayPlanOut {
                 id: plan.id,
@@ -246,7 +246,7 @@ pub async fn today(
                 items,
             })
         },
-    };
+};
 
     Ok(Json(TodayOut {
         phase: phase_out,
@@ -338,46 +338,46 @@ pub async fn upsert_record(
     .bind(&user.id)
     .fetch_optional(&pool)
     .await
-    .map_err(ApiError::Database)?
+                .map_err(ApiError::Database)?
     .ok_or_else(|| ApiError::NotFound("计划不存在".to_string()))?;
 
     // 2. 阶段未归档
     let phase = sqlx::query_as::<_, Phase>("SELECT * FROM phases WHERE id = ? AND user_id = ?")
         .bind(&plan.phase_id)
-        .bind(&user.id)
-        .fetch_optional(&pool)
-        .await
-        .map_err(ApiError::Database)?
+    .bind(&user.id)
+    .fetch_optional(&pool)
+    .await
+                .map_err(ApiError::Database)?
         .ok_or_else(|| ApiError::NotFound("阶段不存在".to_string()))?;
     if phase.archived
-    {
+{
         return Err(ApiError::Forbidden("归档阶段不可编辑".to_string()));
-    }
+}
 
     // 3. 计划项属于该计划（双条件）+ 拿 exercise_id
     let plan_item =
         sqlx::query_as::<_, PlanItem>("SELECT * FROM plan_items WHERE id = ? AND plan_id = ?")
             .bind(&item_id)
-            .bind(&plan_id)
-            .fetch_optional(&pool)
-            .await
-            .map_err(ApiError::Database)?
+    .bind(&plan_id)
+    .fetch_optional(&pool)
+    .await
+                .map_err(ApiError::Database)?
             .ok_or_else(|| ApiError::NotFound("计划项不存在".to_string()))?;
 
     // 4. 负数校验
     if req.weight < 0.0 || req.sets < 0 || req.reps < 0 || req.rest < 0
-    {
+{
         return Err(ApiError::Validation(
             "重量/组数/次数/休息不能为负数".to_string(),
         ));
-    }
+}
 
     // 5. 查该计划项最近记录
     let most_recent = sqlx::query_as::<_, Record>(
-        "SELECT * FROM records WHERE plan_item_id = ?
-        ORDER BY record_date DESC, id DESC LIMIT 1",
+                    "SELECT * FROM records WHERE plan_item_id = ?
+                 ORDER BY record_date DESC, id DESC LIMIT 1",
     )
-    .bind(&item_id)
+            .bind(&item_id)
     .fetch_optional(&pool)
     .await
     .map_err(ApiError::Database)?;
@@ -390,18 +390,18 @@ pub async fn upsert_record(
     .bind(&user.id)
     .fetch_optional(&pool)
     .await
-    .map_err(ApiError::Database)?
+                .map_err(ApiError::Database)?
     .unwrap_or_else(|| "bar".to_string());
 
     // 7. INSERT 或 UPDATE（当天已有记录 → 更新同一行）
     let saved: Record = match most_recent
-    {
+{
         Some(record) => sqlx::query_as::<_, Record>(
             "UPDATE records SET completed = ?, weight = ?, sets = ?, reps = ?, rest = ?,
                 feeling = ?, strategy = ?, key_points = ?
                 WHERE id = ?
                 RETURNING *",
-        )
+    )
         .bind(&req.completed)
         .bind(&req.weight)
         .bind(&req.sets)
@@ -412,39 +412,39 @@ pub async fn upsert_record(
         .bind(&req.key_points)
         .bind(&record.id)
         .fetch_one(&pool)
-        .await
-        .map_err(ApiError::Database)?,
+    .await
+                .map_err(ApiError::Database)?,
         None =>
-        {
-            let today_dt = sqlx::query_scalar::<_, String>("SELECT date('now', 'localtime')")
-                .fetch_one(&pool)
-                .await
-                .map_err(ApiError::Database)?;
+{
+    let today_dt = sqlx::query_scalar::<_, String>("SELECT date('now', 'localtime')")
+        .fetch_one(&pool)
+    .await
+    .map_err(ApiError::Database)?;
             sqlx::query_as::<_, Record>(
                 "INSERT INTO records
                 (plan_item_id, phase_id, exercise_id, record_date, completed,
                 weight, sets, reps, rest, feeling, strategy, key_points, mode)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 RETURNING *",
-            )
+    )
             .bind(&plan_item.id)
-            .bind(&phase.id)
-            .bind(&plan_item.exercise_id)
-            .bind(&today_dt)
-            .bind(&req.completed)
-            .bind(&req.weight)
-            .bind(&req.sets)
-            .bind(&req.reps)
-            .bind(&req.rest)
-            .bind(&req.feeling)
-            .bind(&req.strategy)
-            .bind(&req.key_points)
+                .bind(&phase.id)
+    .bind(&plan_item.exercise_id)
+                .bind(&today_dt)
+        .bind(&req.completed)
+        .bind(&req.weight)
+        .bind(&req.sets)
+        .bind(&req.reps)
+        .bind(&req.rest)
+        .bind(&req.feeling)
+        .bind(&req.strategy)
+        .bind(&req.key_points)
             .bind(&mode)
-            .fetch_one(&pool)
-            .await
-            .map_err(ApiError::Database)?
+        .fetch_one(&pool)
+    .await
+                .map_err(ApiError::Database)?
         },
-    };
+};
 
     // 7. 查动作名（record_out）
     Ok(Json(record_out(&pool, &saved, user.id).await?))
@@ -460,25 +460,25 @@ async fn record_out(pool: &SqlitePool, r: &Record, user_id: i64) -> Result<Recor
             .bind(&r.exercise_id)
             .bind(&user_id)
             .fetch_optional(pool)
-            .await
-            .map_err(ApiError::Database)?
+    .await
+                .map_err(ApiError::Database)?
             .unwrap_or_else(|| "未知动作".to_string());
 
     Ok(RecordOut {
-        id: r.id,
+                        id: r.id,
         exercise_id: r.exercise_id,
-        exercise_name: ex_name,
+                    exercise_name: ex_name,
         record_date: r.record_date.clone(),
-        weight: r.weight,
-        sets: r.sets,
-        reps: r.reps,
-        rest: r.rest,
+                        weight: r.weight,
+                        sets: r.sets,
+                        reps: r.reps,
+                        rest: r.rest,
         feeling: r.feeling.clone(),
         strategy: r.strategy.clone(),
         key_points: r.key_points.clone(),
         mode: r.mode.clone(),
         completed: r.completed,
-    })
+            })
 }
 
 // ============================================================
@@ -504,7 +504,7 @@ pub async fn list_by_date(
 
     validate_date(&query.date)?;
 
-    // ⚠️ records 表没有 user_id 列！数据隔离走 JOIN exercises（M5 纪律）：
+    //  records 表没有 user_id 列！数据隔离走 JOIN exercises（M5 纪律）：
     //   SELECT r.* FROM records r
     //   INNER JOIN exercises e ON r.exercise_id = e.id
     //   WHERE e.user_id = ? AND r.record_date = ?
@@ -516,15 +516,15 @@ pub async fn list_by_date(
     )
     .bind(&user.id)
     .bind(&query.date)
-    .fetch_all(&pool)
+            .fetch_all(&pool)
     .await
     .map_err(ApiError::Database)?;
 
     let mut out = Vec::with_capacity(records.len());
     for r in &records
-    {
+{
         out.push(record_out(&pool, r, user.id).await?);
-    }
+}
 
     Ok(Json(out))
 }
@@ -577,7 +577,7 @@ pub async fn update_record(
     .bind(&user.id)
     .fetch_optional(&pool)
     .await
-    .map_err(ApiError::Database)?
+                .map_err(ApiError::Database)?
     .ok_or_else(|| ApiError::NotFound("记录不存在".to_string()))?;
 
     let weight = req.weight.unwrap_or(old.weight);
@@ -590,17 +590,17 @@ pub async fn update_record(
     let completed = req.completed.unwrap_or(old.completed);
 
     if weight < 0.0 || sets < 0 || reps < 0 || rest < 0
-    {
+{
         return Err(ApiError::Validation(
             "重量/组数/次数/休息不能为负数".to_string(),
         ));
-    }
+}
 
     let saved = sqlx::query_as::<_, Record>(
         "UPDATE records SET weight = ?, sets = ?, reps = ?, rest = ?,
         feeling = ?, strategy = ?, key_points = ?, completed = ?
-        WHERE id = ?
-        RETURNING *",
+                WHERE id = ?
+                RETURNING *",
     )
     .bind(&weight)
     .bind(&sets)
@@ -611,7 +611,7 @@ pub async fn update_record(
     .bind(&key_points)
     .bind(&completed)
     .bind(&id)
-    .fetch_one(&pool)
+        .fetch_one(&pool)
     .await
     .map_err(ApiError::Database)?;
 
@@ -646,20 +646,20 @@ pub async fn delete_record(
     .map_err(ApiError::Database)?;
 
     if owned.is_none()
-    {
+{
         return Err(ApiError::NotFound("记录不存在".to_string()));
-    }
+}
 
     let ret = sqlx::query("DELETE FROM records WHERE id = ?")
-        .bind(&id)
+    .bind(&id)
         .execute(&pool)
-        .await
-        .map_err(ApiError::Database)?;
+    .await
+    .map_err(ApiError::Database)?;
 
     if ret.rows_affected() == 0
-    {
+{
         return Err(ApiError::NotFound("记录不存在".to_string()));
-    }
+}
 
     Ok(Json(serde_json::json!({ "ok": true })))
 }
@@ -672,9 +672,9 @@ pub async fn delete_record(
 fn validate_date(date: &str) -> Result<(), ApiError>
 {
     match date.split('-').collect::<Vec<&str>>().as_slice()
-    {
+{
         [yyyy, mm, dd] =>
-        {
+{
             yyyy.parse::<i64>()
                 .map_err(|_| ApiError::Validation("年份必须是数字".to_string()))?;
             mm.parse::<i64>()
@@ -686,5 +686,5 @@ fn validate_date(date: &str) -> Result<(), ApiError>
         _ => Err(ApiError::Validation(
             "日期格式必须是 YYYY-MM-DD".to_string(),
         )),
-    }
+}
 }

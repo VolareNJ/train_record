@@ -1,4 +1,4 @@
-﻿# 📌 待办与设计决策记录（跨会话）
+﻿#  待办与设计决策记录（跨会话）
 
 > 本文件记录**已确认但尚未解决**的设计事项与踩坑记录，每条标注计划在哪个阶段（M 几）解决。
 > 用途：Copilot 有上下文长度限制，重要事项写在这里，跨会话可查。
@@ -8,18 +8,18 @@
 
 ## 〇、阶段路线（2026-08-21 更新）
 
-- ✅ M0-M5 全部完成（M5 含理解验证，2026-08-14 收官）
-- ✅ M6 备份与体验（原计划：数据备份/导出）
-- ✅ M7 打磨（热替换连接池/未登录跳转/排序真值/美化/PWA 离线/部署文档）
+- M0-M5 全部完成（M5 含理解验证，2026-08-14 收官）
+- M6 备份与体验（原计划：数据备份/导出）
+- M7 打磨（热替换连接池/未登录跳转/排序真值/美化/PWA 离线/部署文档）
   （含理解验证，2026-08-21 收官；§1.1/§1.3/§1.4 三项待办已解决，见下）
-- ✅ **M8 REST API 层**（新增）：给 train_record 加 JSON API，为 iced GUI 客户端铺路
+- **M8 REST API 层**（新增）：给 train_record 加 JSON API，为 iced GUI 客户端铺路
   - 详见 `docs/learning_path/M5_roadmap_notes.md` §3 路线图与"GUI 技术栈决策"
   - 阶段文档 `docs/learning_path/M8.md`；完整实现已备份 `docs/learning_path/M8_ref/`
   - 认证方案：M8 复用 session cookie（ApiAuthUser 守卫），login 返回 `{"user", "token"}`；
     `Authorization: Bearer token` 头认证是扩展点（iced 客户端若需要再加）
   - 已实测：登录/登出/me、阶段/动作/模板/计划 CRUD、today/upsert/记录列表/更新/删除、
     history 日历/exercise stats、跨用户数据隔离（401/404）、未登录 401 JSON
-- 📝 **M9 gRPC 出口**（新增）：给同一套业务加第二种协议出口（强类型 + 流式）
+- **M9 gRPC 出口**（新增）：给同一套业务加第二种协议出口（强类型 + 流式）
   - 契约 `proto/train_record.proto`（6 service / 32 方法，含 4 种 RPC 类型）
   - 阶段文档 `docs/learning_path/M9.md`；老师完整实现备份 `docs/learning_path/M9_ref/`
   - 目录归并：`src/api/*.rs` → `src/api/rest/*.rs`（`api/mod.rs` 只剩模块树 +
@@ -68,7 +68,28 @@
 - 解法：在 `src/auth.rs` 加 `pub async fn get_user_by_username(pool, name)`，
   两处都改调它（M9 为了不碰 M8 已验收代码而暂缓）。
 
-### 1.1 模板间排序：`templates.sort_order` 真值分配 ✅（M7 第 3 步已解决，4d2231a 之前）
+### 1.7 clippy 存量风格建议清理（M9 记录，M10 前处理）
+
+- **现状**（M9 结束时实测）：`cargo clippy --all-targets` 有 351 条 `warning`
+  （rustc 层已是 0 警告；这些只是 clippy 的风格建议）。分类：
+  - 266 条 `needless_borrow`：`.bind(&user.id)` → `.bind(user.id)`
+    （i64/f64 是 Copy，多余的借用；**自动可修**）
+  - 62 条 doc 注释列表缩进建议（`doc_lazy_continuation` 类）：
+    教学注释里的“1. 2. 3.”列表与续行缩进，clippy 希望缩进对齐
+  - 12 条 `needless_question_mark`：`Ok(x?)` → `x`（可直接改）
+  - 其余少量：`redundant closure`（`|e| AppError::Database(e)` → `AppError::Database`）、
+    `unwrap_or_default`、`useless vec!`、`assert_eq!` 字面 bool 等
+- **为什么暂不处理**：266 条 needless_borrow 会改动大量 M8 已验收代码
+  （尤其是学生手写的 `&` 风格）——建议单独一次“clippy 清理”提交，
+  而不是混在功能改动里。
+- **处理方式**（届时）：
+  1. `cargo clippy --fix --allow-dirty --all-targets`（自动修大头）
+  2. 剩下的 doc 缩进 + 少量建议手工改（边改边 `cargo +nightly fmt`）
+  3. 验收：`cargo clippy --all-targets 2>&1 | grep -c "^warning"` → 0
+     且 `cargo check --all-targets` / `cargo test` 仍 0 警告
+- **新代码要求**（AGENTS.md 已写）：不得引入新的 clippy 警告。
+
+### 1.1 模板间排序：`templates.sort_order` 真值分配 （M7 第 3 步已解决，4d2231a 之前）
 
 - **现状**：`templates.sort_order` 是预留字段，M3 阶段插入时恒为 `0`（占位）。
   M3 的模板列表查询**没有** `ORDER BY sort_order`，不影响功能。
@@ -76,14 +97,14 @@
   列表查询加 `ORDER BY sort_order, id`。
 - **注意**：`template_items.sort_order` / `plan_items.sort_order` 从一开始就是真数据（`enumerate()` 生成）。
 
-### 1.2 模板/计划"空动作"校验 ✅（M5 第 6 步已解决，8d6434f 之前）
+### 1.2 模板/计划"空动作"校验 （M5 第 6 步已解决，8d6434f 之前）
 
 - **解法**：`template_create` / `template_update` / `plan_create` 三处
   在事务 begin 前校验：`exercise_ids().is_empty()` → 422"至少选择一个动作"
   （plan_create 只在未选模板时校验——模板自身已有校验）
 - **实测**：curl 空模板/空计划均 422；选模板正常创建不误伤
 
-### 1.3 HashMap 迭代顺序 ≠ 勾选顺序 ✅（M7 第 3 步已解决）
+### 1.3 HashMap 迭代顺序 ≠ 勾选顺序 （M7 第 3 步已解决）
 
 - **坑**：`TemplateCreateForm` 用 `#[serde(flatten)]` + `HashMap` 收集勾选的动作 id，
   `HashMap` 迭代顺序**不保证**是表单提交顺序（实测勾选 6→7，落库 sort_order 是 7=0、6=1）。
@@ -92,7 +113,7 @@
   按 order 排序后再 `enumerate()` 分配 sort_order（先删后插时用）。
 - **效果**：编辑计划/模板打乱顺序保存后，刷新顺序与编辑时一致。
 
-### 1.4 未登录访问返回 401 JSON 而非重定向到 /login ✅（M7 第 2 步已解决）
+### 1.4 未登录访问返回 401 JSON 而非重定向到 /login （M7 第 2 步已解决）
 
 - **现状**：`AuthUser` 守卫失败返回 `AppError::Unauthorized` → error.rs 输出
   **401 JSON**（`{"error": "请先登录"}`），浏览器显示 JSON 文本，
@@ -105,7 +126,7 @@
 
 ## 二、踩坑记录（已解决，供参考）
 
-### 2.1 serde_urlencoded 多选陷阱（M3 第 1 步，已解决 ✅）
+### 2.1 serde_urlencoded 多选陷阱（M3 第 1 步，已解决）
 
 - **坑**：axum 的 `Form<T>` 用 `serde_urlencoded` 解析，它是 **map 语义**：
   - 重复键 `exercise_ids=6&exercise_ids=7` → **后值覆盖前值**（只剩 7）
@@ -117,13 +138,13 @@
 - **影响范围**：**M3 第 2 步（当日计划：手动选动作）** 会再遇到，直接复用同一模式。
   M3 第 3 步（从模板复制）不涉及表单多选，不受影响。
 
-### 2.2 事务必须 commit（M3 第 1 步，已解决 ✅）
+### 2.2 事务必须 commit（M3 第 1 步，已解决）
 
 - **坑**：写多张表（templates + template_items）时 `begin()` 后漏了 `commit()`，
   函数结束 `tx` drop → 全部回滚，数据静默丢失（页面却显示成功）。
 - **解法**：`begin()` → 所有 `execute` 用 `&mut *tx` → 结尾 `tx.commit().await?;`
 
-### 2.3 plan_update 先删后插导致记录关联断裂（已解决 ✅，78bfb2d）
+### 2.3 plan_update 先删后插导致记录关联断裂（已解决，78bfb2d）
 
 - **坑**：编辑计划 = 先删后插（§2.1 外键策略之一：置 NULL 解除关联 → DELETE → 重新 INSERT）。
   重建的 plan_items 是**新 id**，但 records.plan_item_id 没重新挂回去 → 全变 NULL。
@@ -134,7 +155,21 @@
   生产数据已手动修复（今天的记录全部重新挂回）。
 - **详细复盘**：`docs/learning_path/M4_bugfix_notes.md` §11
 
-### 2.4 静态资源无 Cache-Control → 启发式缓存坑（M7 第 5 步，已解决 ✅）
+### 2.5 改已执行过的迁移文件 → 启动报 checksum 错（M9 记录，已回退）
+
+- **坑**：M9 做全文去 emoji 清理时，顺手改了 `migrations/0003~0006` 里的注释
+  （只是删了行首的警告符号）。虽然 SQL 语句没动，但 **sqlx 校验的是文件内容**：
+  已应用到数据库的迁移一旦被改动，下次启动直接报
+  `migration N was previously applied but has been modified`。
+- **为何当时没当场爆**：运行中的二进制在编译时就把迁移内容（含 checksum）嵌进去了，
+  运行时**不读磁盘上的 .sql 文件**——所以线上服务看起来正常，
+  但**下次重新编译+重启就会启动失败**，是最典型“埋下次的雷”。
+- **解法**：`git checkout -- migrations/` 回退（保持与原 checksum 一致）。
+- **纪律（已写入 AGENTS.md）**：`migrations/*.sql` 一旦提交即**不可变**；
+  要改表结构就新增迁移文件；注释写错了也不要回改旧文件。
+- **自查**：`git diff --stat migrations/` 应为空。
+
+### 2.4 静态资源无 Cache-Control → 启发式缓存坑（M7 第 5 步，已解决）
 
 - **坑**：ServeDir 响应不带 `Cache-Control` 头时，浏览器按
   `(now - Last-Modified) * 10%` 猜测新鲜度（启发式缓存）。
@@ -160,7 +195,7 @@
 - 登录：`admin / admin123`；curl 需 `-c /tmp/ck.txt -b /tmp/ck.txt`
 - 服务器：端口 8080；重启后需重新登录再实测
 
-### 3.1 计划预设计重信息（已实现 ✅，commit b79b66d）
+### 3.1 计划预设计重信息（已实现，commit b79b66d）
 
 - **需求**：编辑计划时规定计重方式等信息（同 record_form），record_form 按 plan_item 预填；
   "感受/策略"仍只能在 record_form 填。解决"改 record_form 就标已训练"的矛盾。

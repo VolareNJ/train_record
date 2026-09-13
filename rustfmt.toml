@@ -8,8 +8,8 @@
 # 【工具链约定（M9 调整）】
 # 构建/测试/运行一律用 **stable**（项目不锁工具链，无 rust-toolchain.toml）；
 # 只有格式化这里需要 nightly，因为下面几个选项是 nightly 版 rustfmt 才支持的：
-#   cargo +nightly fmt           ✅ 正确
-#   cargo fmt                    ❌ stable rustfmt 会忽略这些选项，
+# cargo +nightly fmt            正确
+# cargo fmt                     stable rustfmt 会忽略这些选项，
 #                                   然后把大括号改回行尾（看起来成功了，实际破坏了风格）
 # ============================================================
 

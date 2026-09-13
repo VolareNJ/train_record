@@ -25,7 +25,7 @@
 // items 是 Vec，顺序 = 数组顺序，不存在"后值覆盖前值"。
 // 顺序落库：enumerate() 生成 sort_order。
 //
-// 📌 阶段要求：M8 你来实现本文件所有函数。
+// 阶段要求：M8 你来实现本文件所有函数。
 //   完整实现已备份在 docs/learning_path/M8_ref/，实现完成后对照检查。
 // ============================================================
 use std::collections::HashMap;
@@ -159,9 +159,9 @@ async fn verify_phase(pool: &SqlitePool, user_id: i64, phase_id: i64) -> Result<
         .ok_or_else(|| ApiError::NotFound("阶段不存在".to_string()))?;
 
     if phase.archived
-    {
+{
         return Err(ApiError::Forbidden("归档阶段不可编辑".to_string()));
-    }
+}
 
     Ok(phase)
 }
@@ -185,10 +185,10 @@ async fn verify_template(
     WHERE t.id = ? AND p.user_id = ?",
     )
     .bind(&template_id)
-    .bind(&user_id)
-    .fetch_optional(pool)
-    .await
-    .map_err(ApiError::Database)?
+        .bind(&user_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(ApiError::Database)?
     .ok_or_else(|| ApiError::NotFound("模板不存在".to_string()))
 }
 
@@ -199,10 +199,10 @@ async fn verify_plan(pool: &SqlitePool, user_id: i64, plan_id: i64) -> Result<Pl
     WHERE p.id = ? AND ph.user_id = ?",
     )
     .bind(&plan_id)
-    .bind(&user_id)
-    .fetch_optional(pool)
-    .await
-    .map_err(ApiError::Database)?
+        .bind(&user_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(ApiError::Database)?
     .ok_or_else(|| ApiError::NotFound("计划不存在".to_string()))
 }
 
@@ -224,15 +224,15 @@ async fn template_out(
     )
     .bind(&t.id)
     .fetch_all(pool)
-    .await
+        .await
     .map_err(ApiError::Database)?;
 
     let ex_names: HashMap<i64, String> =
         sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE user_id = ?")
-            .bind(&user_id)
-            .fetch_all(pool)
-            .await
-            .map_err(ApiError::Database)?
+        .bind(&user_id)
+    .fetch_all(pool)
+        .await
+        .map_err(ApiError::Database)?
             .into_iter()
             .map(|e| (e.id, e.name))
             .collect();
@@ -249,14 +249,14 @@ async fn template_out(
             plan_sets: i.plan_sets,
             plan_reps: i.plan_reps,
         })
-        .collect();
+            .collect();
 
     Ok(TemplateOut {
         id: t.id,
         phase_id: t.phase_id,
         name: t.name.clone(),
         items: items_out,
-    })
+        })
 }
 
 async fn plan_out(pool: &SqlitePool, p: &Plan, user_id: i64) -> Result<PlanOut, ApiError>
@@ -266,15 +266,15 @@ async fn plan_out(pool: &SqlitePool, p: &Plan, user_id: i64) -> Result<PlanOut, 
     )
     .bind(&p.id)
     .fetch_all(pool)
-    .await
+        .await
     .map_err(ApiError::Database)?;
 
     let ex_names: HashMap<i64, (String, String)> =
         sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE user_id = ?")
-            .bind(&user_id)
-            .fetch_all(pool)
-            .await
-            .map_err(ApiError::Database)?
+        .bind(&user_id)
+    .fetch_all(pool)
+        .await
+        .map_err(ApiError::Database)?
             .into_iter()
             .map(|e| (e.id, (e.name, e.body_part)))
             .collect();
@@ -287,19 +287,19 @@ async fn plan_out(pool: &SqlitePool, p: &Plan, user_id: i64) -> Result<PlanOut, 
                 .cloned()
                 .unwrap_or_else(|| ("未知动作".to_string(), "未分组".to_string()));
             PlanItemOut {
-                id: i.id,
-                exercise_id: i.exercise_id,
+            id: i.id,
+            exercise_id: i.exercise_id,
                 exercise_name: name,
                 body_part: part,
-                plan_sets: i.plan_sets,
-                plan_reps: i.plan_reps,
+            plan_sets: i.plan_sets,
+            plan_reps: i.plan_reps,
                 plan_weight: i.plan_weight,
                 plan_rest: i.plan_rest,
                 plan_key_points: i.plan_key_points.clone(),
                 plan_note: i.plan_note.clone(),
-            }
+}
         })
-        .collect();
+            .collect();
 
     Ok(PlanOut {
         id: p.id,
@@ -307,7 +307,7 @@ async fn plan_out(pool: &SqlitePool, p: &Plan, user_id: i64) -> Result<PlanOut, 
         date: p.date.clone(),
         note: p.note.clone(),
         items: items_out,
-    })
+        })
 }
 
 // ============================================================
@@ -339,16 +339,16 @@ pub async fn template_list(
     let templates = sqlx::query_as::<_, Template>(
         "SELECT * FROM templates WHERE phase_id = ? ORDER BY sort_order, id",
     )
-    .bind(&phase_id)
+        .bind(&phase_id)
     .fetch_all(&pool)
-    .await
+        .await
     .map_err(ApiError::Database)?;
 
     let mut out = Vec::with_capacity(templates.len());
     for t in &templates
-    {
+{
         out.push(template_out(&pool, t, user.id).await?);
-    }
+}
 
     Ok(Json(out))
 }
@@ -382,21 +382,21 @@ pub async fn template_create(
 
     // 校验
     if req.name.trim().is_empty()
-    {
+{
         return Err(ApiError::Validation("模板名称不能为空".to_string()));
-    }
+}
     if req.items.is_empty()
-    {
+{
         return Err(ApiError::Validation("至少选择一个动作".to_string()));
-    }
+}
 
     // 下一个排序号
     let next_sort = sqlx::query_scalar::<_, i64>(
         "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM templates WHERE phase_id = ?",
     )
-    .bind(&phase_id)
+        .bind(&phase_id)
     .fetch_one(&pool)
-    .await
+        .await
     .map_err(ApiError::Database)?;
 
     // 事务：父表 + 子表
@@ -406,36 +406,36 @@ pub async fn template_create(
         "INSERT INTO templates (phase_id, name, sort_order) VALUES (?, ?, ?)
         RETURNING id",
     )
-    .bind(&phase_id)
+        .bind(&phase_id)
     .bind(&req.name)
     .bind(next_sort)
     .fetch_one(&mut *tx)
-    .await
+        .await
     .map_err(ApiError::Database)?;
 
     for (idx, item) in req.items.iter().enumerate()
-    {
+{
         sqlx::query(
             "INSERT INTO template_items (template_id, exercise_id, sort_order) VALUES (?, ?, ?)",
-        )
-        .bind(&template_id)
+    )
+    .bind(&template_id)
         .bind(item.exercise_id)
         .bind(idx as i64)
         .execute(&mut *tx)
         .await
-        .map_err(ApiError::Database)?;
-    }
+    .map_err(ApiError::Database)?;
+}
 
     tx.commit().await.map_err(ApiError::Database)?;
 
     // 查完整模板返回
     let template =
         sqlx::query_as::<_, Template>("SELECT * FROM templates WHERE id = ? AND phase_id = ?")
-            .bind(&template_id)
-            .bind(&phase_id)
-            .fetch_one(&pool)
-            .await
-            .map_err(ApiError::Database)?;
+    .bind(&template_id)
+        .bind(&phase_id)
+    .fetch_one(&pool)
+        .await
+    .map_err(ApiError::Database)?;
 
     Ok(Json(template_out(&pool, &template, user.id).await?))
 }
@@ -471,50 +471,50 @@ pub async fn template_update(
     verify_phase(&pool, user.id, tpl.phase_id).await?;
 
     if req.name.trim().is_empty()
-    {
+{
         return Err(ApiError::Validation("模板名称不能为空".to_string()));
-    }
+}
     if req.items.is_empty()
-    {
+{
         return Err(ApiError::Validation("至少选择一个动作".to_string()));
-    }
+}
 
     let mut tx = pool.begin().await.map_err(ApiError::Database)?;
 
     sqlx::query("UPDATE templates SET name = ? WHERE id = ?")
-        .bind(&req.name)
+    .bind(&req.name)
         .bind(&id)
         .execute(&mut *tx)
         .await
-        .map_err(ApiError::Database)?;
+    .map_err(ApiError::Database)?;
 
     // 先删后插
     sqlx::query("DELETE FROM template_items WHERE template_id = ?")
         .bind(&id)
         .execute(&mut *tx)
         .await
-        .map_err(ApiError::Database)?;
+    .map_err(ApiError::Database)?;
 
     for (idx, item) in req.items.iter().enumerate()
-    {
+{
         sqlx::query(
             "INSERT INTO template_items (template_id, exercise_id, sort_order) VALUES (?, ?, ?)",
-        )
+    )
         .bind(&id)
         .bind(item.exercise_id)
         .bind(idx as i64)
         .execute(&mut *tx)
         .await
-        .map_err(ApiError::Database)?;
-    }
+    .map_err(ApiError::Database)?;
+}
 
     tx.commit().await.map_err(ApiError::Database)?;
 
     let template = sqlx::query_as::<_, Template>("SELECT * FROM templates WHERE id = ?")
         .bind(&id)
-        .fetch_one(&pool)
+    .fetch_one(&pool)
         .await
-        .map_err(ApiError::Database)?;
+    .map_err(ApiError::Database)?;
 
     Ok(Json(template_out(&pool, &template, user.id).await?))
 }
@@ -544,13 +544,13 @@ pub async fn template_delete(
         .bind(&id)
         .execute(&mut *tx)
         .await
-        .map_err(ApiError::Database)?;
+    .map_err(ApiError::Database)?;
 
     sqlx::query("DELETE FROM templates WHERE id = ?")
         .bind(&id)
         .execute(&mut *tx)
         .await
-        .map_err(ApiError::Database)?;
+    .map_err(ApiError::Database)?;
 
     tx.commit().await.map_err(ApiError::Database)?;
 
@@ -589,27 +589,27 @@ pub async fn plan_list(
         .ok_or_else(|| ApiError::NotFound("阶段不存在".to_string()))?;
 
     let plans = match query.date.as_deref().filter(|d| !d.is_empty())
-    {
+{
         None => sqlx::query_as::<_, Plan>(
             "SELECT * FROM plans WHERE phase_id = ? ORDER BY date DESC, id DESC",
-        )
+    )
         .bind(&phase_id)
         .fetch_all(&pool),
         Some(d) => sqlx::query_as::<_, Plan>(
             "SELECT * FROM plans WHERE phase_id = ? AND date = ? ORDER BY date DESC, id DESC",
-        )
+    )
         .bind(&phase_id)
         .bind(d)
         .fetch_all(&pool),
-    }
-    .await
+}
+        .await
     .map_err(ApiError::Database)?;
 
     let mut out = Vec::with_capacity(plans.len());
     for p in &plans
-    {
+{
         out.push(plan_out(&pool, p, user.id).await?);
-    }
+}
 
     Ok(Json(out))
 }
@@ -643,9 +643,9 @@ pub async fn plan_create(
     validate_date(&req.date)?;
 
     if req.items.is_empty()
-    {
+{
         return Err(ApiError::Validation("至少选择一个动作".to_string()));
-    }
+}
 
     let mut tx = pool.begin().await.map_err(ApiError::Database)?;
 
@@ -653,22 +653,22 @@ pub async fn plan_create(
         "INSERT INTO plans (phase_id, date, note) VALUES (?, ?, ?)
         RETURNING id",
     )
-    .bind(&phase_id)
+        .bind(&phase_id)
     .bind(&req.date)
     .bind(&req.note)
     .fetch_one(&mut *tx)
-    .await
+        .await
     .map_err(ApiError::Database)?;
 
     for (idx, item) in req.items.iter().enumerate()
-    {
+{
         sqlx::query(
             "INSERT INTO plan_items
             (plan_id, exercise_id, sort_order, plan_sets, plan_reps, plan_weight,
              plan_rest, plan_key_points, plan_note)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(&plan_id)
+    )
+    .bind(&plan_id)
         .bind(item.exercise_id)
         .bind(idx as i64)
         .bind(item.plan_sets)
@@ -679,17 +679,17 @@ pub async fn plan_create(
         .bind(&item.plan_note)
         .execute(&mut *tx)
         .await
-        .map_err(ApiError::Database)?;
-    }
+    .map_err(ApiError::Database)?;
+}
 
     tx.commit().await.map_err(ApiError::Database)?;
 
     let plan = sqlx::query_as::<_, Plan>("SELECT * FROM plans WHERE id = ? AND phase_id = ?")
-        .bind(&plan_id)
+    .bind(&plan_id)
         .bind(&phase_id)
-        .fetch_one(&pool)
+    .fetch_one(&pool)
         .await
-        .map_err(ApiError::Database)?;
+    .map_err(ApiError::Database)?;
 
     Ok(Json(plan_out(&pool, &plan, user.id).await?))
 }
@@ -715,7 +715,7 @@ pub async fn plan_detail(
 // ============================================================
 /// 更新计划（改 note + 换动作集合）
 ///
-/// 【教学：⚠️ 外键陷阱 —— 先解除 records 关联再删 plan_items】
+/// 【教学： 外键陷阱 —— 先解除 records 关联再删 plan_items】
 /// 已训练过的计划项有 records 引用（records.plan_item_id → plan_items.id）。
 /// 直接 DELETE plan_items 会报 FOREIGN KEY constraint failed。
 /// 页面层 plan_update 的处理（必须复用）：
@@ -745,9 +745,9 @@ pub async fn plan_update(
 
     validate_date(&req.date)?;
     if req.items.is_empty()
-    {
+{
         return Err(ApiError::Validation("至少选择一个动作".to_string()));
-    }
+}
 
     let mut tx = pool.begin().await.map_err(ApiError::Database)?;
 
@@ -756,24 +756,24 @@ pub async fn plan_update(
         "SELECT r.exercise_id, r.id FROM records r
         WHERE r.plan_item_id IN (SELECT id FROM plan_items WHERE plan_id = ?)",
     )
-    .bind(&id)
+        .bind(&id)
     .fetch_all(&mut *tx)
-    .await
-    .map_err(ApiError::Database)?
-    .into_iter()
+        .await
+        .map_err(ApiError::Database)?
+            .into_iter()
     .fold(HashMap::new(), |mut acc, (ex_id, rec_id)| {
         acc.entry(ex_id).or_default().push(rec_id);
         acc
     });
 
     // ② 解除关联（保留训练历史）
-    sqlx::query(
+        sqlx::query(
         "UPDATE records SET plan_item_id = NULL
         WHERE plan_item_id IN (SELECT id FROM plan_items WHERE plan_id = ?)",
     )
-    .bind(&id)
-    .execute(&mut *tx)
-    .await
+        .bind(&id)
+        .execute(&mut *tx)
+        .await
     .map_err(ApiError::Database)?;
 
     // ③ 删旧子表
@@ -781,26 +781,26 @@ pub async fn plan_update(
         .bind(&id)
         .execute(&mut *tx)
         .await
-        .map_err(ApiError::Database)?;
+    .map_err(ApiError::Database)?;
 
     // ④ 更新父表
     sqlx::query("UPDATE plans SET date = ?, note = ? WHERE id = ?")
-        .bind(&req.date)
-        .bind(&req.note)
+    .bind(&req.date)
+    .bind(&req.note)
         .bind(&id)
         .execute(&mut *tx)
         .await
-        .map_err(ApiError::Database)?;
+    .map_err(ApiError::Database)?;
 
     // ⑤ 重插 plan_items + 还原 records 关联
     for (idx, item) in req.items.iter().enumerate()
-    {
+{
         let result = sqlx::query(
             "INSERT INTO plan_items
             (plan_id, exercise_id, sort_order, plan_sets, plan_reps, plan_weight,
              plan_rest, plan_key_points, plan_note)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
+    )
         .bind(&id)
         .bind(item.exercise_id)
         .bind(idx as i64)
@@ -812,32 +812,32 @@ pub async fn plan_update(
         .bind(&item.plan_note)
         .execute(&mut *tx)
         .await
-        .map_err(ApiError::Database)?;
+    .map_err(ApiError::Database)?;
 
         let new_item_id = result.last_insert_rowid();
 
         if let Some(rec_ids) = orphaned.get(&item.exercise_id)
-        {
+{
             for rec_id in rec_ids
-            {
+{
                 sqlx::query("UPDATE records SET plan_item_id = ? WHERE id = ?")
                     .bind(new_item_id)
                     .bind(rec_id)
-                    .execute(&mut *tx)
-                    .await
-                    .map_err(ApiError::Database)?;
-            }
-        }
-    }
+        .execute(&mut *tx)
+        .await
+    .map_err(ApiError::Database)?;
+}
+}
+}
 
     tx.commit().await.map_err(ApiError::Database)?;
 
     // 查新计划返回
     let updated = sqlx::query_as::<_, Plan>("SELECT * FROM plans WHERE id = ?")
         .bind(&id)
-        .fetch_one(&pool)
+    .fetch_one(&pool)
         .await
-        .map_err(ApiError::Database)?;
+    .map_err(ApiError::Database)?;
 
     Ok(Json(plan_out(&pool, &updated, user.id).await?))
 }
@@ -863,13 +863,13 @@ pub async fn plan_delete(
     let mut tx = pool.begin().await.map_err(ApiError::Database)?;
 
     // 解除记录关联（保留训练历史）
-    sqlx::query(
+        sqlx::query(
         "UPDATE records SET plan_item_id = NULL
         WHERE plan_item_id IN (SELECT id FROM plan_items WHERE plan_id = ?)",
     )
-    .bind(&id)
-    .execute(&mut *tx)
-    .await
+        .bind(&id)
+        .execute(&mut *tx)
+        .await
     .map_err(ApiError::Database)?;
 
     // 先子后父
@@ -877,13 +877,13 @@ pub async fn plan_delete(
         .bind(&id)
         .execute(&mut *tx)
         .await
-        .map_err(ApiError::Database)?;
+    .map_err(ApiError::Database)?;
 
     sqlx::query("DELETE FROM plans WHERE id = ?")
         .bind(&id)
         .execute(&mut *tx)
         .await
-        .map_err(ApiError::Database)?;
+    .map_err(ApiError::Database)?;
 
     tx.commit().await.map_err(ApiError::Database)?;
 
@@ -898,9 +898,9 @@ pub async fn plan_delete(
 fn validate_date(date: &str) -> Result<(), ApiError>
 {
     match date.split('-').collect::<Vec<&str>>().as_slice()
-    {
+{
         [yyyy, mm, dd] =>
-        {
+{
             yyyy.parse::<i64>()
                 .map_err(|_| ApiError::Validation("年份必须是数字".to_string()))?;
             mm.parse::<i64>()
@@ -912,5 +912,5 @@ fn validate_date(date: &str) -> Result<(), ApiError>
         _ => Err(ApiError::Validation(
             "日期格式必须是 YYYY-MM-DD".to_string(),
         )),
-    }
+}
 }
