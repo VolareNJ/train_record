@@ -34,6 +34,8 @@
 | 数据库 | **SQLite** + **sqlx** | 单文件零配置，编译期检查 SQL |
 | 模板引擎 | **Askama 0.16** | 服务端渲染 HTML |
 | 认证 | **argon2** + cookie Session | 密码哈希、登录会话 |
+| API 出口 ① | **REST**（axum `Json`，`/api/v1`） | M8：浏览器/脚本/curl 调试友好 |
+| API 出口 ② | **gRPC**（tonic + prost + protobuf） | M9：契约即代码 + 4 种流式，桌面客户端主用 |
 | 前端 | 原生 HTML/CSS/JS | 无重型框架，轻量 |
 
 完整依赖清单见 [`Cargo.toml`](Cargo.toml)。
@@ -71,14 +73,33 @@ cargo run
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `PORT` | `8080` | 监听端口 |
+| `PORT` | `8080` | HTTP 监听端口（页面 + REST） |
+| `GRPC_PORT` | `50051` | gRPC 监听端口（M9 新增；与 HTTP 并行） |
 | `DATABASE_PATH` | `train_record.db` | SQLite 数据库文件路径（自动创建） |
 | `SESSION_SECRET` | （内置默认） | 会话签名密钥，**生产环境必须设置！** |
 
 示例：
 
 ```bash
-PORT=3000 DATABASE_PATH=/data/train.db SESSION_SECRET=your-secret cargo run
+PORT=3000 GRPC_PORT=50052 DATABASE_PATH=/data/train.db SESSION_SECRET=your-secret cargo run
+```
+
+### 调用 gRPC 接口（可选）
+
+契约在 [`proto/train_record.proto`](proto/train_record.proto)（6 个 service / 32 个方法），
+端口 `GRPC_PORT`（默认 50051）。没有 grpcurl 也能验证：仓库内自带端到端测试
+（临时数据库 + 临时端口，不碰生产数据）：
+
+```bash
+cargo test grpc_smoke -- --ignored --nocapture
+```
+
+用 grpcurl 手动调（不需要服务器反射，直接指定契约文件）：
+
+```bash
+grpcurl -plaintext -proto proto/train_record.proto -import-path . \
+  -d '{"username":"admin","password":"admin123"}' \
+  127.0.0.1:50051 train_record.v1.AuthService/Login
 ```
 
 ### 部署（生产环境）
@@ -187,14 +208,13 @@ train_record/
 │       ├── record.rs       # 今日页 + 记录表单 + 保存 + 计重展示串
 │       ├── stats.rs        # 历史回顾（日历/当天详情/动作详情/图表）
 │       └── backup.rs       # 备份（下载/上传恢复/CSV+JSON 导出）
-│   └── api/                # M8：REST API 层（/api/v1，为 iced GUI 客户端铺路）
-│       ├── mod.rs          # ApiError + 全部路由注册
-│       ├── auth.rs         # ApiAuthUser 守卫 + login/logout/me
-│       ├── phases.rs       # 阶段 CRUD + 归档
-│       ├── exercises.rs    # 动作 CRUD + 筛选 + 1RM
-│       ├── plans.rs        # 模板/计划全 CRUD + 事务
-│       ├── records.rs      # today/upsert/列表/更新/删除
-│       └── stats.rs        # calendar/history_day/exercise_stats
+│   └── api/                # M8/M9：给程序用的两个出口
+│       ├── mod.rs          # 模块树（rest / grpc）
+│       ├── rest/           # REST API 层（/api/v1，含协议无关共享函数）
+│       └── grpc/           # gRPC 层（M9：tonic 服务实现 + 端到端测试）
+├── proto/
+│   └── train_record.proto  # gRPC 契约（M9）
+├── build.rs                # 构建期用 protoc 生成 Rust 代码（M9）
 ├── static/
 │   ├── manifest.json       # PWA 清单
 │   ├── sw.js               # Service Worker（静态资源离线缓存）
@@ -205,8 +225,8 @@ train_record/
 │   ├── structure.md        # 完整设计文档（需求/表结构/页面/计划）
 │   ├── todo.md             # 待办与设计决策（跨会话）
 │   └── learning_path/      # 🗺️ 分阶段开发路径图
-│       ├── M0.md ~ M8.md   # 各阶段路径图（M0-M8 ✅ 全部完成）
-│       ├── M1_ref/ M4_ref/ M8_ref/ # 参考答案
+│       ├── M0.md ~ M9.md   # 各阶段路径图（M0-M8 ✅ 完成；M9 定义完成待实现）
+│       ├── M1_ref/ M4_ref/ M8_ref/ M9_ref/ # 参考答案（M9_ref = gRPC 完整实现）
 │       ├── M4_bugfix_notes.md      # M4 后 Bug 复盘
 │       └── M5_roadmap_notes.md     # M5 前路线复盘（含 GUI 决策）
 ├── Python_pkg/             # 原 Python 版（历史数据与参考）
@@ -230,6 +250,7 @@ train_record/
 | **M6** | 备份与体验：.db 下载/上传恢复、CSV/JSON 导出、PWA | ✅ 已完成（含理解验证，2026-08-18 收官） |
 | **M7** | 打磨：热替换连接池、未登录跳转、排序、美化、离线、部署 | ✅ 已完成（含理解验证，2026-08-21 收官） |
 | **M8** | REST API 层（为 iced GUI 客户端铺路） | ✅ 已完成（认证/阶段/动作/计划/记录/统计 + 数据隔离实测，2026-08-21 收官） |
+| **M9** | gRPC 出口（proto 契约 + tonic 实现 + 4 种 RPC 类型）、`api/rest/` 目录归并 | 📝 定义完成，待实现（[`docs/learning_path/M9.md`](docs/learning_path/M9.md)） |
 
 > 开发是**边写边学**模式：每个文件都带有【教学注释】，从 [`docs/learning_path/M0.md`](docs/learning_path/M0.md) 开始阅读。
 
@@ -239,8 +260,10 @@ train_record/
 
 - [`docs/proposal.md`](docs/proposal.md) —— 项目背景：为什么重写
 - [`docs/structure.md`](docs/structure.md) —— **设计地基**：完整需求结论、数据库 DDL、页面规格、开发计划
+- [`docs/api.md`](docs/api.md) —— **REST 接口文档**（M8，/api/v1 端到端示例）
+- [`proto/train_record.proto`](proto/train_record.proto) —— **gRPC 契约**（M9，注释即文档）
 - [`docs/todo.md`](docs/todo.md) —— 待办与设计决策（跨会话备忘）
-- [`docs/learning_path/M0.md`](docs/learning_path/M0.md) ~ [`M8.md`](docs/learning_path/M8.md) —— **分阶段开发路径图**（M0-M8 已完成）
+- [`docs/learning_path/M0.md`](docs/learning_path/M0.md) ~ [`M9.md`](docs/learning_path/M9.md) —— **分阶段开发路径图**（M0-M8 已完成，M9 待实现）
 - [`docs/learning_path/M4_bugfix_notes.md`](docs/learning_path/M4_bugfix_notes.md) —— M4 后 Bug 修复复盘（iced 必考清单）
 - [`docs/learning_path/M5_roadmap_notes.md`](docs/learning_path/M5_roadmap_notes.md) —— M5 前能力评估与 GUI 技术栈决策
 

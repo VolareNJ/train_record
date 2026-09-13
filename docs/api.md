@@ -1,6 +1,12 @@
 ﻿# train_record REST API 接口文档（v1）
 
-> 面向 M9 iced 客户端开发。最后更新：2026-08-31，与 commit `59e0b98` 对应。
+> 面向桌面客户端开发。最后更新：2026-08-31，与 commit `59e0b98` 对应。
+>
+> 【M9 补充】本文件描述的是 **REST 出口**（`/api/v1`，实现于 `src/api/rest/`）。
+> M9 另开了一个 **gRPC 出口**（`proto/train_record.proto`，实现于 `src/api/grpc/`，
+> 默认端口 `GRPC_PORT=50051`）：两者共用同一套业务函数（rest 层的
+> `pub(crate)` 共享函数），但契约形式不同（JSON vs protobuf、无流式 vs 四种流式）。
+> 写客户端时二选一即可；需要流式（图表/导出/实时回执）就选 gRPC。
 
 ---
 

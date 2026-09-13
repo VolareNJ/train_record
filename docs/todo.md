@@ -19,10 +19,54 @@
     `Authorization: Bearer token` 头认证是扩展点（iced 客户端若需要再加）
   - 已实测：登录/登出/me、阶段/动作/模板/计划 CRUD、today/upsert/记录列表/更新/删除、
     history 日历/exercise stats、跨用户数据隔离（401/404）、未登录 401 JSON
+- 📝 **M9 gRPC 出口**（新增）：给同一套业务加第二种协议出口（强类型 + 流式）
+  - 契约 `proto/train_record.proto`（6 service / 32 方法，含 4 种 RPC 类型）
+  - 阶段文档 `docs/learning_path/M9.md`；老师完整实现备份 `docs/learning_path/M9_ref/`
+  - 目录归并：`src/api/*.rs` → `src/api/rest/*.rs`（`api/mod.rs` 只剩模块树 +
+    `pub use rest::ApiError` 兼容转发，M8 代码零改动）
+  - **前置重构已完成**：rest 层抽出 27 个 `pub(crate)` 协议无关函数
+    （`phase_list` / `today_view` / `record_upsert` / `records_range` …），
+    gRPC 层只做协议适配，不重写 SQL（M8 §2.5 “先复制，后抽取”的兞现）
+  - 认证：metadata `authorization: Bearer <token>`（兼容 `x-session-token`）；
+    错误：`ApiError → tonic::Status`（见 `api/grpc/error.rs` 对照表）
+  - 测试：`cargo test grpc_smoke -- --ignored --nocapture`
+    （临时库 + 临时端口，覆盖三种流式/认证/跨用户隔离/登出失效）
 
 ---
 
 ## 一、待解决事项（按优先级）
+
+### 1.5 gRPC 层的遗留（M9 记下，M10 按需处理）
+
+- **服务器端“真流式”**：`StreamExerciseSeries` / `StreamRecords` 目前是
+  “先查完 → `tokio_stream::iter` 逐条发”（契约已经是流式，客户端无感）。
+  要真边查边发：① 分页游标循环 + `mpsc` channel；② 或把 sqlx 的查询 Stream 桥接。
+  触发条件：单个动作记录数到几千条、或导出全库时内存/首字节延迟可感。
+- **批量提交的原子性**：`SubmitWorkout` 逐条调 `record_upsert`（部分成功也算数）。
+  要“全成功或全回滚”，需在 rest 层新增 `records_bulk_upsert(&pool, user_id, &[..])`
+  内部单事务（参考 `plan_update_impl` 的事务写法）。
+- **`LiveSession` 每组重查全量记录算 PR**（`exercise_stats_view`）：
+  个人数据量下无感；要优化就增量维护 `best_1rm`（内存缓存/独立表）。
+- **模板项预设组数/次数**：`TemplateItemInput` 故意不含这两个字段
+  （rest 层写入路径只落 `exercise_id`，契约不能“静默谎言”）。
+  要支持：`TemplateItemReq` 加字段 → `template_create_impl/update_impl` 的 INSERT
+  带上 `plan_sets/plan_reps` → proto 加新字段号（向后兼容）。
+- **`src/service/` 抽取**：当前共享函数住在 `api/rest/`（gRPC 反向依赖 rest 模块，
+  已能用但有“名不副实”之嫌）。当第二个非 HTTP 出口出现时（M10 后），
+  把这 27 个函数搬到顶层 `src/service/`，rest/grpc 都变成纯适配层。
+- **gRPC 可观测性/运维**：服务器反射（`tonic-reflection`，grpcurl 就不用带 `-proto`）、
+  健康检查（`tonic-health`）、TLS（`tonic` 的 tls 特性 + 证书；公网暴露前必做，
+  否则 token 明文传输）。
+- **REST 也支持 `Authorization: Bearer`**：M8 留的扩展点（todo 旧条目），
+  现在 gRPC 已用 Bearer，若要做“两个出口同一种 token 携带方式”，改
+  `handlers::auth::extract_token` 同时看 Cookie 与 Authorization 头即可。
+
+### 1.6 gRPC 登录的 users 查询与 REST 重复（M9 记录，低优先级）
+
+- `api/grpc/service/auth.rs::login` 自己写了一条
+  `SELECT * FROM users WHERE username = ?`（rest 的 login handler 里也有一条）。
+- 解法：在 `src/auth.rs` 加 `pub async fn get_user_by_username(pool, name)`，
+  两处都改调它（M9 为了不碰 M8 已验收代码而暂缓）。
 
 ### 1.1 模板间排序：`templates.sort_order` 真值分配 ✅（M7 第 3 步已解决，4d2231a 之前）
 

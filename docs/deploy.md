@@ -68,6 +68,9 @@ After=network.target
 WorkingDirectory=/opt/train_record
 ExecStart=/opt/train_record/train_record
 Environment=PORT=80
+# M9：gRPC 出口监听端口（与 HTTP 同一个进程、并行监听）
+# 本机/内网使用无需放行；外网客户端访问需在防火墙/安全组放行 50051
+Environment=GRPC_PORT=50051
 Environment=DATABASE_PATH=/var/lib/train_record/train_record.db
 Environment=BODY_PART_ORDER=腿,背,胸,核心,手臂,肩
 Restart=on-failure
@@ -141,6 +144,10 @@ curl -I http://localhost/today
 
 - **端口 80 需要 root**：systemd 服务默认以 root 运行（本部署未降权），
   若要以低权限用户运行，需要授予 `CAP_NET_BIND_SERVICE` 或用 8080 等高位端口。
+- **M9 gRPC 端口（`GRPC_PORT`，默认 50051）**：程序启动时会同时监听 HTTP 与 gRPC。
+  验证是否在听：`ss -ltnp | grep 50051`；启动日志里也有一行
+  `gRPC 服务监听 0.0.0.0:50051（...共 6 个 service）`。
+  gRPC 默认明文（无 TLS），只建议内网/本机使用；公网暴露前请先加 TLS（见 `todo.md`）。
 - **数据库备份优先于二进制**：数据不可再生，二进制随时可重编译。
 - **静态资源版本化**：`weight_converter.js` 用 `?v=` 查询串更新，
   升级后如客户端仍显示旧 JS，强制刷新即可（SW 缓存由版本号自动清理）。

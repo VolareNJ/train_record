@@ -131,6 +131,8 @@
 | PWA | manifest.json + service worker | 可添加到主屏幕、离线缓存 |
 | 密码 | **argon2** | 密码哈希（Rust: argon2 crate） |
 | 会话 | 服务端 Session（cookie） | 简单可靠 |
+| API 出口 ① | **REST（JSON over HTTP）** | M8：`/api/v1/...`，浏览器/脚本/调试友好 |
+| API 出口 ② | **gRPC（tonic + protobuf）** | M9：契约即代码（proto）、原生流式；给桌面客户端用 |
 
 ### 为什么选方案A（服务端渲染）
 - 本项目是个人工具，交互简单（列表、表单、折叠、图表）
@@ -143,13 +145,18 @@
 train_record/
 ├── docs/
 │   ├── proposal.md
+│   ├── api.md                # REST 接口文档（M8）
+│   ├── learning_path/        # 各阶段学习指南 + 老师参考实现（M*_ref/）
 │   └── structure.md          # 本文档
+├── proto/
+│   └── train_record.proto    # M9：gRPC 契约（6 service / 32 方法）
+├── build.rs                  # M9：构建期调 protoc 生成 Rust 代码
 ├── Cargo.toml
 └── src/
-    ├── main.rs               # 入口，启动服务器
-    ├── config.rs             # 配置（端口、数据库路径、SecretKey）
+    ├── main.rs               # 入口，启动两个服务器（HTTP + gRPC）
+    ├── config.rs             # 配置（端口、GRPC_PORT、数据库路径、SecretKey）
     ├── db.rs                 # SQLite 连接池、数据库初始化/迁移
-    ├── error.rs              # 统一错误类型
+    ├── error.rs              # 统一错误类型（页面层，302/422 语义）
     ├── auth.rs               # 登录/会话/权限中间件
     ├── models.rs             # 领域模型（阶段/模板/计划/动作/记录）
     ├── handlers/
@@ -160,14 +167,24 @@ train_record/
     │   ├── plan.rs           # 模板、当日计划
     │   ├── record.rs         # 训练记录、编辑
     │   └── stats.rs          # 历史、日历、图表数据、1RM
-    ├── api/                  # M8 起：REST API 层（为 iced GUI 客户端铺路）
-    │   ├── mod.rs            # ApiError（7 变体）+ /api/v1 全部路由注册
-    │   ├── auth.rs           # ApiAuthUser 守卫 + login/logout/me
-    │   ├── phases.rs         # 阶段 CRUD + 归档
-    │   ├── exercises.rs      # 动作 CRUD + 筛选 + 1RM
-    │   ├── plans.rs          # 模板/计划全 CRUD + 事务 + orphaned 还原
-    │   ├── records.rs        # today/upsert/list_by_date/update/delete
-    │   └── stats.rs          # calendar/history_day/exercise_stats
+    ├── api/                  # M8 起：给程序用的出口
+    │   ├── mod.rs            # 模块树（rest/grpc 两个子模块）
+    │   ├── rest/             # M8：REST（API 出口 ①）
+    │   │   ├── mod.rs        # ApiError（→ JSON）+ /api/v1 全部路由
+    │   │   ├── auth.rs       # ApiAuthUser 守卫 + login/logout/me
+    │   │   ├── phases.rs     # 阶段 CRUD + 归档（含 pub(crate) 共享函数）
+    │   │   ├── exercises.rs  # 动作 CRUD + 筛选 + 1RM
+    │   │   ├── plans.rs      # 模板/计划全 CRUD + 事务 + orphaned 还原
+    │   │   ├── records.rs    # today/upsert/list_by_date/update/delete
+    │   │   └── stats.rs      # calendar/history_day/exercise_stats
+    │   └── grpc/             # M9：gRPC（API 出口 ②）
+    │       ├── mod.rs        # include_proto!（生成代码）+ 模块树
+    │       ├── error.rs      # ApiError → tonic::Status
+    │       ├── auth.rs       # metadata token → User（守卫）
+    │       ├── convert.rs    # REST DTO ⇄ proto 消息
+    │       ├── server.rs     # 组装 tonic Server（第二个端口）
+    │       ├── smoke_test.rs # 端到端测试 + gRPC 客户端写法范例
+    │       └── service/      # 6 个 service 实现（每业务一文件）
     ├── calc.rs               # 1RM/Epley/Wathan、重量换算逻辑
     ├── templates/            # Askama 模板（.html）
     │   ├── base.html
@@ -181,6 +198,12 @@ train_record/
     │   └── admin.html        # 用户管理
     └── static/               # 静态资源（PWA、CSS、JS）
 ```
+
+> 【分层约定（M8/M9 定下）】
+> `handlers/`=给人看（HTML）；`api/rest/`=REST 出口；`api/grpc/`=gRPC 出口。
+> **业务 SQL 只应有一份**：两个 API 出口都调用 `api/rest/` 里的 `pub(crate)`
+> 共享函数（“协议无关实现”，27 个，签名里只有 pool/user_id/业务参数）。
+> 未来若两个出口都变胖，再把这些函数上提到 `src/service/`（见 `todo.md`）。
 
 ---
 
@@ -426,11 +449,16 @@ flowchart LR
 ### 部署步骤（已实测，Ubuntu 24.04）
 1. `cargo clean && cargo build --release` → 产出**单二进制**（约 8M，迁移已编译嵌入，自带建表）
 2. 拷贝二进制 + `static/` 目录到服务器 `/opt/train_record/`（注意：static 是相对路径，必须与程序同目录）
-3. 配置环境变量：`PORT`（如 80）、`DATABASE_PATH`（如 `/var/lib/train_record/train_record.db`）、`SESSION_SECRET`
+3. 配置环境变量：`PORT`（如 80）、`GRPC_PORT`（如 50051，M9 新增）、`DATABASE_PATH`（如 `/var/lib/train_record/train_record.db`）、`SESSION_SECRET`
 4. 首次启动用 `ADMIN_USERNAME` / `ADMIN_PASSWORD` 自动创建管理员
 5. 后台运行：`nohup ./train_record > app.log 2>&1 &`（完整命令见 README「部署」章节）
 6. 公网 IP + 端口直接访问（如 `http://1.2.3.4:80`）
 7. 部署版（80）与开发版（8080）可同时运行：端口不同 + 数据库路径不同 → 数据天然隔离
+
+> **M9 端口说明**：gRPC 监听 `GRPC_PORT`（默认 50051），与 HTTP 端口并行、
+> 共用同一数据库连接池。**本机/内网使用无需放行**；若要让外网桌面客户端访问，
+> 需在防火墙/安全组放行该端口（gRPC 默认明文，公网暴露应先加 TLS，见 `todo.md`）。
+> 端口被占时：`ss -ltnp | grep 50051` 查看占用者，或改 `GRPC_PORT`。
 
 ### systemd 托管（可选，长期运行推荐）
 ```ini
@@ -475,10 +503,13 @@ sudo journalctl -u train_record -f         # 查看日志
 | M6 备份与PWA | 导出/导入、CSV/JSON 导出、manifest+SW | 可用性完善 |
 | M7 打磨 | 响应式、移动端体验、空态、错误处理、部署文档 | 可部署 |
 | M8 REST API | `/api/v1/...` JSON 接口（认证/阶段/动作/计划/记录/统计），为 iced GUI 客户端铺路 | 前后端分离可对接 |
+| M9 gRPC 出口 | `proto/train_record.proto`（6 service / 32 方法）+ tonic 实现；含 4 种 RPC 类型、Status/metadata、REST 层共享函数抽取（`api/rest/` 归并） | 强类型 + 流式接口 |
+| M10 iced 客户端 | 另开 workspace crate，消费 M8/M9 接口（登录 → 今日 → 记录 → 图表） | 桌面 GUI |
 
 > 每阶段完成即编译运行验证；M4 是最关键里程碑。
-> M8 起系统进入"前后端分离"：web 版继续用服务端渲染（手机训练场景），
-> API 层给未来的 iced 桌面客户端（电脑管理场景）使用，二者共用同一数据库。
+> M8 起系统进入“前后端分离”：web 版继续用服务端渲染（手机训练场景），
+> API 出口给桌面客户端（电脑管理场景）使用，三者共用同一数据库。
+> M9 起有两个 API 出口：REST（调试/脚本）/ gRPC（强类型 + 流式，M10 主用）。
 
 ---
 
@@ -495,6 +526,7 @@ sudo journalctl -u train_record -f         # 查看日志
 | 5 | **HTTP 基础** | GET/POST、表单编码、cookie、session 概念（只用到概念层） | 任一 HTTP 入门 |
 | 6 | **SQL 基础** | CREATE/INSERT/SELECT/UPDATE/DELETE、JOIN、索引（本项目用到的子集） | SQLite 官方教程 |
 | 7 | **HTML/CSS/JS 最小集** | 表单、`<div>` 布局、Flexbox、事件监听、fetch（仅少量） | MDN 入门 |
+| 8 | **gRPC / protobuf（M9）** | IDL 是什么、4 种 RPC 类型、Status/metadata；不必背 protobuf 编码细节 | tonic 官方 examples + 本仓库 `proto/train_record.proto` |
 
 ### 了解即可（不深究）
 - 线程/进程模型（知道 tokio 是异步运行时即可）
