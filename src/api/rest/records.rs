@@ -27,7 +27,7 @@ use sqlx::SqlitePool;
 
 use crate::{
     AppState,
-    api::{ApiError, auth::ApiAuthUser},
+    api::{ApiError, rest::auth::ApiAuthUser},
     models::{Exercise, Phase, Plan, PlanItem, Record},
 };
 
@@ -118,19 +118,25 @@ pub async fn today(
 ) -> Result<Json<TodayOut>, ApiError>
 {
     let pool = state.pool.read().await.clone();
+    // 【M9】协议无关逻辑抽到下方 today_view（gRPC 服务复用同一份 SQL）
+    Ok(Json(today_view(&pool, user.id).await?))
+}
 
+/// 协议无关实现（REST handler 与 M9 gRPC 服务共用）
+pub(crate) async fn today_view(pool: &SqlitePool, user_id: i64) -> Result<TodayOut, ApiError>
+{
     // 1. 进行中阶段
     let current_phase = sqlx::query_as::<_, Phase>(
         "SELECT * FROM phases WHERE user_id = ? AND archived = 0 ORDER BY created_at DESC LIMIT 1",
     )
-    .bind(&user.id)
-    .fetch_optional(&pool)
+    .bind(&user_id)
+    .fetch_optional(pool)
     .await
     .map_err(ApiError::Database)?;
 
     // 2. 今天
     let today_dt = sqlx::query_scalar::<_, String>("SELECT date('now', 'localtime')")
-        .fetch_one(&pool)
+        .fetch_one(pool)
         .await
         .map_err(ApiError::Database)?;
 
@@ -142,7 +148,7 @@ pub async fn today(
             sqlx::query_as::<_, Plan>("SELECT * FROM plans WHERE phase_id = ? AND date = ?")
                 .bind(&phase.id)
                 .bind(&today_dt)
-                .fetch_optional(&pool)
+                .fetch_optional(pool)
                 .await
                 .map_err(ApiError::Database)?
         },
@@ -162,7 +168,7 @@ pub async fn today(
                     "SELECT CAST(julianday('now','localtime') - julianday(?) AS INTEGER)",
                 )
                 .bind(start_date)
-                .fetch_one(&pool)
+                .fetch_one(pool)
                 .await
                 .map_err(ApiError::Database)?,
                 None => 0,
@@ -185,15 +191,15 @@ pub async fn today(
                 "SELECT * FROM plan_items WHERE plan_id = ? ORDER BY sort_order ASC",
             )
             .bind(&plan.id)
-            .fetch_all(&pool)
+            .fetch_all(pool)
             .await
             .map_err(ApiError::Database)?;
 
             // 动作索引（id → (name, body_part)）
             let ex_index: std::collections::HashMap<i64, (String, String)> =
                 sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE user_id = ?")
-                    .bind(&user.id)
-                    .fetch_all(&pool)
+                    .bind(&user_id)
+                    .fetch_all(pool)
                     .await
                     .map_err(ApiError::Database)?
                     .into_iter()
@@ -209,7 +215,7 @@ pub async fn today(
                  ORDER BY record_date DESC, id DESC LIMIT 1",
                 )
                 .bind(&item.id)
-                .fetch_optional(&pool)
+                .fetch_optional(pool)
                 .await
                 .map_err(ApiError::Database)?;
 
@@ -248,11 +254,11 @@ pub async fn today(
         },
     };
 
-    Ok(Json(TodayOut {
+    Ok(TodayOut {
         phase: phase_out,
         date: today_dt,
         plan: plan_out,
-    }))
+    })
 }
 
 // ============================================================
@@ -326,16 +332,31 @@ pub async fn upsert_record(
     Json(req): Json<RecordCreateReq>,
 ) -> Result<Json<RecordOut>, ApiError>
 {
-    // 1. 计划归属：plans 无 user_id → JOIN phases 拿 user_id
     let pool = state.pool.read().await.clone();
+    // 【M9】协议无关逻辑抽到下方 record_upsert（gRPC 服务复用同一份 SQL）
+    Ok(Json(
+        record_upsert(&pool, user.id, plan_id, item_id, &req).await?,
+    ))
+}
+
+/// 协议无关实现（REST handler 与 M9 gRPC 服务共用）
+pub(crate) async fn record_upsert(
+    pool: &SqlitePool,
+    user_id: i64,
+    plan_id: i64,
+    item_id: i64,
+    req: &RecordCreateReq,
+) -> Result<RecordOut, ApiError>
+{
+    // 1. 计划归属：plans 无 user_id → JOIN phases 拿 user_id
     let plan = sqlx::query_as::<_, Plan>(
         "SELECT p.* FROM plans p
         INNER JOIN phases ph ON p.phase_id = ph.id
         WHERE p.id = ? AND ph.user_id = ?",
     )
     .bind(&plan_id)
-    .bind(&user.id)
-    .fetch_optional(&pool)
+    .bind(&user_id)
+    .fetch_optional(pool)
     .await
     .map_err(ApiError::Database)?
     .ok_or_else(|| ApiError::NotFound("计划不存在".to_string()))?;
@@ -343,8 +364,8 @@ pub async fn upsert_record(
     // 2. 阶段未归档（归档阶段不可编辑）
     let phase = sqlx::query_as::<_, Phase>("SELECT * FROM phases WHERE id = ? AND user_id = ?")
         .bind(&plan.phase_id)
-        .bind(&user.id)
-        .fetch_optional(&pool)
+        .bind(&user_id)
+        .fetch_optional(pool)
         .await
         .map_err(ApiError::Database)?
         .ok_or_else(|| ApiError::NotFound("阶段不存在".to_string()))?;
@@ -358,7 +379,7 @@ pub async fn upsert_record(
         sqlx::query_as::<_, PlanItem>("SELECT * FROM plan_items WHERE id = ? AND plan_id = ?")
             .bind(&item_id)
             .bind(&plan_id)
-            .fetch_optional(&pool)
+            .fetch_optional(pool)
             .await
             .map_err(ApiError::Database)?
             .ok_or_else(|| ApiError::NotFound("计划项不存在".to_string()))?;
@@ -377,7 +398,7 @@ pub async fn upsert_record(
         ORDER BY record_date DESC, id DESC LIMIT 1",
     )
     .bind(&item_id)
-    .fetch_optional(&pool)
+    .fetch_optional(pool)
     .await
     .map_err(ApiError::Database)?;
 
@@ -386,8 +407,8 @@ pub async fn upsert_record(
         "SELECT default_mode FROM exercises WHERE id = ? AND user_id = ?",
     )
     .bind(&plan_item.exercise_id)
-    .bind(&user.id)
-    .fetch_optional(&pool)
+    .bind(&user_id)
+    .fetch_optional(pool)
     .await
     .map_err(ApiError::Database)?
     .unwrap_or_else(|| "bar".to_string());
@@ -410,13 +431,13 @@ pub async fn upsert_record(
         .bind(&req.strategy)
         .bind(&req.key_points)
         .bind(&record.id)
-        .fetch_one(&pool)
+        .fetch_one(pool)
         .await
         .map_err(ApiError::Database)?,
         None =>
         {
             let today_dt = sqlx::query_scalar::<_, String>("SELECT date('now', 'localtime')")
-                .fetch_one(&pool)
+                .fetch_one(pool)
                 .await
                 .map_err(ApiError::Database)?;
             sqlx::query_as::<_, Record>(
@@ -439,14 +460,14 @@ pub async fn upsert_record(
             .bind(&req.strategy)
             .bind(&req.key_points)
             .bind(&mode)
-            .fetch_one(&pool)
+            .fetch_one(pool)
             .await
             .map_err(ApiError::Database)?
         },
     };
 
     // 8. 返回保存后的记录 JSON（补动作名）
-    Ok(Json(record_out(&pool, &saved, user.id).await?))
+    record_out(pool, &saved, user_id).await
 }
 
 // ============================================================
@@ -567,14 +588,25 @@ pub async fn update_record(
 ) -> Result<Json<RecordOut>, ApiError>
 {
     let pool = state.pool.read().await.clone();
+    // 【M9】协议无关逻辑抽到下方 record_update（gRPC 服务复用同一份 SQL）
+    Ok(Json(record_update(&pool, user.id, id, &req).await?))
+}
 
+/// 协议无关实现（REST handler 与 M9 gRPC 服务共用）
+pub(crate) async fn record_update(
+    pool: &SqlitePool,
+    user_id: i64,
+    record_id: i64,
+    req: &RecordUpdateReq,
+) -> Result<RecordOut, ApiError>
+{
     // 归属 + 取旧值（records 无 user_id 列 → JOIN exercises 验证归属）
     let old = sqlx::query_as::<_, Record>(
         "SELECT r.* FROM records r\n        INNER JOIN exercises e ON r.exercise_id = e.id\n        WHERE r.id = ? AND e.user_id = ?",
     )
-    .bind(&id)
-    .bind(&user.id)
-    .fetch_optional(&pool)
+    .bind(&record_id)
+    .bind(&user_id)
+    .fetch_optional(pool)
     .await
     .map_err(ApiError::Database)?
     .ok_or_else(|| ApiError::NotFound("记录不存在".to_string()))?;
@@ -583,9 +615,9 @@ pub async fn update_record(
     let sets = req.sets.unwrap_or(old.sets);
     let reps = req.reps.unwrap_or(old.reps);
     let rest = req.rest.unwrap_or(old.rest);
-    let feeling = req.feeling.unwrap_or(old.feeling.clone());
-    let strategy = req.strategy.unwrap_or(old.strategy.clone());
-    let key_points = req.key_points.unwrap_or(old.key_points.clone());
+    let feeling = req.feeling.clone().unwrap_or(old.feeling);
+    let strategy = req.strategy.clone().unwrap_or(old.strategy);
+    let key_points = req.key_points.clone().unwrap_or(old.key_points);
     let completed = req.completed.unwrap_or(old.completed);
 
     if weight < 0.0 || sets < 0 || reps < 0 || rest < 0
@@ -609,12 +641,12 @@ pub async fn update_record(
     .bind(&strategy)
     .bind(&key_points)
     .bind(&completed)
-    .bind(&id)
-    .fetch_one(&pool)
+    .bind(&record_id)
+    .fetch_one(pool)
     .await
     .map_err(ApiError::Database)?;
 
-    Ok(Json(record_out(&pool, &saved, user.id).await?))
+    record_out(pool, &saved, user_id).await
 }
 
 // ============================================================
@@ -633,14 +665,25 @@ pub async fn delete_record(
 ) -> Result<Json<serde_json::Value>, ApiError>
 {
     let pool = state.pool.read().await.clone();
+    // 【M9】协议无关逻辑抽到下方 record_delete（gRPC 服务复用同一份 SQL）
+    record_delete(&pool, user.id, id).await?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
 
+/// 协议无关实现（REST handler 与 M9 gRPC 服务共用）
+pub(crate) async fn record_delete(
+    pool: &SqlitePool,
+    user_id: i64,
+    record_id: i64,
+) -> Result<(), ApiError>
+{
     // 数据隔离：先 JOIN exercises 验证归属，再删（records 无 user_id 列）
     let owned = sqlx::query_scalar::<_, i64>(
         "SELECT r.id FROM records r\n        INNER JOIN exercises e ON r.exercise_id = e.id\n        WHERE r.id = ? AND e.user_id = ?",
     )
-    .bind(&id)
-    .bind(&user.id)
-    .fetch_optional(&pool)
+    .bind(&record_id)
+    .bind(&user_id)
+    .fetch_optional(pool)
     .await
     .map_err(ApiError::Database)?;
 
@@ -650,8 +693,8 @@ pub async fn delete_record(
     }
 
     let ret = sqlx::query("DELETE FROM records WHERE id = ?")
-        .bind(&id)
-        .execute(&pool)
+        .bind(&record_id)
+        .execute(pool)
         .await
         .map_err(ApiError::Database)?;
 
@@ -660,7 +703,7 @@ pub async fn delete_record(
         return Err(ApiError::NotFound("记录不存在".to_string()));
     }
 
-    Ok(Json(serde_json::json!({ "ok": true })))
+    Ok(())
 }
 
 // ============================================================
@@ -686,4 +729,63 @@ fn validate_date(date: &str) -> Result<(), ApiError>
             "日期格式必须是 YYYY-MM-DD".to_string(),
         )),
     }
+}
+
+// ============================================================
+// 【M9】记录区间查询（区间/动作筛选导出，REST 层没有对应端点）
+// ============================================================
+/// 记录 + 动作名/部位（协议无关的行结构，gRPC 导出用）
+#[derive(sqlx::FromRow)]
+pub struct RecordRow
+{
+    /// records 表的整行（flatten：按列名解码到 Record）
+    #[sqlx(flatten)]
+    pub record: Record,
+    pub exercise_name: String,
+    pub body_part: String,
+}
+
+/// 协议无关实现（REST handler 与 M9 gRPC 服务共用）
+pub(crate) async fn records_range(
+    pool: &SqlitePool,
+    user_id: i64,
+    from: Option<&str>,
+    to: Option<&str>,
+    exercise_id: Option<i64>,
+) -> Result<Vec<RecordRow>, ApiError>
+{
+    // from/to 传了就必须是 YYYY-MM-DD（不传 = 该端不限）
+    if let Some(d) = from
+    {
+        validate_date(d)?;
+    }
+    if let Some(d) = to
+    {
+        validate_date(d)?;
+    }
+
+    // ⚠️ records 表没有 user_id 列！数据隔离走 JOIN exercises（M5 纪律）。
+    // 三个筛选条件都可选：用 "(? IS NULL OR 条件)" 一条静态 SQL 覆盖全部组合。
+    let rows = sqlx::query_as::<_, RecordRow>(
+        "SELECT r.*, e.name AS exercise_name, e.body_part AS body_part
+        FROM records r
+        INNER JOIN exercises e ON r.exercise_id = e.id
+        WHERE e.user_id = ?
+          AND (? IS NULL OR r.record_date >= ?)
+          AND (? IS NULL OR r.record_date <= ?)
+          AND (? IS NULL OR r.exercise_id = ?)
+        ORDER BY r.record_date ASC, r.id ASC",
+    )
+    .bind(&user_id)
+    .bind(from)
+    .bind(from)
+    .bind(to)
+    .bind(to)
+    .bind(exercise_id)
+    .bind(exercise_id)
+    .fetch_all(pool)
+    .await
+    .map_err(ApiError::Database)?;
+
+    Ok(rows)
 }

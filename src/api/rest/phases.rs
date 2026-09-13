@@ -33,8 +33,8 @@ use sqlx::SqlitePool;
 
 use crate::{
     AppState,
-    api::{ApiError, auth::ApiAuthUser},
-    models::{Phase, User},
+    api::{ApiError, rest::auth::ApiAuthUser},
+    models::Phase,
 };
 
 // ============================================================
@@ -130,12 +130,18 @@ pub async fn list(
 ) -> Result<Json<Vec<PhaseOut>>, ApiError>
 {
     let pool = state.pool.read().await.clone();
+    // 【M9】协议无关逻辑抽到下方 phase_list（gRPC 服务复用同一份 SQL）
+    Ok(Json(phase_list(&pool, user.id).await?))
+}
 
+/// 协议无关实现（REST handler 与 M9 gRPC 服务共用）
+pub(crate) async fn phase_list(pool: &SqlitePool, user_id: i64) -> Result<Vec<PhaseOut>, ApiError>
+{
     let phases = sqlx::query_as::<_, Phase>(
         "SELECT * FROM phases WHERE user_id = ? ORDER BY archived ASC, created_at DESC",
     )
-    .bind(&user.id)
-    .fetch_all(&pool)
+    .bind(&user_id)
+    .fetch_all(pool)
     .await
     .map_err(ApiError::Database)?;
 
@@ -146,10 +152,10 @@ pub async fn list(
     let mut out = Vec::with_capacity(phases.len());
     for p in &phases
     {
-        out.push(phase_out(&pool, p).await?);
+        out.push(phase_out(pool, p).await?);
     }
 
-    Ok(Json(out))
+    Ok(out)
 }
 
 // ============================================================
@@ -182,7 +188,17 @@ pub async fn create(
 ) -> Result<Json<PhaseOut>, ApiError>
 {
     let pool = state.pool.read().await.clone();
+    // 【M9】协议无关逻辑抽到下方 phase_create（gRPC 服务复用同一份 SQL）
+    Ok(Json(phase_create(&pool, user.id, &req).await?))
+}
 
+/// 协议无关实现（REST handler 与 M9 gRPC 服务共用）
+pub(crate) async fn phase_create(
+    pool: &SqlitePool,
+    user_id: i64,
+    req: &PhaseCreateReq,
+) -> Result<PhaseOut, ApiError>
+{
     // 校验：name 非空
     if req.name.trim().is_empty()
     {
@@ -191,9 +207,9 @@ pub async fn create(
 
     // 查重（数据隔离 + 防重名）
     if sqlx::query_scalar::<_, i64>("SELECT id FROM phases WHERE user_id = ? AND name = ?")
-        .bind(&user.id)
+        .bind(&user_id)
         .bind(&req.name)
-        .fetch_optional(&pool)
+        .fetch_optional(pool)
         .await
         .map_err(ApiError::Database)?
         .is_some()
@@ -213,23 +229,23 @@ pub async fn create(
         "INSERT INTO phases (user_id, name, note, start_date) VALUES (?, ?, ?, ?)
         RETURNING id",
     )
-    .bind(&user.id)
+    .bind(&user_id)
     .bind(&req.name)
     .bind(&req.note)
     .bind(&start_date)
-    .fetch_one(&pool)
+    .fetch_one(pool)
     .await
     .map_err(ApiError::Database)?;
 
     // 查完整行 → 转 DTO → 返回
     let phase = sqlx::query_as::<_, Phase>("SELECT * FROM phases WHERE id = ? AND user_id = ?")
         .bind(&new_id)
-        .bind(&user.id)
-        .fetch_one(&pool)
+        .bind(&user_id)
+        .fetch_one(pool)
         .await
         .map_err(ApiError::Database)?;
 
-    Ok(Json(phase_out(&pool, &phase).await?))
+    Ok(phase_out(pool, &phase).await?)
 }
 
 // ============================================================
@@ -253,16 +269,26 @@ pub async fn detail(
 ) -> Result<Json<PhaseOut>, ApiError>
 {
     let pool = state.pool.read().await.clone();
+    // 【M9】协议无关逻辑抽到下方 phase_detail（gRPC 服务复用同一份 SQL）
+    Ok(Json(phase_detail(&pool, user.id, id).await?))
+}
 
+/// 协议无关实现（REST handler 与 M9 gRPC 服务共用）
+pub(crate) async fn phase_detail(
+    pool: &SqlitePool,
+    user_id: i64,
+    phase_id: i64,
+) -> Result<PhaseOut, ApiError>
+{
     let phase = sqlx::query_as::<_, Phase>("SELECT * FROM phases WHERE id = ? AND user_id = ?")
-        .bind(&id)
-        .bind(&user.id)
-        .fetch_optional(&pool)
+        .bind(&phase_id)
+        .bind(&user_id)
+        .fetch_optional(pool)
         .await
         .map_err(ApiError::Database)?
         .ok_or_else(|| ApiError::NotFound("阶段不存在".to_string()))?;
 
-    Ok(Json(phase_out(&pool, &phase).await?))
+    Ok(phase_out(pool, &phase).await?)
 }
 
 // ============================================================
@@ -313,21 +339,32 @@ pub async fn update(
 ) -> Result<Json<PhaseOut>, ApiError>
 {
     let pool = state.pool.read().await.clone();
+    // 【M9】协议无关逻辑抽到下方 phase_update（gRPC 服务复用同一份 SQL）
+    Ok(Json(phase_update(&pool, user.id, id, &req).await?))
+}
 
+/// 协议无关实现（REST handler 与 M9 gRPC 服务共用）
+pub(crate) async fn phase_update(
+    pool: &SqlitePool,
+    user_id: i64,
+    phase_id: i64,
+    req: &PhaseUpdateReq,
+) -> Result<PhaseOut, ApiError>
+{
     // ① 查旧行（数据隔离）
     let old = sqlx::query_as::<_, Phase>("SELECT * FROM phases WHERE id = ? AND user_id = ?")
-        .bind(&id)
-        .bind(&user.id)
-        .fetch_optional(&pool)
+        .bind(&phase_id)
+        .bind(&user_id)
+        .fetch_optional(pool)
         .await
         .map_err(ApiError::Database)?
         .ok_or_else(|| ApiError::NotFound("阶段不存在".to_string()))?;
 
     // ② 合并（没传的用旧值）
-    let name = req.name.unwrap_or(old.name);
-    let note = req.note.unwrap_or(old.note);
+    let name = req.name.clone().unwrap_or(old.name);
+    let note = req.note.clone().unwrap_or(old.note);
     // start_date：请求传了非空 → 更新；传了空串 → None；没传 → 旧值
-    let start_date = match req.start_date
+    let start_date = match req.start_date.as_deref()
     {
         Some(s) if !s.trim().is_empty() => Some(s.trim().to_string()),
         Some(_) => None,
@@ -347,9 +384,9 @@ pub async fn update(
     .bind(&name)
     .bind(&note)
     .bind(&start_date)
-    .bind(&id)
-    .bind(&user.id)
-    .execute(&pool)
+    .bind(&phase_id)
+    .bind(&user_id)
+    .execute(pool)
     .await
     .map_err(ApiError::Database)?;
 
@@ -360,13 +397,13 @@ pub async fn update(
 
     // ④ 查新行返回
     let phase = sqlx::query_as::<_, Phase>("SELECT * FROM phases WHERE id = ? AND user_id = ?")
-        .bind(&id)
-        .bind(&user.id)
-        .fetch_one(&pool)
+        .bind(&phase_id)
+        .bind(&user_id)
+        .fetch_one(pool)
         .await
         .map_err(ApiError::Database)?;
 
-    Ok(Json(phase_out(&pool, &phase).await?))
+    Ok(phase_out(pool, &phase).await?)
 }
 
 // ============================================================
@@ -389,7 +426,9 @@ pub async fn archive(
     Path(id): Path<i64>,
 ) -> Result<Json<PhaseOut>, ApiError>
 {
-    set_archived(state, user, id, true).await
+    let pool = state.pool.read().await.clone();
+    // 【M9】协议无关逻辑抽到下方 phase_set_archived（gRPC 服务复用同一份 SQL）
+    Ok(Json(phase_set_archived(&pool, user.id, id, true).await?))
 }
 
 // ============================================================
@@ -402,24 +441,25 @@ pub async fn unarchive(
     Path(id): Path<i64>,
 ) -> Result<Json<PhaseOut>, ApiError>
 {
-    set_archived(state, user, id, false).await
+    let pool = state.pool.read().await.clone();
+    // 【M9】协议无关逻辑抽到下方 phase_set_archived（gRPC 服务复用同一份 SQL）
+    Ok(Json(phase_set_archived(&pool, user.id, id, false).await?))
 }
 
 /// 归档/启用共用实现（DRY：两个 handler 只有 archived 值不同）
-async fn set_archived(
-    state: AppState,
-    user: User,
-    id: i64,
+/// 协议无关实现（REST handler 与 M9 gRPC 服务共用）
+pub(crate) async fn phase_set_archived(
+    pool: &SqlitePool,
+    user_id: i64,
+    phase_id: i64,
     archived: bool,
-) -> Result<Json<PhaseOut>, ApiError>
+) -> Result<PhaseOut, ApiError>
 {
-    let pool = state.pool.read().await.clone();
-
     let ret = sqlx::query("UPDATE phases SET archived = ? WHERE id = ? AND user_id = ?")
         .bind(archived)
-        .bind(&id)
-        .bind(&user.id)
-        .execute(&pool)
+        .bind(&phase_id)
+        .bind(&user_id)
+        .execute(pool)
         .await
         .map_err(ApiError::Database)?;
 
@@ -429,11 +469,11 @@ async fn set_archived(
     }
 
     let phase = sqlx::query_as::<_, Phase>("SELECT * FROM phases WHERE id = ? AND user_id = ?")
-        .bind(&id)
-        .bind(&user.id)
-        .fetch_one(&pool)
+        .bind(&phase_id)
+        .bind(&user_id)
+        .fetch_one(pool)
         .await
         .map_err(ApiError::Database)?;
 
-    Ok(Json(phase_out(&pool, &phase).await?))
+    Ok(phase_out(pool, &phase).await?)
 }

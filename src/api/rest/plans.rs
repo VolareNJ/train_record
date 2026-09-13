@@ -39,12 +39,16 @@ use sqlx::SqlitePool;
 
 use crate::{
     AppState,
-    api::{ApiError, auth::ApiAuthUser},
+    api::{ApiError, rest::auth::ApiAuthUser},
     models::{Exercise, Phase, Plan, PlanItem, Template, TemplateItem},
 };
 
 // ⚠️ 注意：HashMap 不只 plan_update 用（template_out/plan_out 的 ex_names 索引也用），
 //    所以 import 保持原样，不要删。
+//
+// ⚠️ M9 抽取：本文件的 axum handler 已经占用了 template_list/plan_create
+//    这类名字（router() 直接引用它们，不能改名），所以协议无关实现统一
+//    加 _impl 后缀（如 template_list_impl）——gRPC 服务调用这些 _impl 函数。
 
 // ============================================================
 // 【教学：DTO 结构体】
@@ -329,12 +333,22 @@ pub async fn template_list(
 ) -> Result<Json<Vec<TemplateOut>>, ApiError>
 {
     let pool = state.pool.read().await.clone();
+    // 【M9】协议无关逻辑抽到下方 template_list_impl（gRPC 服务复用同一份 SQL）
+    Ok(Json(template_list_impl(&pool, user.id, phase_id).await?))
+}
 
+/// 协议无关实现（REST handler 与 M9 gRPC 服务共用）
+pub(crate) async fn template_list_impl(
+    pool: &SqlitePool,
+    user_id: i64,
+    phase_id: i64,
+) -> Result<Vec<TemplateOut>, ApiError>
+{
     // 列表只验证存在 + 归属（归档阶段也能查看列表）
     sqlx::query_as::<_, Phase>("SELECT * FROM phases WHERE id = ? AND user_id = ?")
         .bind(&phase_id)
-        .bind(&user.id)
-        .fetch_optional(&pool)
+        .bind(&user_id)
+        .fetch_optional(pool)
         .await
         .map_err(ApiError::Database)?
         .ok_or_else(|| ApiError::NotFound("阶段不存在".to_string()))?;
@@ -343,17 +357,17 @@ pub async fn template_list(
         "SELECT * FROM templates WHERE phase_id = ? ORDER BY sort_order, id",
     )
     .bind(&phase_id)
-    .fetch_all(&pool)
+    .fetch_all(pool)
     .await
     .map_err(ApiError::Database)?;
 
     let mut out = Vec::with_capacity(templates.len());
     for t in &templates
     {
-        out.push(template_out(&pool, t, user.id).await?);
+        out.push(template_out(pool, t, user_id).await?);
     }
 
-    Ok(Json(out))
+    Ok(out)
 }
 
 // ============================================================
@@ -379,9 +393,22 @@ pub async fn template_create(
 ) -> Result<Json<TemplateOut>, ApiError>
 {
     let pool = state.pool.read().await.clone();
+    // 【M9】协议无关逻辑抽到下方 template_create_impl（gRPC 服务复用同一份 SQL）
+    Ok(Json(
+        template_create_impl(&pool, user.id, phase_id, &req).await?,
+    ))
+}
 
+/// 协议无关实现（REST handler 与 M9 gRPC 服务共用）
+pub(crate) async fn template_create_impl(
+    pool: &SqlitePool,
+    user_id: i64,
+    phase_id: i64,
+    req: &TemplateReq,
+) -> Result<TemplateOut, ApiError>
+{
     // 归属 + 未归档验证
-    verify_phase(&pool, user.id, phase_id).await?;
+    verify_phase(pool, user_id, phase_id).await?;
 
     // 校验
     if req.name.trim().is_empty()
@@ -398,7 +425,7 @@ pub async fn template_create(
         "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM templates WHERE phase_id = ?",
     )
     .bind(&phase_id)
-    .fetch_one(&pool)
+    .fetch_one(pool)
     .await
     .map_err(ApiError::Database)?;
 
@@ -436,11 +463,11 @@ pub async fn template_create(
         sqlx::query_as::<_, Template>("SELECT * FROM templates WHERE id = ? AND phase_id = ?")
             .bind(&template_id)
             .bind(&phase_id)
-            .fetch_one(&pool)
+            .fetch_one(pool)
             .await
             .map_err(ApiError::Database)?;
 
-    Ok(Json(template_out(&pool, &template, user.id).await?))
+    Ok(template_out(pool, &template, user_id).await?)
 }
 
 // ============================================================
@@ -467,11 +494,22 @@ pub async fn template_update(
 ) -> Result<Json<TemplateOut>, ApiError>
 {
     let pool = state.pool.read().await.clone();
+    // 【M9】协议无关逻辑抽到下方 template_update_impl（gRPC 服务复用同一份 SQL）
+    Ok(Json(template_update_impl(&pool, user.id, id, &req).await?))
+}
 
+/// 协议无关实现（REST handler 与 M9 gRPC 服务共用）
+pub(crate) async fn template_update_impl(
+    pool: &SqlitePool,
+    user_id: i64,
+    template_id: i64,
+    req: &TemplateReq,
+) -> Result<TemplateOut, ApiError>
+{
     // 归属验证（拿 phase_id）
-    let tpl = verify_template(&pool, user.id, id).await?;
+    let tpl = verify_template(pool, user_id, template_id).await?;
     // 未归档验证
-    verify_phase(&pool, user.id, tpl.phase_id).await?;
+    verify_phase(pool, user_id, tpl.phase_id).await?;
 
     if req.name.trim().is_empty()
     {
@@ -486,14 +524,14 @@ pub async fn template_update(
 
     sqlx::query("UPDATE templates SET name = ? WHERE id = ?")
         .bind(&req.name)
-        .bind(&id)
+        .bind(&template_id)
         .execute(&mut *tx)
         .await
         .map_err(ApiError::Database)?;
 
     // 先删后插
     sqlx::query("DELETE FROM template_items WHERE template_id = ?")
-        .bind(&id)
+        .bind(&template_id)
         .execute(&mut *tx)
         .await
         .map_err(ApiError::Database)?;
@@ -503,7 +541,7 @@ pub async fn template_update(
         sqlx::query(
             "INSERT INTO template_items (template_id, exercise_id, sort_order) VALUES (?, ?, ?)",
         )
-        .bind(&id)
+        .bind(&template_id)
         .bind(item.exercise_id)
         .bind(idx as i64)
         .execute(&mut *tx)
@@ -514,12 +552,12 @@ pub async fn template_update(
     tx.commit().await.map_err(ApiError::Database)?;
 
     let template = sqlx::query_as::<_, Template>("SELECT * FROM templates WHERE id = ?")
-        .bind(&id)
-        .fetch_one(&pool)
+        .bind(&template_id)
+        .fetch_one(pool)
         .await
         .map_err(ApiError::Database)?;
 
-    Ok(Json(template_out(&pool, &template, user.id).await?))
+    Ok(template_out(pool, &template, user_id).await?)
 }
 
 // ============================================================
@@ -537,27 +575,38 @@ pub async fn template_delete(
 ) -> Result<Json<serde_json::Value>, ApiError>
 {
     let pool = state.pool.read().await.clone();
+    // 【M9】协议无关逻辑抽到下方 template_delete_impl（gRPC 服务复用同一份 SQL）
+    template_delete_impl(&pool, user.id, id).await?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
 
+/// 协议无关实现（REST handler 与 M9 gRPC 服务共用）
+pub(crate) async fn template_delete_impl(
+    pool: &SqlitePool,
+    user_id: i64,
+    template_id: i64,
+) -> Result<(), ApiError>
+{
     // 归属验证
-    verify_template(&pool, user.id, id).await?;
+    verify_template(pool, user_id, template_id).await?;
 
     let mut tx = pool.begin().await.map_err(ApiError::Database)?;
 
     sqlx::query("DELETE FROM template_items WHERE template_id = ?")
-        .bind(&id)
+        .bind(&template_id)
         .execute(&mut *tx)
         .await
         .map_err(ApiError::Database)?;
 
     sqlx::query("DELETE FROM templates WHERE id = ?")
-        .bind(&id)
+        .bind(&template_id)
         .execute(&mut *tx)
         .await
         .map_err(ApiError::Database)?;
 
     tx.commit().await.map_err(ApiError::Database)?;
 
-    Ok(Json(serde_json::json!({ "ok": true })))
+    Ok(())
 }
 
 // ============================================================
@@ -581,29 +630,42 @@ pub async fn plan_list(
 ) -> Result<Json<Vec<PlanOut>>, ApiError>
 {
     let pool = state.pool.read().await.clone();
+    // 【M9】协议无关逻辑抽到下方 plan_list_impl（gRPC 服务复用同一份 SQL）
+    Ok(Json(
+        plan_list_impl(&pool, user.id, phase_id, query.date.as_deref()).await?,
+    ))
+}
 
+/// 协议无关实现（REST handler 与 M9 gRPC 服务共用）
+pub(crate) async fn plan_list_impl(
+    pool: &SqlitePool,
+    user_id: i64,
+    phase_id: i64,
+    date: Option<&str>,
+) -> Result<Vec<PlanOut>, ApiError>
+{
     // 归属验证（归档阶段也能看列表）
     sqlx::query_as::<_, Phase>("SELECT * FROM phases WHERE id = ? AND user_id = ?")
         .bind(&phase_id)
-        .bind(&user.id)
-        .fetch_optional(&pool)
+        .bind(&user_id)
+        .fetch_optional(pool)
         .await
         .map_err(ApiError::Database)?
         .ok_or_else(|| ApiError::NotFound("阶段不存在".to_string()))?;
 
-    let plans = match query.date.as_deref().filter(|d| !d.is_empty())
+    let plans = match date.filter(|d| !d.is_empty())
     {
         None => sqlx::query_as::<_, Plan>(
             "SELECT * FROM plans WHERE phase_id = ? ORDER BY date DESC, id DESC",
         )
         .bind(&phase_id)
-        .fetch_all(&pool),
+        .fetch_all(pool),
         Some(d) => sqlx::query_as::<_, Plan>(
             "SELECT * FROM plans WHERE phase_id = ? AND date = ? ORDER BY date DESC, id DESC",
         )
         .bind(&phase_id)
         .bind(d)
-        .fetch_all(&pool),
+        .fetch_all(pool),
     }
     .await
     .map_err(ApiError::Database)?;
@@ -611,10 +673,10 @@ pub async fn plan_list(
     let mut out = Vec::with_capacity(plans.len());
     for p in &plans
     {
-        out.push(plan_out(&pool, p, user.id).await?);
+        out.push(plan_out(pool, p, user_id).await?);
     }
 
-    Ok(Json(out))
+    Ok(out)
 }
 
 // ============================================================
@@ -639,8 +701,21 @@ pub async fn plan_create(
 ) -> Result<Json<PlanOut>, ApiError>
 {
     let pool = state.pool.read().await.clone();
+    // 【M9】协议无关逻辑抽到下方 plan_create_impl（gRPC 服务复用同一份 SQL）
+    Ok(Json(
+        plan_create_impl(&pool, user.id, phase_id, &req).await?,
+    ))
+}
 
-    verify_phase(&pool, user.id, phase_id).await?;
+/// 协议无关实现（REST handler 与 M9 gRPC 服务共用）
+pub(crate) async fn plan_create_impl(
+    pool: &SqlitePool,
+    user_id: i64,
+    phase_id: i64,
+    req: &PlanReq,
+) -> Result<PlanOut, ApiError>
+{
+    verify_phase(pool, user_id, phase_id).await?;
 
     // 日期格式校验
     validate_date(&req.date)?;
@@ -690,11 +765,11 @@ pub async fn plan_create(
     let plan = sqlx::query_as::<_, Plan>("SELECT * FROM plans WHERE id = ? AND phase_id = ?")
         .bind(&plan_id)
         .bind(&phase_id)
-        .fetch_one(&pool)
+        .fetch_one(pool)
         .await
         .map_err(ApiError::Database)?;
 
-    Ok(Json(plan_out(&pool, &plan, user.id).await?))
+    Ok(plan_out(pool, &plan, user_id).await?)
 }
 
 // ============================================================
@@ -708,9 +783,19 @@ pub async fn plan_detail(
 ) -> Result<Json<PlanOut>, ApiError>
 {
     let pool = state.pool.read().await.clone();
+    // 【M9】协议无关逻辑抽到下方 plan_detail_impl（gRPC 服务复用同一份 SQL）
+    Ok(Json(plan_detail_impl(&pool, user.id, id).await?))
+}
 
-    let plan = verify_plan(&pool, user.id, id).await?;
-    Ok(Json(plan_out(&pool, &plan, user.id).await?))
+/// 协议无关实现（REST handler 与 M9 gRPC 服务共用）
+pub(crate) async fn plan_detail_impl(
+    pool: &SqlitePool,
+    user_id: i64,
+    plan_id: i64,
+) -> Result<PlanOut, ApiError>
+{
+    let plan = verify_plan(pool, user_id, plan_id).await?;
+    Ok(plan_out(pool, &plan, user_id).await?)
 }
 
 // ============================================================
@@ -741,10 +826,22 @@ pub async fn plan_update(
     Json(req): Json<PlanReq>,
 ) -> Result<Json<PlanOut>, ApiError>
 {
-    // 1. 归属验证（JOIN phases 拿 phase_id）→ 未归档验证
     let pool = state.pool.read().await.clone();
-    let plan = verify_plan(&pool, user.id, id).await?;
-    verify_phase(&pool, user.id, plan.phase_id).await?;
+    // 【M9】协议无关逻辑抽到下方 plan_update_impl（gRPC 服务复用同一份 SQL）
+    Ok(Json(plan_update_impl(&pool, user.id, id, &req).await?))
+}
+
+/// 协议无关实现（REST handler 与 M9 gRPC 服务共用）
+pub(crate) async fn plan_update_impl(
+    pool: &SqlitePool,
+    user_id: i64,
+    plan_id: i64,
+    req: &PlanReq,
+) -> Result<PlanOut, ApiError>
+{
+    // 1. 归属验证（JOIN phases 拿 phase_id）→ 未归档验证
+    let plan = verify_plan(pool, user_id, plan_id).await?;
+    verify_phase(pool, user_id, plan.phase_id).await?;
 
     // 2. 校验 date 格式、items 非空
     validate_date(&req.date)?;
@@ -764,7 +861,7 @@ pub async fn plan_update(
         "SELECT r.exercise_id, r.id FROM records r
         WHERE r.plan_item_id IN (SELECT id FROM plan_items WHERE plan_id = ?)",
     )
-    .bind(&id)
+    .bind(&plan_id)
     .fetch_all(&mut *tx)
     .await
     .map_err(ApiError::Database)?
@@ -779,14 +876,14 @@ pub async fn plan_update(
         "UPDATE records SET plan_item_id = NULL
         WHERE plan_item_id IN (SELECT id FROM plan_items WHERE plan_id = ?)",
     )
-    .bind(&id)
+    .bind(&plan_id)
     .execute(&mut *tx)
     .await
     .map_err(ApiError::Database)?;
 
     // 3. ③ 删旧子表（此时无外键阻挡）
     sqlx::query("DELETE FROM plan_items WHERE plan_id = ?")
-        .bind(&id)
+        .bind(&plan_id)
         .execute(&mut *tx)
         .await
         .map_err(ApiError::Database)?;
@@ -795,7 +892,7 @@ pub async fn plan_update(
     sqlx::query("UPDATE plans SET date = ?, note = ? WHERE id = ?")
         .bind(&req.date)
         .bind(&req.note)
-        .bind(&id)
+        .bind(&plan_id)
         .execute(&mut *tx)
         .await
         .map_err(ApiError::Database)?;
@@ -809,7 +906,7 @@ pub async fn plan_update(
              plan_rest, plan_key_points, plan_note)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
-        .bind(&id)
+        .bind(&plan_id)
         .bind(item.exercise_id)
         .bind(idx as i64)
         .bind(item.plan_sets)
@@ -843,12 +940,12 @@ pub async fn plan_update(
     tx.commit().await.map_err(ApiError::Database)?;
 
     let updated = sqlx::query_as::<_, Plan>("SELECT * FROM plans WHERE id = ?")
-        .bind(&id)
-        .fetch_one(&pool)
+        .bind(&plan_id)
+        .fetch_one(pool)
         .await
         .map_err(ApiError::Database)?;
 
-    Ok(Json(plan_out(&pool, &updated, user.id).await?))
+    Ok(plan_out(pool, &updated, user_id).await?)
 }
 
 // ============================================================
@@ -866,8 +963,19 @@ pub async fn plan_delete(
 ) -> Result<Json<serde_json::Value>, ApiError>
 {
     let pool = state.pool.read().await.clone();
+    // 【M9】协议无关逻辑抽到下方 plan_delete_impl（gRPC 服务复用同一份 SQL）
+    plan_delete_impl(&pool, user.id, id).await?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
 
-    verify_plan(&pool, user.id, id).await?;
+/// 协议无关实现（REST handler 与 M9 gRPC 服务共用）
+pub(crate) async fn plan_delete_impl(
+    pool: &SqlitePool,
+    user_id: i64,
+    plan_id: i64,
+) -> Result<(), ApiError>
+{
+    verify_plan(pool, user_id, plan_id).await?;
 
     let mut tx = pool.begin().await.map_err(ApiError::Database)?;
 
@@ -876,27 +984,27 @@ pub async fn plan_delete(
         "UPDATE records SET plan_item_id = NULL
         WHERE plan_item_id IN (SELECT id FROM plan_items WHERE plan_id = ?)",
     )
-    .bind(&id)
+    .bind(&plan_id)
     .execute(&mut *tx)
     .await
     .map_err(ApiError::Database)?;
 
     // 先子后父
     sqlx::query("DELETE FROM plan_items WHERE plan_id = ?")
-        .bind(&id)
+        .bind(&plan_id)
         .execute(&mut *tx)
         .await
         .map_err(ApiError::Database)?;
 
     sqlx::query("DELETE FROM plans WHERE id = ?")
-        .bind(&id)
+        .bind(&plan_id)
         .execute(&mut *tx)
         .await
         .map_err(ApiError::Database)?;
 
     tx.commit().await.map_err(ApiError::Database)?;
 
-    Ok(Json(serde_json::json!({ "ok": true })))
+    Ok(())
 }
 
 // ============================================================

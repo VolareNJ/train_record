@@ -8,14 +8,30 @@ argon2 = "0.5.3"
 askama = "0.16.0"
 axum = { version = "0.8.9", features = ["multipart"] }
 log = "0.4.33"
+prost = "0.14"
 rand_core = { version = "0.6.4", features = ["getrandom"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 sqlx = { version = "0.9.0", features = ["runtime-tokio", "sqlite", "macros", "migrate"] }
 time = { version = "0.3.55", features = ["serde", "formatting"] }
 tokio = { version = "1.53.1", features = ["full"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+tonic = "0.14"
+tonic-prost = "0.14"
 tower = "0.5.3"
 tower-http = { version = "0.7.0", features = ["fs", "cors", "set-header"] }
 tracing = "0.1.44"
 tracing-subscriber = "0.3.23"
 uuid = { version = "1.24.0", features = ["v4"] }
+
+# ============================================================
+# 【M9 新增：gRPC 代码生成需要的"构建期依赖"】
+# ============================================================
+# build-dependencies 与 dependencies 的区别：
+#   dependencies     → 打进最终二进制，程序运行时需要
+#   build-dependencies → **只在编译期**运行（build.rs 用它生成代码），不进二进制
+# 所以 tonic-prost-build / prost-build 不会让服务器变胖。
+[build-dependencies]
+prost-build = "0.14"
+protoc-bin-vendored = "3"
+tonic-prost-build = "0.14"

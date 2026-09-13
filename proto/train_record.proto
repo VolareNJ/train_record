@@ -1,0 +1,817 @@
+// ============================================================
+// train_record.proto —— gRPC 接口契约（M9）
+// ============================================================
+// 【教学说明：这个文件是什么？】
+// 这是一个 **IDL（Interface Definition Language，接口定义语言）** 文件。
+// 它只描述"有哪些方法、每个方法收发什么形状的数据"，不含任何实现。
+// 用 `protoc`（配合 tonic-prost-build，见 build.rs）把它编译成 Rust 代码：
+//   消息（message）  → Rust struct（#[derive(Clone, PartialEq, prost::Message)]）
+//   服务（service）  → Rust trait + Server/Client 结构体
+//
+// 对比 M8 的 REST：REST 的"契约"藏在文档（docs/api.md）和 handler 代码里，
+// 客户端写错了只有运行时才发现（422/500）。gRPC 的契约在这一个文件里，
+// **客户端和服务器共用同一份契约**，字段拼错/类型不匹配 = 编译不过。
+// 这就是 gRPC 最大的价值：跨进程的强类型契约。
+//
+// 【教学：为什么还要 gRPC？REST 不够吗？】
+// 本项目两种出口分工不同（M8 §2.5 / M9.md §1）：
+//   REST  ：人肉眼调试方便（curl + JSON），浏览器/PWA 也能用 → 保留
+//   gRPC ：① 强类型契约（IDL 编译期检查，字段改名客户端立刻编译失败）
+//          ② 原生流式（4 种 RPC 类型：一元/服务器流/客户端流/双向流）
+//          ③ HTTP/2 多路复用 + 二进制（比 JSON 省流量）
+//          ④ 跨语言代码生成（以后写 Go/Python 客户端也是同一份 proto）
+// 所以 M9 把"iced 桌面客户端"（M10）当作 gRPC 的主要消费者来设计接口。
+//
+// 【教学：与 REST 的差异 —— IDL 不是 REST 的镜像】
+// 故意有几处不同（看清"为什么不同"比背下来更重要）：
+//   1. 归档/启用两个 REST 端点 → 一个 SetPhaseArchived(archived) 方法
+//   2. REST 的 RecordOut / DayRecordOut 两个形状 → 一个 Record 消息（客户端友好）
+//   3. 一次性返回大数组的导出接口 → 服务器流式（StreamRecords）
+//   4. 训练中"一组一上报" → 双向流（LiveSession）；训练结束"批量提交"→ 客户端流
+//   5. 错误不写在消息里，而是用 gRPC 状态码（见下方"错误约定"）
+//
+// 【读者指引】
+//   概念与实现步骤 → docs/learning_path/M9.md
+//   REST 对照表    → docs/api.md（本文件末尾也有一张速查表）
+// ============================================================
+
+syntax = "proto3";
+
+// 【教学：包名 = 契约的命名空间，带版本号】
+// 对应 REST 的 URL 前缀 /api/v1/。以后接口不兼容地升级 → 新建 train_record.v2
+// （两个版本可以同时在线，老客户端不被打断——这是 gRPC 比 REST 更容易做到的
+//   一件事：同一个端口可以挂多个包的服务）。
+package train_record.v1;
+
+// ============================================================
+// 一、通用约定（写代码前先读这段）
+// ============================================================
+// 【1. 命名约定】
+//   RPC 名  ：动词 + 名词（ListPhases / UpsertRecord / SetPhaseArchived）
+//   消息名  ：名词（Phase / Plan / Record）；请求响应加后缀（XxxRequest / XxxResponse）
+//   字段名  ：snake_case（protobuf 规范；生成 Rust 后还是 snake_case，
+//             转成 JSON（protojson）时会自动变 camelCase）
+//
+// 【2. 字段编号纪律 ★ 最容易踩的坑】
+//   字段后的 `= 1` 是**二进制线格式里的编号**，不是默认值、也不是顺序！
+//   - 编号一旦发布就不能改（改了老客户端解析出来的字段会错位）
+//   - 删字段要把编号写进 `reserved`（防止以后有人复用导致老数据被误解）
+//   - 新增字段用新的编号（本文件按顺序递增，中间不跳号）
+//   对比 REST/JSON：JSON 靠字段名，改名客户端还能解析；protobuf 靠编号，
+//   所以"改字段名"安全（同一个编号），"改编号"是灾难。
+//
+// 【3. 日期与时间的表示：用 string，不用 Timestamp】
+//   全项目存的是"自然日"（'YYYY-MM-DD'，中国时区），不是"时间点"。
+//   google.protobuf.Timestamp 表示 UTC 时间点，用它反而要来回换算
+//   （且会引入 well-known types 的编译依赖）。所以与 REST/数据库保持一致：
+//   `string date = 1; // YYYY-MM-DD`
+//   代价：契约里体现不出格式约束（客户端传错只有运行时才发现）→
+//   服务器端统一用 REST 层已有的 validate_date 校验。
+//
+// 【4. PATCH 语义与 optional ★ proto3 的经典坑】
+//   proto3 里**普通标量字段没有"未设置"状态**：
+//       string note = 2;    → 传空串和"没传"在 wire 上无法区分（都是空串）
+//   REST 的 PATCH 靠"字段缺省 = 不改"（serde 的 Option），gRPC 要表达同样语义
+//   必须加 `optional` 关键字（proto3 的"显式存在性"，生成 Rust 后是 Option<T>）：
+//       optional string note = 2;   → None（没传） / Some("")（传了空串）
+//   所以：UpdateXxxRequest 里的字段全部带 optional，表示"只改我传的字段"。
+//
+// 【5. 错误约定：不用消息字段，用状态码】
+//   REST 用 HTTP 状态码 + {"error": "..."} JSON body；
+//   gRPC 用**状态码 + 消息 + 可选 details**（都是 trailer，不在 body 里）。
+//   服务器把 M8 的 ApiError 映射成（见 src/api/grpc/error.rs）：
+//       ApiError::Unauthorized    → Status::unauthenticated   "未登录"
+//       ApiError::Validation      → Status::invalid_argument  "参数不合法"
+//       ApiError::NotFound        → Status::not_found         "xx 不存在"
+//       ApiError::Forbidden       → Status::permission_denied "归档阶段不可编辑"
+//       ApiError::Database/Other  → Status::internal          "数据库错误"
+//   客户端只判断 code 就行，不用解析错误文本（文本给人看，code 给程序判断）。
+//   ⚠️ 与 REST 的差异：401 在 gRPC 里叫 UNAUTHENTICATED（16），
+//      403 叫 PERMISSION_DENIED（7），404 叫 NOT_FOUND（5）——对照表见 M9.md §2.4。
+//
+// 【6. 认证约定：token 放 metadata】
+//   gRPC 没有 Cookie 语义，但 HTTP/2 有 headers（gRPC 把它叫 metadata）。
+//   登录成功后客户端保存 token，之后每次调用带上：
+//       authorization: Bearer <token>
+//   （也兼容 x-session-token: <token>，方便手写调试脚本）
+//   服务器端从 metadata 取 token，复用 M8 的 session 表验证。
+// ============================================================
+
+// ============================================================
+// 二、通用消息
+// ============================================================
+
+// 通用"成功"应答（对应 REST 的 {"ok": true}）
+// 【教学】gRPC 里"成功"本身由状态码 OK 表达，这个消息只是和 REST 行为对齐，
+// 让客户端能拿到一个明确的返回值（空消息也能返回，但语义上不好读）。
+message Ack
+{
+    bool ok = 1;
+}
+
+// 用户信息（对应 REST 的 UserOut）
+// 【教学：为什么不是 models::User？】与 REST 同款理由——绝不能把
+// password_hash 放进契约里。契约一旦公开，字段就是"对外承诺"。
+message User
+{
+    int64 id = 1;
+    string username = 2;
+    bool is_admin = 3;
+    // 体重（kg；未设置 = 不传）
+    optional double body_weight = 4;
+}
+
+// ============================================================
+// 三、AuthService —— 认证（对应 REST /api/v1/login|logout|me）
+// ============================================================
+service AuthService
+{
+    // 登录：用户名密码 → 用户信息 + token
+    // 【教学】token 是登录的唯一产物，客户端必须自己保存（gRPC 没有 Cookie 罐）。
+    rpc Login(LoginRequest) returns (LoginResponse);
+
+    // 登出：让服务端销毁 session（token 立即失效）
+    rpc Logout(LogoutRequest) returns (Ack);
+
+    // 取当前登录用户（客户端启动时用它验证 token 是否还有效）
+    rpc GetMe(GetMeRequest) returns (User);
+}
+
+message LoginRequest
+{
+    string username = 1;
+    string password = 2;
+}
+
+message LoginResponse
+{
+    User user = 1;
+    // 会话 token（后续请求放 metadata：authorization: Bearer <token>）
+    string token = 2;
+}
+
+message LogoutRequest
+{
+}
+
+message GetMeRequest
+{
+}
+
+// ============================================================
+// 四、PhaseService —— 训练阶段（对应 REST /api/v1/phases...）
+// ============================================================
+service PhaseService
+{
+    // 阶段列表（含"已坚持 N 天"）
+    rpc ListPhases(ListPhasesRequest) returns (ListPhasesResponse);
+
+    // 阶段详情
+    rpc GetPhase(GetPhaseRequest) returns (Phase);
+
+    // 创建阶段
+    rpc CreatePhase(CreatePhaseRequest) returns (Phase);
+
+    // 更新阶段（只改传了的字段，见上文"PATCH 语义与 optional"）
+    rpc UpdatePhase(UpdatePhaseRequest) returns (Phase);
+
+    // 归档 / 启用（★ 与 REST 的差异：REST 是两个端点，这里合成一个方法）
+    // 【教学】IDL 设计可以做"接口收敛"：archive 与 unarchive 只差一个布尔值，
+    // 合并后客户端少记一个方法名。REST 里也能合并（POST /archive {archived:true}），
+    // 但 REST 社区习惯用动词 + 路径，gRPC 社区习惯"少而正交的方法"。
+    rpc SetPhaseArchived(SetPhaseArchivedRequest) returns (Phase);
+}
+
+// 训练阶段（含派生字段 days）
+message Phase
+{
+    int64 id = 1;
+    string name = 2;
+    string note = 3;
+    // 开始日期（'YYYY-MM-DD'；未设置 = 不传）
+    optional string start_date = 4;
+    // 是否已归档（归档 = 只读）
+    bool archived = 5;
+    // 【教学：派生字段放实体消息里，是"方便换纯度"的妥协】
+    // days = 今天 - start_date（服务器算，见 REST 的 calc_days）
+    // 严格洁癖会把 days 单独放 PhaseStat 消息，但客户端几乎总是要它，
+    // 多一次调用不值得 → 直接带上（REST 的 PhaseOut 也是这么做的）。
+    int64 days = 6;
+}
+
+message ListPhasesRequest
+{
+}
+
+message ListPhasesResponse
+{
+    repeated Phase phases = 1;
+}
+
+message GetPhaseRequest
+{
+    int64 id = 1;
+}
+
+message CreatePhaseRequest
+{
+    string name = 1;
+    string note = 2;
+    optional string start_date = 3;
+}
+
+message UpdatePhaseRequest
+{
+    int64 id = 1;
+    optional string name = 2;
+    optional string note = 3;
+    optional string start_date = 4;
+}
+
+message SetPhaseArchivedRequest
+{
+    int64 id = 1;
+    // true = 归档（只读），false = 启用
+    bool archived = 2;
+}
+
+// ============================================================
+// 五、ExerciseService —— 动作库（对应 REST /api/v1/exercises...）
+// ============================================================
+service ExerciseService
+{
+    // 动作列表（可选按部位筛选）
+    rpc ListExercises(ListExercisesRequest) returns (ListExercisesResponse);
+
+    // 动作详情（含派生：最近训练日期 + 历史最佳 1RM）
+    rpc GetExercise(GetExerciseRequest) returns (Exercise);
+
+    // 创建动作
+    rpc CreateExercise(CreateExerciseRequest) returns (Exercise);
+
+    // 更新动作（PATCH 语义）
+    rpc UpdateExercise(UpdateExerciseRequest) returns (Exercise);
+
+    // 删除动作
+    rpc DeleteExercise(DeleteExerciseRequest) returns (Ack);
+
+    // ★ 服务器流式（server streaming）：该动作的训练序列（画折线图用）
+    // 【教学】对比 REST 的 GET /exercises/{id}/stats：REST 一次性返回整个数组，
+    // 客户端要等全部查完 + 全部序列化才能开始画。
+    // 流式版：服务器查一条发一条，客户端边收边画（首屏更快，
+    // 记录多时内存也不会同时压满两端）。
+    // 客户端写法（Rust）：let mut stream = client.stream_exercise_series(req).await?.into_inner();
+    //                      while let Some(point) = stream.message().await? { ... 画图 ... }
+    rpc StreamExerciseSeries(ExerciseSeriesRequest) returns (stream ExerciseSeriesPoint);
+}
+
+// 动作（含派生字段 last_record_date / best_1rm）
+message Exercise
+{
+    int64 id = 1;
+    string name = 2;
+    // 部位分组：胸/背/腿/肩/手臂/核心
+    string body_part = 3;
+    // 默认计重模式：bar（杠铃）/ support（器械，按体重比例）/ std（标准）
+    string default_mode = 4;
+    // 默认杆重（bar 模式用）
+    double bar_weight = 5;
+    // 默认计重单位：kg / lb（只影响展示串，实际强度始终存 kg）
+    string default_unit = 6;
+    int64 default_sets = 7;
+    int64 default_reps = 8;
+    // 动作要领
+    string key_points = 9;
+    // 最近训练日期（'YYYY-MM-DD'；从未训练 = 不传）
+    optional string last_record_date = 10;
+    // 历史最佳 1RM（实时算，不落库；无记录 = 不传）
+    optional double best_1rm = 11;
+}
+
+message ListExercisesRequest
+{
+    // 部位筛选（不传 = 全部）
+    optional string body_part = 1;
+}
+
+message ListExercisesResponse
+{
+    repeated Exercise exercises = 1;
+}
+
+message GetExerciseRequest
+{
+    int64 id = 1;
+}
+
+message CreateExerciseRequest
+{
+    string name = 1;
+    string body_part = 2;
+    // 以下可选字段未传 → 用服务器默认值（bar / 20.0 / kg / 3 / 8 / 空）
+    optional string default_mode = 3;
+    optional double bar_weight = 4;
+    optional string default_unit = 5;
+    optional int64 default_sets = 6;
+    optional int64 default_reps = 7;
+    optional string key_points = 8;
+}
+
+message UpdateExerciseRequest
+{
+    int64 id = 1;
+    optional string name = 2;
+    optional string body_part = 3;
+    optional string default_mode = 4;
+    optional double bar_weight = 5;
+    optional string default_unit = 6;
+    optional int64 default_sets = 7;
+    optional int64 default_reps = 8;
+    optional string key_points = 9;
+}
+
+message DeleteExerciseRequest
+{
+    int64 id = 1;
+}
+
+message ExerciseSeriesRequest
+{
+    int64 exercise_id = 1;
+    // 可选区间过滤（'YYYY-MM-DD'；不传 = 不限）
+    // 【教学】过滤放在服务器端：客户端只要"最近三个月"时，
+    // 不必把全部历史拉回本地再丢弃（省流量、省内存）。
+    optional string from_date = 2;
+    optional string to_date = 3;
+}
+
+// 序列上的一个点（一次训练记录 + 实时算出的 1RM）
+message ExerciseSeriesPoint
+{
+    // 【教学】流里每一条都自带 exercise_id：这样客户端可以并发订阅多个动作，
+    // 把多条流 merge 成一个图（REST 做不到这点——它只能一次一个请求）。
+    int64 exercise_id = 1;
+    string date = 2;
+    double weight = 3;
+    int64 sets = 4;
+    int64 reps = 5;
+    // Epley 公式实时计算（不落库，见 calc.rs）
+    double one_rm = 6;
+}
+
+// ============================================================
+// 六、PlanService —— 模板 + 当日计划（对应 REST /api/v1/phases/{id}/templates|plans...）
+// ============================================================
+// 【教学：为什么模板和计划放同一个 service？】
+// 两者是"计划-动作"这同一件事的两个阶段：模板是"常用组合"（可复用），
+// 计划是"某一天的确定安排"（可能由模板生成）。字段形状也几乎相同，
+// 放一起客户端只需要一个 PlanService。
+// REST 里它们同属 plans.rs（M8 的设计），这里保持一致。
+service PlanService
+{
+    // ---- 模板 ----
+    // 某阶段下的模板列表（每个模板含有序动作项）
+    rpc ListTemplates(ListTemplatesRequest) returns (ListTemplatesResponse);
+    // 创建模板（含动作项，顺序 = items 数组顺序）
+    rpc CreateTemplate(CreateTemplateRequest) returns (Template);
+    // 更新模板（全量替换：name + items 都传）
+    rpc UpdateTemplate(UpdateTemplateRequest) returns (Template);
+    // 删除模板
+    rpc DeleteTemplate(DeleteTemplateRequest) returns (Ack);
+
+    // ---- 计划 ----
+    // 某阶段下的计划列表（可选按日期过滤）
+    rpc ListPlans(ListPlansRequest) returns (ListPlansResponse);
+    // 计划详情（含动作项）
+    rpc GetPlan(GetPlanRequest) returns (Plan);
+    // 创建计划（含动作项）
+    rpc CreatePlan(CreatePlanRequest) returns (Plan);
+    // 更新计划（全量替换：date + note + items）
+    rpc UpdatePlan(UpdatePlanRequest) returns (Plan);
+    // 删除计划
+    rpc DeletePlan(DeletePlanRequest) returns (Ack);
+}
+
+// 模板里的一项动作
+message TemplateItem
+{
+    int64 id = 1;
+    int64 exercise_id = 2;
+    // 动作名（服务器 JOIN 查出来，客户端不用再查一次）
+    string exercise_name = 3;
+    // 计划组数/次数（不传 = 用动作库默认值）
+    optional int64 plan_sets = 4;
+    optional int64 plan_reps = 5;
+}
+
+// 训练模板（一组有序动作）
+message Template
+{
+    int64 id = 1;
+    int64 phase_id = 2;
+    string name = 3;
+    // 顺序 = 数组顺序（服务器按 template_items.sort_order 排好）
+    repeated TemplateItem items = 4;
+}
+
+// 写入模板时的动作项
+// 【教学：为什么这里没有 plan_sets/plan_reps？】
+//   “契约里能写的，服务器必须真的能用”—— M8 的 REST 写入路径
+//   （rest/plans.rs 的 template_create）只把 exercise_id 落库，
+//   组数/次数由动作库默认值决定。如果 proto 里留了这两个字段，
+//   客户端传了却被默默丢掉——这是契约的“静默谎言”，比缺字段更槽。
+//   所以：写入消息只暴露服务器真正支持的字段，
+//   缺失能力写进 docs/todo.md（以后要支持时 += 新字段号，不破坏兼容）。
+message TemplateItemInput
+{
+    int64 exercise_id = 1;
+}
+
+message ListTemplatesRequest
+{
+    int64 phase_id = 1;
+}
+
+message ListTemplatesResponse
+{
+    repeated Template templates = 1;
+}
+
+message CreateTemplateRequest
+{
+    int64 phase_id = 1;
+    string name = 2;
+    repeated TemplateItemInput items = 3;
+}
+
+message UpdateTemplateRequest
+{
+    int64 id = 1;
+    string name = 2;
+    repeated TemplateItemInput items = 3;
+}
+
+message DeleteTemplateRequest
+{
+    int64 id = 1;
+}
+
+// 计划里的一项动作（含计划预设：组数/次数/重量/休息/要领/备注）
+message PlanItem
+{
+    int64 id = 1;
+    int64 exercise_id = 2;
+    string exercise_name = 3;
+    string body_part = 4;
+    optional int64 plan_sets = 5;
+    optional int64 plan_reps = 6;
+    // 计划重量（总重 kg）
+    optional double plan_weight = 7;
+    // 计划组间休息（秒）
+    optional int64 plan_rest = 8;
+    // 计划要领（不传 = 记录页落回动作库的 key_points）
+    optional string plan_key_points = 9;
+    // 该动作的备注（区别于整个计划的 note）
+    optional string plan_note = 10;
+}
+
+// 当日计划（一次训练日）
+message Plan
+{
+    int64 id = 1;
+    int64 phase_id = 2;
+    string date = 3;
+    string note = 4;
+    repeated PlanItem items = 5;
+}
+
+// 写入计划时的动作项（字段与 PlanItem 一致，但没有 id/名字——那些是服务器生成的）
+message PlanItemInput
+{
+    int64 exercise_id = 1;
+    optional int64 plan_sets = 2;
+    optional int64 plan_reps = 3;
+    optional double plan_weight = 4;
+    optional int64 plan_rest = 5;
+    optional string plan_key_points = 6;
+    optional string plan_note = 7;
+}
+
+message ListPlansRequest
+{
+    int64 phase_id = 1;
+    // 只要某一天的（不传 = 该阶段全部）
+    optional string date = 2;
+}
+
+message ListPlansResponse
+{
+    repeated Plan plans = 1;
+}
+
+message GetPlanRequest
+{
+    int64 id = 1;
+}
+
+message CreatePlanRequest
+{
+    int64 phase_id = 1;
+    string date = 2;
+    string note = 3;
+    // 【教学：这就是 REST 表单多选踩坑（docs/todo.md §2.1）在 gRPC 里的模样】
+    // repeated = 有序列表，天然表达"一组动作"，不存在"后值覆盖前值"的问题。
+    repeated PlanItemInput items = 4;
+}
+
+message UpdatePlanRequest
+{
+    int64 id = 1;
+    string date = 2;
+    string note = 3;
+    repeated PlanItemInput items = 4;
+}
+
+message DeletePlanRequest
+{
+    int64 id = 1;
+}
+
+// ============================================================
+// 七、RecordService —— 今日卡片 + 训练记录（M10 客户端最核心的 service）
+// ============================================================
+service RecordService
+{
+    // 今日卡片：进行中阶段 + 今日计划 + 每个动作的最近记录
+    // （对应 REST GET /api/v1/today，客户端首页一个调用就够）
+    rpc GetToday(GetTodayRequest) returns (TodayView);
+
+    // 记录 upsert：某计划项"当天已有记录则更新，否则新建"
+    rpc UpsertRecord(UpsertRecordRequest) returns (Record);
+
+    // 某天全部记录（历史页用，含部位与 1RM）
+    rpc GetDayRecords(GetDayRecordsRequest) returns (GetDayRecordsResponse);
+
+    // 更新单条记录（PATCH 语义：只改传了的字段）
+    rpc UpdateRecord(UpdateRecordRequest) returns (Record);
+
+    // 删除单条记录
+    rpc DeleteRecord(DeleteRecordRequest) returns (Ack);
+
+    // ★ 客户端流式（client streaming）：训练结束后一次性批量提交
+    // 【教学】与"循环调用 UpsertRecord"相比：一次连接、一次往返，
+    // 服务器可以在收完最后一组后统一算汇总（总容量/最佳 1RM）再回一条消息。
+    // 客户端写法：let (tx, rx) = mpsc::channel(...)；
+    //   用 stream::iter(items).map(Ok) 喂给客户端调用，服务器端 while let Some(x) = stream.message().await。
+    rpc SubmitWorkout(stream UpsertRecordRequest) returns (SubmitWorkoutSummary);
+
+    // ★ 双向流（bidirectional streaming）：训练中"一组一上报一组一回执"
+    // 【教学】服务端每收到一组就立刻回执（本组 1RM、是否破纪录、已完成组数），
+    // 客户端可以边练边看反馈。这是 REST 根本不具备的能力。
+    rpc LiveSession(stream UpsertRecordRequest) returns (stream LiveSetFeedback);
+}
+
+message GetTodayRequest
+{
+}
+
+// 今日卡片
+message TodayView
+{
+    // 无进行中阶段 = 不传（客户端显示空态，对应 REST 的 "phase": null）
+    optional PhaseBrief phase = 1;
+    string date = 2;
+    // 今天没有计划 = 不传
+    optional TodayPlan plan = 3;
+}
+
+// 阶段摘要（今日卡片只需要 id/名字/天数，不必带备注等字段）
+message PhaseBrief
+{
+    int64 id = 1;
+    string name = 2;
+    int64 days = 3;
+}
+
+message TodayPlan
+{
+    int64 id = 1;
+    string note = 2;
+    repeated TodayItem items = 3;
+}
+
+// 今日计划里的一项动作 + 该动作的最近记录
+message TodayItem
+{
+    int64 id = 1;
+    int64 exercise_id = 2;
+    string exercise_name = 3;
+    string body_part = 4;
+    optional int64 plan_sets = 5;
+    optional int64 plan_reps = 6;
+    optional double plan_weight = 7;
+    optional int64 plan_rest = 8;
+    optional string plan_key_points = 9;
+    // 该计划项最近一条记录（从未训练 = 不传）
+    optional LastRecord last_record = 10;
+}
+
+// 最近记录摘要（客户端"上次练了 60kg*5"提示用）
+message LastRecord
+{
+    int64 id = 1;
+    double weight = 2;
+    int64 sets = 3;
+    int64 reps = 4;
+    int64 rest = 5;
+    string feeling = 6;
+    string strategy = 7;
+}
+
+// 一条训练记录（客户端友好形状：一次拿全 id/名字/部位/日期/1RM）
+// 【教学：这条消息是两个 REST DTO 的并集】
+//   REST 里 RecordOut（写路径返回）不带 body_part，
+//   DayRecordOut（历史页）不带 record_date/completed。
+//   gRPC 契约合成一个 Record：客户端少写分支（字段来源差异见 convert.rs 注释）。
+message Record
+{
+    int64 id = 1;
+    int64 exercise_id = 2;
+    string exercise_name = 3;
+    // 部位（⚠️ UpsertRecord/UpdateRecord 的返回值里可能是空串：
+    //   REST 的 RecordOut 不含部位字段，M9 选择"留空 + 文档"而不是改 REST 形状。
+    //   需要部位请看 GetDayRecords / StatsService.StreamRecords。）
+    string body_part = 4;
+    string record_date = 5;
+    // 录入时的计重模式
+    string mode = 6;
+    double weight = 7;
+    int64 sets = 8;
+    int64 reps = 9;
+    int64 rest = 10;
+    string feeling = 11;
+    string strategy = 12;
+    string key_points = 13;
+    // Epley 1RM（实时算，不落库）
+    double one_rm = 14;
+    // 是否已完成（今日页只有 completed = true 才显示"已完成"）
+    bool completed = 15;
+}
+
+// 记录 upsert 请求（同时被 SubmitWorkout / LiveSession 的流复用）
+// 【教学：同一个消息既能当一元请求、也能当流元素——契约可复用，
+//   不必为流再造一个类型（少一个类型 = 少一处漂移）。
+//   代价：流式场景下客户端必须每条都带 plan_id/plan_item_id，
+//   冗余但简单（这是"通用性 vs 最小化"的取舍，明确写进注释即可）。】
+message UpsertRecordRequest
+{
+    int64 plan_id = 1;
+    int64 plan_item_id = 2;
+    double weight = 3;
+    int64 sets = 4;
+    int64 reps = 5;
+    // 组间休息（秒）
+    int64 rest = 6;
+    string feeling = 7;
+    string strategy = 8;
+    string key_points = 9;
+    // 训练是否完成（不传 = false）
+    bool completed = 10;
+}
+
+message GetDayRecordsRequest
+{
+    // 'YYYY-MM-DD'
+    string date = 1;
+}
+
+message GetDayRecordsResponse
+{
+    repeated Record records = 1;
+}
+
+message UpdateRecordRequest
+{
+    int64 id = 1;
+    // 全部 optional：不传的字段保持原值（PATCH 语义）
+    optional double weight = 2;
+    optional int64 sets = 3;
+    optional int64 reps = 4;
+    optional int64 rest = 5;
+    optional string feeling = 6;
+    optional string strategy = 7;
+    optional string key_points = 8;
+    optional bool completed = 9;
+}
+
+message DeleteRecordRequest
+{
+    int64 id = 1;
+}
+
+// 批量提交的汇总（客户端流式 RPC 的唯一回包）
+message SubmitWorkoutSummary
+{
+    // 实际落库（含更新）的记录条数
+    int32 saved_count = 1;
+    // 总容量 = Σ(重量 × 组数 × 次数)，单位 kg
+    double total_volume = 2;
+    // 本次提交里的最佳 1RM（无有效记录 = 不传）
+    optional double best_1rm = 3;
+    // 逐条回执（顺序 = 客户端发送顺序）
+    repeated Record records = 4;
+}
+
+// 训练中每组的实时回执（双向流）
+message LiveSetFeedback
+{
+    // 落库后的记录（含 id/名称/1RM）
+    Record saved = 1;
+    // 该动作当前历史最佳 1RM（含本组）
+    double best_1rm = 2;
+    // 本组是否就是历史最佳（"破纪录"提示）
+    bool new_pr = 3;
+    // 本次会话里已完成的组数（服务器累计）
+    int32 completed_count = 4;
+}
+
+// ============================================================
+// 八、StatsService —— 统计（对应 REST /api/v1/history...）
+// ============================================================
+service StatsService
+{
+    // 历史日历：某月有训练的日期列表（客户端自己画日历）
+    rpc GetCalendar(GetCalendarRequest) returns (CalendarView);
+
+    // ★ 服务器流式：按条件导出训练记录（替代 REST 的"一次性大数组"）
+    // 【教学】流式导出还有个实际好处：服务器可以边查边发，
+    // 不必把所有记录先堆进内存（REST 版必须 collect 成 Vec 再序列化）。
+    // 典型用法：导出全部历史做数据分析/备份。
+    rpc StreamRecords(StreamRecordsRequest) returns (stream Record);
+}
+
+message GetCalendarRequest
+{
+    // 'YYYY' / 'MM'（不传 = 当前年月）
+    optional string year = 1;
+    optional string month = 2;
+}
+
+message CalendarView
+{
+    string year = 1;
+    string month = 2;
+    // 该月有训练的日期（'YYYY-MM-DD'，升序）
+    repeated string train_days = 3;
+}
+
+message StreamRecordsRequest
+{
+    // 区间过滤（不传 = 不限）
+    optional string from_date = 1;
+    optional string to_date = 2;
+    // 只看某个动作（不传 = 全部动作）
+    optional int64 exercise_id = 3;
+}
+
+// ============================================================
+// 附：与 REST 端点的对照速查表（实现时对着看）
+// ============================================================
+//   gRPC 方法                              REST 端点
+//   ---------------------------------------------------------------
+//   AuthService.Login                     POST   /api/v1/login
+//   AuthService.Logout                    POST   /api/v1/logout
+//   AuthService.GetMe                     GET    /api/v1/me
+//   PhaseService.ListPhases               GET    /api/v1/phases
+//   PhaseService.GetPhase                 GET    /api/v1/phases/{id}
+//   PhaseService.CreatePhase              POST   /api/v1/phases
+//   PhaseService.UpdatePhase              PATCH  /api/v1/phases/{id}
+//   PhaseService.SetPhaseArchived         POST   /api/v1/phases/{id}/archive|unarchive
+//   ExerciseService.ListExercises         GET    /api/v1/exercises?body_part=
+//   ExerciseService.GetExercise           GET    /api/v1/exercises/{id}
+//   ExerciseService.CreateExercise        POST   /api/v1/exercises
+//   ExerciseService.UpdateExercise        PATCH  /api/v1/exercises/{id}
+//   ExerciseService.DeleteExercise        DELETE /api/v1/exercises/{id}
+//   ExerciseService.StreamExerciseSeries  GET    /api/v1/exercises/{id}/stats（改为流式）
+//   PlanService.ListTemplates             GET    /api/v1/phases/{id}/templates
+//   PlanService.CreateTemplate            POST   /api/v1/phases/{id}/templates
+//   PlanService.UpdateTemplate            PATCH  /api/v1/templates/{id}
+//   PlanService.DeleteTemplate            DELETE /api/v1/templates/{id}
+//   PlanService.ListPlans                 GET    /api/v1/phases/{id}/plans?date=
+//   PlanService.GetPlan                   GET    /api/v1/plans/{id}
+//   PlanService.CreatePlan                POST   /api/v1/phases/{id}/plans
+//   PlanService.UpdatePlan                PATCH  /api/v1/plans/{id}
+//   PlanService.DeletePlan                DELETE /api/v1/plans/{id}
+//   RecordService.GetToday                GET    /api/v1/today
+//   RecordService.UpsertRecord            POST   /api/v1/plans/{id}/items/{item}/records
+//   RecordService.GetDayRecords           GET    /api/v1/history/{date}
+//   RecordService.UpdateRecord            PATCH  /api/v1/records/{id}
+//   RecordService.DeleteRecord            DELETE /api/v1/records/{id}
+//   RecordService.SubmitWorkout           （新增：客户端流式批量提交）
+//   RecordService.LiveSession             （新增：双向流实时回执）
+//   StatsService.GetCalendar              GET    /api/v1/history?year=&month=
+//   StatsService.StreamRecords            （新增：流式导出，REST 无对应端点）
+//
+// 反向看：REST 的 GET /api/v1/records?date= 在 gRPC 里由 GetDayRecords 覆盖
+// （REST 保留不动，M8 的接口不删——契约一旦发布就要照顾老客户端）。
+// ============================================================

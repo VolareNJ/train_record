@@ -28,7 +28,7 @@ use sqlx::SqlitePool;
 
 use crate::{
     AppState,
-    api::{ApiError, auth::ApiAuthUser},
+    api::{ApiError, rest::auth::ApiAuthUser},
     calc::epley_1rm,
     models::{Exercise, Record},
 };
@@ -87,23 +87,23 @@ pub struct ExerciseCreateReq
     pub key_points: String,
 }
 
-fn default_mode() -> String
+pub(crate) fn default_mode() -> String
 {
     "bar".to_string()
 }
-fn default_bar_weight() -> f64
+pub(crate) fn default_bar_weight() -> f64
 {
     20.0
 }
-fn default_unit() -> String
+pub(crate) fn default_unit() -> String
 {
     "kg".to_string()
 }
-fn default_sets() -> i64
+pub(crate) fn default_sets() -> i64
 {
     3
 }
-fn default_reps() -> i64
+pub(crate) fn default_reps() -> i64
 {
     8
 }
@@ -218,23 +218,35 @@ pub async fn list(
 ) -> Result<Json<Vec<ExerciseOut>>, ApiError>
 {
     let pool = state.pool.read().await.clone();
+    // 【M9】协议无关逻辑抽到下方 exercise_list（gRPC 服务复用同一份 SQL）
+    Ok(Json(
+        exercise_list(&pool, user.id, query.body_part.as_deref()).await?,
+    ))
+}
 
+/// 协议无关实现（REST handler 与 M9 gRPC 服务共用）
+pub(crate) async fn exercise_list(
+    pool: &SqlitePool,
+    user_id: i64,
+    body_part: Option<&str>,
+) -> Result<Vec<ExerciseOut>, ApiError>
+{
     // 空串筛选 = 不筛选（页面层同款）
-    let part_filter = query.body_part.as_deref().filter(|p| !p.is_empty());
+    let part_filter = body_part.filter(|p| !p.is_empty());
 
     let exercises = match part_filter
     {
         None => sqlx::query_as::<_, Exercise>(
             "SELECT * FROM exercises WHERE user_id = ? ORDER BY body_part, sort_order, id",
         )
-        .bind(&user.id)
-        .fetch_all(&pool),
+        .bind(&user_id)
+        .fetch_all(pool),
         Some(pt) => sqlx::query_as::<_, Exercise>(
             "SELECT * FROM exercises WHERE user_id = ? AND body_part = ? ORDER BY sort_order, id",
         )
-        .bind(&user.id)
+        .bind(&user_id)
         .bind(pt)
-        .fetch_all(&pool),
+        .fetch_all(pool),
     }
     .await
     .map_err(ApiError::Database)?;
@@ -242,10 +254,10 @@ pub async fn list(
     let mut out = Vec::with_capacity(exercises.len());
     for ex in &exercises
     {
-        out.push(exercise_out(&pool, ex).await?);
+        out.push(exercise_out(pool, ex).await?);
     }
 
-    Ok(Json(out))
+    Ok(out)
 }
 
 // ============================================================
@@ -269,7 +281,17 @@ pub async fn create(
 ) -> Result<Json<ExerciseOut>, ApiError>
 {
     let pool = state.pool.read().await.clone();
+    // 【M9】协议无关逻辑抽到下方 exercise_create（gRPC 服务复用同一份 SQL）
+    Ok(Json(exercise_create(&pool, user.id, &req).await?))
+}
 
+/// 协议无关实现（REST handler 与 M9 gRPC 服务共用）
+pub(crate) async fn exercise_create(
+    pool: &SqlitePool,
+    user_id: i64,
+    req: &ExerciseCreateReq,
+) -> Result<ExerciseOut, ApiError>
+{
     if req.name.trim().is_empty() || req.body_part.trim().is_empty()
     {
         return Err(ApiError::Validation("动作名和部位不能为空".to_string()));
@@ -277,9 +299,9 @@ pub async fn create(
 
     // 查重（数据隔离 + 防重名，和页面 create 同款）
     if sqlx::query_scalar::<_, i64>("SELECT id FROM exercises WHERE user_id = ? AND name = ?")
-        .bind(&user.id)
+        .bind(&user_id)
         .bind(&req.name)
-        .fetch_optional(&pool)
+        .fetch_optional(pool)
         .await
         .map_err(ApiError::Database)?
         .is_some()
@@ -294,7 +316,7 @@ pub async fn create(
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
         RETURNING id",
     )
-    .bind(&user.id)
+    .bind(&user_id)
     .bind(&req.name)
     .bind(&req.body_part)
     .bind(&req.default_mode)
@@ -303,18 +325,18 @@ pub async fn create(
     .bind(&req.default_sets)
     .bind(&req.default_reps)
     .bind(&req.key_points)
-    .fetch_one(&pool)
+    .fetch_one(pool)
     .await
     .map_err(ApiError::Database)?;
 
     let ex = sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE id = ? AND user_id = ?")
         .bind(&new_id)
-        .bind(&user.id)
-        .fetch_one(&pool)
+        .bind(&user_id)
+        .fetch_one(pool)
         .await
         .map_err(ApiError::Database)?;
 
-    Ok(Json(exercise_out(&pool, &ex).await?))
+    Ok(exercise_out(pool, &ex).await?)
 }
 
 // ============================================================
@@ -353,16 +375,26 @@ pub async fn detail(
 ) -> Result<Json<ExerciseOut>, ApiError>
 {
     let pool = state.pool.read().await.clone();
+    // 【M9】协议无关逻辑抽到下方 exercise_detail（gRPC 服务复用同一份 SQL）
+    Ok(Json(exercise_detail(&pool, user.id, id).await?))
+}
 
+/// 协议无关实现（REST handler 与 M9 gRPC 服务共用）
+pub(crate) async fn exercise_detail(
+    pool: &SqlitePool,
+    user_id: i64,
+    exercise_id: i64,
+) -> Result<ExerciseOut, ApiError>
+{
     let ex = sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE id = ? AND user_id = ?")
-        .bind(&id)
-        .bind(&user.id)
-        .fetch_optional(&pool)
+        .bind(&exercise_id)
+        .bind(&user_id)
+        .fetch_optional(pool)
         .await
         .map_err(ApiError::Database)?
         .ok_or_else(|| ApiError::NotFound("动作不存在".to_string()))?;
 
-    Ok(Json(exercise_out(&pool, &ex).await?))
+    Ok(exercise_out(pool, &ex).await?)
 }
 
 // ============================================================
@@ -377,23 +409,34 @@ pub async fn update(
 ) -> Result<Json<ExerciseOut>, ApiError>
 {
     let pool = state.pool.read().await.clone();
+    // 【M9】协议无关逻辑抽到下方 exercise_update（gRPC 服务复用同一份 SQL）
+    Ok(Json(exercise_update(&pool, user.id, id, &req).await?))
+}
 
+/// 协议无关实现（REST handler 与 M9 gRPC 服务共用）
+pub(crate) async fn exercise_update(
+    pool: &SqlitePool,
+    user_id: i64,
+    exercise_id: i64,
+    req: &ExerciseUpdateReq,
+) -> Result<ExerciseOut, ApiError>
+{
     let old = sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE id = ? AND user_id = ?")
-        .bind(&id)
-        .bind(&user.id)
-        .fetch_optional(&pool)
+        .bind(&exercise_id)
+        .bind(&user_id)
+        .fetch_optional(pool)
         .await
         .map_err(ApiError::Database)?
         .ok_or_else(|| ApiError::NotFound("动作不存在".to_string()))?;
 
-    let name = req.name.unwrap_or(old.name);
-    let body_part = req.body_part.unwrap_or(old.body_part);
-    let default_mode = req.default_mode.unwrap_or(old.default_mode);
+    let name = req.name.clone().unwrap_or(old.name);
+    let body_part = req.body_part.clone().unwrap_or(old.body_part);
+    let default_mode = req.default_mode.clone().unwrap_or(old.default_mode);
     let bar_weight = req.bar_weight.unwrap_or(old.bar_weight);
-    let default_unit = req.default_unit.unwrap_or(old.default_unit);
+    let default_unit = req.default_unit.clone().unwrap_or(old.default_unit);
     let default_sets = req.default_sets.unwrap_or(old.default_sets);
     let default_reps = req.default_reps.unwrap_or(old.default_reps);
-    let key_points = req.key_points.unwrap_or(old.key_points);
+    let key_points = req.key_points.clone().unwrap_or(old.key_points);
 
     if name.trim().is_empty() || body_part.trim().is_empty()
     {
@@ -413,9 +456,9 @@ pub async fn update(
     .bind(&default_sets)
     .bind(&default_reps)
     .bind(&key_points)
-    .bind(&id)
-    .bind(&user.id)
-    .execute(&pool)
+    .bind(&exercise_id)
+    .bind(&user_id)
+    .execute(pool)
     .await
     .map_err(ApiError::Database)?;
 
@@ -425,13 +468,13 @@ pub async fn update(
     }
 
     let ex = sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE id = ? AND user_id = ?")
-        .bind(&id)
-        .bind(&user.id)
-        .fetch_one(&pool)
+        .bind(&exercise_id)
+        .bind(&user_id)
+        .fetch_one(pool)
         .await
         .map_err(ApiError::Database)?;
 
-    Ok(Json(exercise_out(&pool, &ex).await?))
+    Ok(exercise_out(pool, &ex).await?)
 }
 
 // ============================================================
@@ -458,11 +501,22 @@ pub async fn delete(
 ) -> Result<Json<serde_json::Value>, ApiError>
 {
     let pool = state.pool.read().await.clone();
+    // 【M9】协议无关逻辑抽到下方 exercise_delete（gRPC 服务复用同一份 SQL）
+    exercise_delete(&pool, user.id, id).await?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
 
+/// 协议无关实现（REST handler 与 M9 gRPC 服务共用）
+pub(crate) async fn exercise_delete(
+    pool: &SqlitePool,
+    user_id: i64,
+    exercise_id: i64,
+) -> Result<(), ApiError>
+{
     let ret = sqlx::query("DELETE FROM exercises WHERE id = ? AND user_id = ?")
-        .bind(&id)
-        .bind(&user.id)
-        .execute(&pool)
+        .bind(&exercise_id)
+        .bind(&user_id)
+        .execute(pool)
         .await
         .map_err(ApiError::Database)?;
 
@@ -471,5 +525,5 @@ pub async fn delete(
         return Err(ApiError::NotFound("动作不存在".to_string()));
     }
 
-    Ok(Json(serde_json::json!({ "ok": true })))
+    Ok(())
 }

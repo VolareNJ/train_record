@@ -27,6 +27,15 @@ pub struct AppConfig
 {
     /// 服务器监听端口。默认 8080
     pub port: u16,
+    /// 【M9 新增】gRPC 服务监听端口。默认 50051
+    ///
+    /// 【教学：为什么不复用 8080？】
+    /// 8080 上跑的是 axum（HTTP/1.1 + HTML/JSON）；gRPC 需要 HTTP/2 + 二进制帧。
+    /// 两者虽然都叫 HTTP，但协议细节与内容类型完全不同。
+    /// 分端口是 gRPC 的常规部署方式（同一端口多路复用属于进阶玩法，本项目不需要）。
+    /// 50051 是 gRPC 社区的"惯例端口"（类似 8080 之于 HTTP）。
+    /// 部署时若端口被占/被防火墙拦，用环境变量 GRPC_PORT 改即可。
+    pub grpc_port: u16,
     /// SQLite 数据库文件路径。默认 "train_record.db"
     /// 这个文件会自动创建，所有数据都存在里面
     pub database_path: String,
@@ -159,6 +168,12 @@ impl AppConfig
             .parse()
             .expect("PORT 必须是数字");
 
+        // 【M9】gRPC 端口：默认 50051（模式与 PORT 完全一致）
+        let grpc_port = read("GRPC_PORT")
+            .unwrap_or_else(|| "50051".to_string())
+            .parse()
+            .expect("GRPC_PORT 必须是数字");
+
         // 数据库路径：默认放在项目根目录的 train_record.db
         let database_path = read("DATABASE_PATH").unwrap_or_else(|| "train_record.db".to_string());
 
@@ -201,6 +216,7 @@ impl AppConfig
 
         Self {
             port,
+            grpc_port,
             database_path,
             session_secret,
             admin_username,
@@ -236,6 +252,8 @@ mod tests
         let config = AppConfig::from_reader(|_| None);
         // assert_eq! 是断言宏：如果两边不等就 panic，测试失败
         assert_eq!(config.port, 8080);
+        // M9：gRPC 端口默认 50051
+        assert_eq!(config.grpc_port, 50051);
         assert_eq!(config.database_path, "train_record.db");
         assert_eq!(config.session_secret, "dev-only-secret-change-me");
         // 新字段：管理员默认不自动创建（空字符串）
@@ -255,6 +273,7 @@ mod tests
         let config = AppConfig::from_reader(|name| match name
         {
             "PORT" => Some("9000".to_string()),
+            "GRPC_PORT" => Some("50052".to_string()),
             "DATABASE_PATH" => Some("/tmp/test.db".to_string()),
             "SESSION_SECRET" => Some("my-secret".to_string()),
             "ADMIN_USERNAME" => Some("admin".to_string()),
@@ -263,6 +282,7 @@ mod tests
             _ => None,
         });
         assert_eq!(config.port, 9000);
+        assert_eq!(config.grpc_port, 50052);
         assert_eq!(config.database_path, "/tmp/test.db");
         assert_eq!(config.session_secret, "my-secret");
         assert_eq!(config.admin_username, "admin");

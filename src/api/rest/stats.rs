@@ -21,10 +21,11 @@ use axum::{
     extract::{Path, Query, State},
 };
 use serde::{Deserialize, Serialize};
+use sqlx::SqlitePool;
 
 use crate::{
     AppState,
-    api::{ApiError, auth::ApiAuthUser},
+    api::{ApiError, rest::auth::ApiAuthUser},
     calc::epley_1rm,
     models::{Exercise, Record},
 };
@@ -80,16 +81,35 @@ pub async fn calendar(
 ) -> Result<Json<CalendarOut>, ApiError>
 {
     let pool = state.pool.read().await.clone();
+    // 【M9】协议无关逻辑抽到下方 calendar_view（gRPC 服务复用同一份 SQL）
+    Ok(Json(
+        calendar_view(
+            &pool,
+            user.id,
+            query.year.as_deref(),
+            query.month.as_deref(),
+        )
+        .await?,
+    ))
+}
 
+/// 协议无关实现（REST handler 与 M9 gRPC 服务共用）
+pub(crate) async fn calendar_view(
+    pool: &SqlitePool,
+    user_id: i64,
+    year: Option<&str>,
+    month: Option<&str>,
+) -> Result<CalendarOut, ApiError>
+{
     // 目标年月：参数优先，默认当前年月
     let now_ym =
         sqlx::query_scalar::<_, String>("SELECT strftime('%Y-%m', date('now','localtime'))")
-            .fetch_one(&pool)
+            .fetch_one(pool)
             .await
             .map_err(ApiError::Database)?;
 
-    let year = query.year.unwrap_or_else(|| now_ym[..4].to_string());
-    let month = query.month.unwrap_or_else(|| now_ym[5..7].to_string());
+    let year = year.unwrap_or(&now_ym[..4]).to_string();
+    let month = month.unwrap_or(&now_ym[5..7]).to_string();
 
     // 校验：年份 4 位数字、月份 2 位数字
     if year.len() != 4 || !year.chars().all(|c| c.is_ascii_digit())
@@ -109,17 +129,17 @@ pub async fn calendar(
         WHERE e.user_id = ? AND record_date LIKE ?
         ORDER BY record_date",
     )
-    .bind(&user.id)
+    .bind(&user_id)
     .bind(format!("{prefix}%"))
-    .fetch_all(&pool)
+    .fetch_all(pool)
     .await
     .map_err(ApiError::Database)?;
 
-    Ok(Json(CalendarOut {
+    Ok(CalendarOut {
         year,
         month,
         train_days,
-    }))
+    })
 }
 
 // ============================================================
@@ -172,9 +192,19 @@ pub async fn history_day(
 ) -> Result<Json<Vec<DayRecordOut>>, ApiError>
 {
     let pool = state.pool.read().await.clone();
+    // 【M9】协议无关逻辑抽到下方 day_records（gRPC 服务复用同一份 SQL）
+    Ok(Json(day_records(&pool, user.id, &date).await?))
+}
 
+/// 协议无关实现（REST handler 与 M9 gRPC 服务共用）
+pub(crate) async fn day_records(
+    pool: &SqlitePool,
+    user_id: i64,
+    date: &str,
+) -> Result<Vec<DayRecordOut>, ApiError>
+{
     // 日期格式校验
-    validate_date(&date)?;
+    validate_date(date)?;
 
     // 查该天记录（JOIN exercises 数据隔离）
     // 元组：(id, exercise_id, mode, weight, sets, reps, rest,
@@ -207,17 +237,17 @@ pub async fn history_day(
         WHERE e.user_id = ? AND r.record_date = ?
         ORDER BY e.sort_order ASC, r.id",
     )
-    .bind(&user.id)
-    .bind(&date)
-    .fetch_all(&pool)
+    .bind(&user_id)
+    .bind(date)
+    .fetch_all(pool)
     .await
     .map_err(ApiError::Database)?;
 
     // 动作名索引（id → 名字）
     let ex_names: std::collections::HashMap<i64, String> =
         sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE user_id = ?")
-            .bind(&user.id)
-            .fetch_all(&pool)
+            .bind(&user_id)
+            .fetch_all(pool)
             .await
             .map_err(ApiError::Database)?
             .into_iter()
@@ -265,7 +295,7 @@ pub async fn history_day(
         )
         .collect();
 
-    Ok(Json(out))
+    Ok(out)
 }
 
 // ============================================================
@@ -322,12 +352,22 @@ pub async fn exercise_stats(
 ) -> Result<Json<ExerciseStatsOut>, ApiError>
 {
     let pool = state.pool.read().await.clone();
+    // 【M9】协议无关逻辑抽到下方 exercise_stats_view（gRPC 服务复用同一份 SQL）
+    Ok(Json(exercise_stats_view(&pool, user.id, id).await?))
+}
 
+/// 协议无关实现（REST handler 与 M9 gRPC 服务共用）
+pub(crate) async fn exercise_stats_view(
+    pool: &SqlitePool,
+    user_id: i64,
+    exercise_id: i64,
+) -> Result<ExerciseStatsOut, ApiError>
+{
     // 归属验证
     let ex = sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE id = ? AND user_id = ?")
-        .bind(&id)
-        .bind(&user.id)
-        .fetch_optional(&pool)
+        .bind(&exercise_id)
+        .bind(&user_id)
+        .fetch_optional(pool)
         .await
         .map_err(ApiError::Database)?
         .ok_or_else(|| ApiError::NotFound("动作不存在".to_string()))?;
@@ -336,8 +376,8 @@ pub async fn exercise_stats(
     let records = sqlx::query_as::<_, Record>(
         "SELECT * FROM records WHERE exercise_id = ? ORDER BY record_date ASC, id ASC",
     )
-    .bind(&id)
-    .fetch_all(&pool)
+    .bind(&exercise_id)
+    .fetch_all(pool)
     .await
     .map_err(ApiError::Database)?;
 
@@ -356,7 +396,7 @@ pub async fn exercise_stats(
     // best_1rm：全记录 1RM 最大值（epley 无效输入返回 0.0，正好忽略）
     let best_1rm = recs_out.iter().map(|r| r.one_rm).fold(0.0f64, f64::max);
 
-    Ok(Json(ExerciseStatsOut {
+    Ok(ExerciseStatsOut {
         exercise: ExerciseBriefOut {
             id: ex.id,
             name: ex.name.clone(),
@@ -364,7 +404,7 @@ pub async fn exercise_stats(
         },
         records: recs_out,
         best_1rm,
-    }))
+    })
 }
 
 // ============================================================

@@ -208,11 +208,43 @@ async fn main()
         .parse()
         .expect("地址解析失败");
 
+    // --------------------------------------------------------
+    // 【M9 新增】gRPC 监听地址（第二个端口）
+    // --------------------------------------------------------
+    // 教学注释见 src/api/grpc/server.rs 顶部。
+    // 这里只负责"算地址"，真正的服务器组装在 api::grpc::server::serve 里。
+    let grpc_addr: std::net::SocketAddr = format!("0.0.0.0:{}", config.grpc_port)
+        .parse()
+        .expect("gRPC 地址解析失败");
+
     // 【教学：组装 AppState】
     // 把 pool 和 config 装进"公共储物柜"。之后所有 handler 共享。
     // 📌 阶段要求：M0 会用；M1 加字段时改这里和 struct 定义。
     // 🎯 验收：能说出 state 被 Router 拿去后，handler 怎么拿到它。
     let state = AppState { pool, config };
+
+    // --------------------------------------------------------
+    // 【M9 新增】启动 gRPC 服务器（与 HTTP 并行跑）
+    // --------------------------------------------------------
+    // 【教学：为什么用 tokio::spawn，而不是直接 .await？】
+    //   · 直接 await → 卡死在 gRPC 上，下面的 axum::serve 永远不会执行
+    //   · spawn      → 把 gRPC 服务器丢给 tokio 独立跑，两条服务并行
+    // tokio::spawn 要求任务 Send + 'static，所以传进去的 state 要 clone 一份：
+    //   AppState 内部是 Arc（连接池/配置），clone 只复制指针，两个服务器
+    //   共享同一个数据库连接池 —— 这正是我们想要的（同一个数据库、同一套业务）。
+    //
+    // ⚠️ 教学：gRPC 挂掉不影响网页版
+    // spawn 出去的任务 panic/报错时，**只会结束该任务**，不会带倒整个进程
+    // （tokio 的隔离保证）。这对本项目的意义：主战力是手机浏览器用的网页版，
+    // gRPC 是给桌面客户端（M10）的；即使 gRPC 端口被占，训练记录照样能记。
+    // 所以这里只把错误写日志，不 panic。
+    let grpc_state = state.clone();
+    tokio::spawn(async move {
+        if let Err(e) = api::grpc::server::serve(grpc_state, grpc_addr).await
+        {
+            tracing::error!("gRPC 服务退出: {e}");
+        }
+    });
 
     // --------------------------------------------------------
     // 3.5 确保管理员存在（M1 新增）
@@ -448,13 +480,13 @@ async fn main()
             get(handlers::stats::exercise_stats),
         )
         // ----------------------------------------------------------
-        // M8 新增：REST API 层（/api/v1，为 M9 iced GUI 铺路）
-        // 教学注释见 src/api/mod.rs 顶部
+        // M8 新增：REST API 层（/api/v1，为 M9 客户端铺路）
+        // 教学注释见 src/api/rest/mod.rs 顶部
         // ⚠️ 必须在 .with_state(state) 之前 merge：
         //    merge 要求两边 Router 状态一致（都是 Router<AppState>）
         //    with_state 后是 Router<()>（serve 需要），无法 merge
         // ----------------------------------------------------------
-        .merge(api::router())
+        .merge(api::rest::router())
         .with_state(state);
 
     // --------------------------------------------------------
