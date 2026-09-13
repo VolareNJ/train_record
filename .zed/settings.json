@@ -1,10 +1,10 @@
 // ============================================================
-// 项目级 Zed 设置（作用范围同 .vscode/settings.json）
+// 项目级 Zed 设置（本项目唯一的编辑器配置）
 //
 // 背景两条：
-// 1. Zed 只读这里（加上全局 ~/.config/zed/settings.json），
-//    不读 .vscode/settings.json，所以从 VS Code 迁过来后
-//    `rust-analyzer.checkOnSave.command = "clippy"` 那行就失效了。
+// 1. Zed 只读这里（加上全局 ~/.config/zed/settings.json），不读 .vscode/——
+//    原来那份 VS Code 配置里的 rust-analyzer.checkOnSave.command = "clippy"
+//    在 Zed 下等于没写，所以已随迁移删除（本文件承接了它的全部作用）。
 // 2. Zed 的 rust-analyzer 跑默认参数，即 check.command = "check"
 //    （cargo check），默认不显示任何 clippy 警告。
 // ============================================================
