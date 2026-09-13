@@ -5,7 +5,7 @@
 // M8 阶段本文件叫 `src/api/mod.rs`。M9 加 gRPC 出口后目录一分为二：
 //   api/rest/  ← 本文件所在（HTTP + JSON，M8）
 //   api/grpc/  ← 新增（HTTP/2 + Protobuf，M9）
-// 搬迁时**一行代码都没改**——`use crate::api::ApiError` 这类路径
+// 搬迁时**一行代码都没改**——`use crate::api::rest::ApiError` 这类路径
 // 由 `src/api/mod.rs` 里的 `pub use rest::ApiError;` 转发兜住（零改动原则）。
 //
 // 【教学说明】
@@ -37,9 +37,14 @@
 // M9 的 gRPC 服务实现**直接调这些函数**（M8 §2.5 说的"先复制，后抽取"兑现）。
 // 判断标准：函数签名里只有 pool / user_id / 业务参数，没有 axum 类型。
 //
-// 📌 阶段要求：M8 你来实现本文件所有函数与 ApiError。
+//  阶段要求：M8 你来实现本文件所有函数与 ApiError。
 //   完整实现已备份在 docs/learning_path/M8_ref/，实现完成后对照检查。
 // ============================================================
+
+// 【项目约定（M9 起）：全路径，不用 use 做便利导入】
+// 类型/函数一律写全路径（含本文件的 ApiError → 调用方写 crate::api::rest::ApiError）；
+// trait 实现直接限定路径（impl axum::response::IntoResponse for ApiError），
+// 所以本文件连一个 use 都不需要。
 
 // ============================================================
 // 【教学：为什么 API 层需要自己的错误类型 ApiError？】
@@ -60,15 +65,6 @@
 // 我们让 ApiError 实现它，handler 里 return Err(ApiError::NotFound(...))
 // axum 就知道把错误转成 HTTP 响应返回给客户端。
 // ============================================================
-use axum::{
-    Json, Router,
-    http::StatusCode,
-    response::{IntoResponse, Response},
-    routing::{get, patch, post},
-};
-use serde_json::json;
-
-use crate::AppState;
 
 // ============================================================
 // 【教学：ApiError —— API 层统一错误类型】
@@ -108,9 +104,9 @@ pub enum ApiError
     Other(String),
 }
 
-impl IntoResponse for ApiError
+impl axum::response::IntoResponse for ApiError
 {
-    fn into_response(self) -> Response
+    fn into_response(self) -> axum::response::Response
     {
         // 【教学：match 拆解错误 → (状态码, 消息) 元组】
         // 状态码决定 HTTP 语义，消息决定 JSON body 内容。
@@ -120,19 +116,22 @@ impl IntoResponse for ApiError
             ApiError::Database(e) =>
             {
                 tracing::error!("API 数据库错误: {e}");
-                (StatusCode::INTERNAL_SERVER_ERROR, "数据库错误".to_string())
+                (
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    "数据库错误".to_string(),
+                )
             },
             // 未登录：明确告诉程序"你没登录"
-            ApiError::Unauthorized => (StatusCode::UNAUTHORIZED, "未登录".to_string()),
-            ApiError::NotFound(msg) => (StatusCode::NOT_FOUND, msg),
-            ApiError::Validation(msg) => (StatusCode::BAD_REQUEST, msg),
-            ApiError::Forbidden(msg) => (StatusCode::FORBIDDEN, msg),
-            ApiError::Other(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
+            ApiError::Unauthorized => (axum::http::StatusCode::UNAUTHORIZED, "未登录".to_string()),
+            ApiError::NotFound(msg) => (axum::http::StatusCode::NOT_FOUND, msg),
+            ApiError::Validation(msg) => (axum::http::StatusCode::BAD_REQUEST, msg),
+            ApiError::Forbidden(msg) => (axum::http::StatusCode::FORBIDDEN, msg),
+            ApiError::Other(msg) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, msg),
         };
         // 【教学：关键 —— 返回 JSON 而不是 302！】
         // (status, Json(...)) 元组也实现了 IntoResponse，
         // axum 自动把 Json 序列化成 body，status 设成状态码。
-        (status, Json(json!({ "error": message }))).into_response()
+        (status, axum::Json(serde_json::json!({ "error": message }))).into_response()
     }
 }
 
@@ -158,35 +157,44 @@ pub mod plans;
 pub mod records;
 pub mod stats;
 
-pub fn router() -> Router<AppState>
+pub fn router() -> axum::Router<crate::AppState>
 {
-    Router::new()
+    axum::Router::new()
         // ----------------------------------------------------------
         // 第 2 步：认证 API（src/api/auth.rs）
         // ----------------------------------------------------------
-        .route("/api/v1/login", post(auth::login))
-        .route("/api/v1/logout", post(auth::logout))
-        .route("/api/v1/me", get(auth::me))
+        .route("/api/v1/login", axum::routing::post(auth::login))
+        .route("/api/v1/logout", axum::routing::post(auth::logout))
+        .route("/api/v1/me", axum::routing::get(auth::me))
         // ----------------------------------------------------------
         // 第 3 步：阶段 API（src/api/phases.rs）
         // ----------------------------------------------------------
-        .route("/api/v1/phases", get(phases::list).post(phases::create))
+        .route(
+            "/api/v1/phases",
+            axum::routing::get(phases::list).post(phases::create),
+        )
         .route(
             "/api/v1/phases/{id}",
-            get(phases::detail).patch(phases::update),
+            axum::routing::get(phases::detail).patch(phases::update),
         )
-        .route("/api/v1/phases/{id}/archive", post(phases::archive))
-        .route("/api/v1/phases/{id}/unarchive", post(phases::unarchive))
+        .route(
+            "/api/v1/phases/{id}/archive",
+            axum::routing::post(phases::archive),
+        )
+        .route(
+            "/api/v1/phases/{id}/unarchive",
+            axum::routing::post(phases::unarchive),
+        )
         // ----------------------------------------------------------
         // 第 4 步：动作库 API（src/api/exercises.rs）
         // ----------------------------------------------------------
         .route(
             "/api/v1/exercises",
-            get(exercises::list).post(exercises::create),
+            axum::routing::get(exercises::list).post(exercises::create),
         )
         .route(
             "/api/v1/exercises/{id}",
-            get(exercises::detail)
+            axum::routing::get(exercises::detail)
                 .patch(exercises::update)
                 .delete(exercises::delete),
         )
@@ -195,39 +203,45 @@ pub fn router() -> Router<AppState>
         // ----------------------------------------------------------
         .route(
             "/api/v1/phases/{phase_id}/templates",
-            get(plans::template_list).post(plans::template_create),
+            axum::routing::get(plans::template_list).post(plans::template_create),
         )
         .route(
             "/api/v1/templates/{id}",
-            patch(plans::template_update).delete(plans::template_delete),
+            axum::routing::patch(plans::template_update).delete(plans::template_delete),
         )
         .route(
             "/api/v1/phases/{phase_id}/plans",
-            get(plans::plan_list).post(plans::plan_create),
+            axum::routing::get(plans::plan_list).post(plans::plan_create),
         )
         .route(
             "/api/v1/plans/{id}",
-            get(plans::plan_detail)
+            axum::routing::get(plans::plan_detail)
                 .patch(plans::plan_update)
                 .delete(plans::plan_delete),
         )
         // ----------------------------------------------------------
         // 第 6 步：记录 API（src/api/records.rs）
         // ----------------------------------------------------------
-        .route("/api/v1/today", get(records::today))
+        .route("/api/v1/today", axum::routing::get(records::today))
         .route(
             "/api/v1/plans/{plan_id}/items/{item_id}/records",
-            post(records::upsert_record),
+            axum::routing::post(records::upsert_record),
         )
-        .route("/api/v1/records", get(records::list_by_date))
+        .route("/api/v1/records", axum::routing::get(records::list_by_date))
         .route(
             "/api/v1/records/{id}",
-            patch(records::update_record).delete(records::delete_record),
+            axum::routing::patch(records::update_record).delete(records::delete_record),
         )
         // ----------------------------------------------------------
         // 第 7 步：统计 API（src/api/stats.rs）
         // ----------------------------------------------------------
-        .route("/api/v1/history", get(stats::calendar))
-        .route("/api/v1/history/{date}", get(stats::history_day))
-        .route("/api/v1/exercises/{id}/stats", get(stats::exercise_stats))
+        .route("/api/v1/history", axum::routing::get(stats::calendar))
+        .route(
+            "/api/v1/history/{date}",
+            axum::routing::get(stats::history_day),
+        )
+        .route(
+            "/api/v1/exercises/{id}/stats",
+            axum::routing::get(stats::exercise_stats),
+        )
 }

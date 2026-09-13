@@ -26,15 +26,9 @@
 // 这是 Rust 错误处理的核心机制：**`?` 遇到类型不匹配时，自动尝试 From 转换**。
 // 所以只要这里有 impl From<ApiError> for Status，service 里就能一路 `?` 到底。
 //
-// ⚠️ 注意：`?` 的自动转换只在"函数返回 Result<_, Status>"时生效——
+//  注意：`?` 的自动转换只在"函数返回 Result<_, Status>"时生效——
 // 而 tonic 生成的方法正是返回 Result<_, Status>，所以完美契合。
 // ============================================================
-
-use crate::api::ApiError;
-use tonic::Status;
-// ⚠️ 挖空练习期间 From 实现还没写，Code 暂时无用；实现完删掉这行 allow。
-#[allow(unused_imports)]
-use tonic::Code;
 
 // ============================================================
 // 【教学：Message 该给客户端看什么？】
@@ -45,11 +39,11 @@ use tonic::Code;
 //     统一换成"数据库错误"，细节写进服务器日志（tracing::error!）——
 //     与 M8 的 ApiError::Database 处理方式完全一致。
 // ============================================================
-impl From<ApiError> for Status
+impl From<crate::api::rest::ApiError> for tonic::Status
 {
-    // ⚠️ 挖空练习期间加 allow 消除 unused 警告，实现完成后可删
+    // 挖空练习期间加 allow 消除 unused 警告，实现完成后可删
     #[allow(unused)]
-    fn from(err: ApiError) -> Self
+    fn from(err: crate::api::rest::ApiError) -> Self
     {
         // 【实现步骤】
         // 1. match err，把 6 个变体各自映射成 (Code, message)：

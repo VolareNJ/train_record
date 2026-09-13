@@ -6,7 +6,7 @@
 //     /static/ 开头 → Cache-first（静态资源不变，命中直接返回）
 //     其余 GET    → Network-first（先网络，成功存缓存；失败回缓存）
 //
-// ⚠️ M6 实际验证发现的两个坑：
+// M6 实际验证发现的两个坑：
 //   1. 注册必须显式 { scope: '/' }，否则 SW 只管 /static/ 管不到页面导航
 //   2. 光有 fetch 缓存不够——首次注册的页面还没被 SW 控制，
 //      导航请求从未经过 SW 就进不了缓存；必须 install 时 addAll 预缓存
@@ -34,7 +34,7 @@ self.addEventListener('activate', (e) => {
             Promise.all(
                 keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))
             )
-        )
+            )
     );
     self.clients.claim();
 });
@@ -53,26 +53,26 @@ function cacheFirst(e) {
             })
             .catch(() => Response.error())
     );
-}
+                }
 
 // Network-first：页面（内容会变，优先网络，失败回缓存）
 function networkFirst(e) {
     return fetch(e.request)
-        .then((resp) => {
-            if (resp.ok || resp.type === 'opaque') {
-                const copy = resp.clone();
-                caches.open(CACHE).then((c) => c.put(e.request, copy));
-            }
-            return resp;
-        })
+            .then((resp) => {
+                if (resp.ok || resp.type === 'opaque') {
+                    const copy = resp.clone();
+                    caches.open(CACHE).then((c) => c.put(e.request, copy));
+                }
+                return resp;
+            })
         .catch(() =>
             caches.match(e.request).then((hit) =>
-                hit ||
+        hit ||
                 // 离线且未命中：导航请求回退到预缓存的 today 页
                 (e.request.mode === 'navigate' ? caches.match('/today') : Response.error())
             )
-        );
-}
+    );
+                }
 
 self.addEventListener('fetch', (e) => {
     if (e.request.method !== 'GET') return;
@@ -84,5 +84,5 @@ self.addEventListener('fetch', (e) => {
         e.respondWith(cacheFirst(e));
     } else {
         e.respondWith(networkFirst(e));
-    }
+                }
 });

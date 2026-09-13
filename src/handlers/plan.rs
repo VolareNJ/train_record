@@ -24,7 +24,7 @@
 //   POST /plans/{id}/delete                  → 删除计划（plan_delete）
 //   POST /plans/{id}/items/{item_id}/move    → 计划项上移/下移（plan_item_move）【M4 修订】
 //
-// 📌 阶段要求：M3 你来实现本文件所有函数。
+//  阶段要求：M3 你来实现本文件所有函数。
 //   实现完成后对照检查（完整实现备份在 docs/learning_path/M3_ref/）。
 // ============================================================
 
@@ -34,23 +34,9 @@
 //   - Template / TemplateItem / Plan / PlanItem：models.rs 里 M2 就建好的模型
 //   - 注意：本文件同时用到"阶段下查模板"（带 phase_id）和
 //     "按模板 id 操作"（不带 phase_id）两种路由，参数来源不同
-use axum::{
-    extract::{Form, Path, Query, State},
-    response::{Html, Redirect},
-};
-use serde::Deserialize;
-use sqlx::SqlitePool;
-use std::collections::{HashMap, HashSet};
-
-use crate::{
-    AppState,
-    error::AppError,
-    handlers::{auth::AuthUser, stats::CalQuery},
-    models::{Exercise, Phase, Plan, PlanItem, Template, TemplateItem, group_by_body_part},
-};
 
 // ============================================================
-// 【教学：从"单表 CRUD"到"父子表 CRUD"的跨越】★ 本阶段核心
+// 【教学：从"单表 CRUD"到"父子表 CRUD"的跨越】 本阶段核心
 // ============================================================
 // M2 的阶段/动作都是"单表"：一个 handler 只操作一张表。
 // M3 的模板/计划都是"父子表"：
@@ -70,14 +56,14 @@ use crate::{
 // ============================================================
 // 需求：表单页的"部位筛选"下拉框选中某部位后，只显示该部位的动作行。
 //
-// ⚠️【踩坑：筛选后"表格不连续"（空白行）】
+// 【踩坑：筛选后"表格不连续"（空白行）】
 // 早期版本每行是 <label>...</label><br>：JS 把 label 设 display:none，
 // 但 <br> 是 label 的**兄弟节点**（在 label 外面），隐藏 label 后 <br> 仍占位，
 // 于是中间出现一排排空行，筛选结果看起来"断断续续"。
-// ✅ 修复：每行用块级 <div class="ex-row"> 包裹（div 自身换行），
+//  修复：每行用块级 <div class="ex-row"> 包裹（div 自身换行），
 // JS 隐藏整个 div → 不留任何残留空白，列表连续。
 //
-// ⚠️【踩坑：筛选后隐藏行里的输入框仍会提交】
+// 【踩坑：筛选后隐藏行里的输入框仍会提交】
 // display:none 的元素依然在 form 里，其 name/value 照常提交。
 // 对模板/计划创建页没问题（未勾选动作本来就不提交勾选标记）。
 // 但**编辑计划页**的详情编辑框（mode_{id}/rest_{id}/...）是每行都渲染的，
@@ -156,31 +142,33 @@ use crate::{
 /// 3. 查模板：SELECT * FROM templates WHERE phase_id = ?
 /// 4. 拼 HTML：表格列出模板名 + 操作链接（编辑/删除/查看计划入口）
 pub async fn list_templates(
-    State(state): State<AppState>,
-    AuthUser(user): AuthUser,
-    Path(phase_id): Path<i64>,
-) -> Result<Html<String>, AppError>
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    crate::handlers::auth::AuthUser(user): crate::handlers::auth::AuthUser,
+    axum::extract::Path(phase_id): axum::extract::Path<i64>,
+) -> Result<axum::response::Html<String>, crate::error::AppError>
 {
     let pool = state.pool.read().await.clone();
     // ① 两级验证：阶段必须属于当前用户（数据隔离底线）
-    //    ⚠️【M7 批改：这里不能加 ORDER BY sort_order！
+    //    【M7 批改：这里不能加 ORDER BY sort_order！
     //    phases 表没有 sort_order 列（sort_order 是 templates/template_items/
     //    plan_items/exercises 的列），且单行查询（WHERE id=?）排序无意义——
     //    学生第 2 项把 ORDER BY 加在这里 → 模板列表页直接报
     //    "no such column: sort_order" 数据库错误。
     //    正确的"模板列表排序"在 ③ 的 templates 查询里（M4 已有 ORDER BY）。】
-    let phase_ret = sqlx::query_as::<_, Phase>("SELECT * FROM phases WHERE id = ? AND user_id = ?")
-        .bind(&phase_id)
-        .bind(&user.id)
-        .fetch_optional(&pool)
-        .await
-        .map_err(AppError::Database)?
-        .ok_or_else(|| AppError::NotFound("No such phase in your profile".to_string()))?;
+    let phase_ret = sqlx::query_as::<_, crate::models::Phase>(
+        "SELECT * FROM phases WHERE id = ? AND user_id = ?",
+    )
+    .bind(&phase_id)
+    .bind(&user.id)
+    .fetch_optional(&pool)
+    .await
+    .map_err(crate::error::AppError::Database)?
+    .ok_or_else(|| crate::error::AppError::NotFound("No such phase in your profile".to_string()))?;
 
     // ② 归档阶段显示"只读"提示（M3 指南 §2.4：归档 = 只读，不能建/改）
     let archived_note = if phase_ret.archived
     {
-        "<p style=\"color:red\">⚠️ 该阶段已归档，只读（不能新建/编辑/删除模板）</p>"
+        "<p style=\"color:red\"> 该阶段已归档，只读（不能新建/编辑/删除模板）</p>"
     }
     else
     {
@@ -193,13 +181,13 @@ pub async fn list_templates(
     //     handler 在同一阶段内交换相邻模板的 sort_order。
     //     操作链接用表单 POST（删除是改数据，不能用 GET 链接）
     //     【M7 第 4 步：空态 —— 无模板 → 表格里显示友好提示行】
-    let template_vec = sqlx::query_as::<_, Template>(
+    let template_vec = sqlx::query_as::<_, crate::models::Template>(
         "SELECT * FROM templates WHERE phase_id = ? ORDER BY sort_order, id",
     )
     .bind(&phase_ret.id)
     .fetch_all(&pool)
     .await
-    .map_err(AppError::Database)?;
+    .map_err(crate::error::AppError::Database)?;
 
     let template_ret = if template_vec.is_empty()
     {
@@ -232,7 +220,7 @@ pub async fn list_templates(
     };
 
     // ④ 拼页面（注意：r#"... "# 内部不能再出现裸引号，否则会渲染到页面）
-    Ok(Html(format!(
+    Ok(axum::response::Html(format!(
         r#"
                 {head}
                 <h2>训练模板</h2>
@@ -258,11 +246,11 @@ pub async fn list_templates(
 /// 【教学：多选（checkbox）表单】
 /// 一个模板包含多个动作，表单里每个动作一个勾选框。
 ///
-/// ⚠️ 关键陷阱：checkbox 的 name **不能都用 exercise_ids**！
+///  关键陷阱：checkbox 的 name **不能都用 exercise_ids**！
 /// axum 的 Form 用 serde_urlencoded 解析（map 语义）：重复键后值覆盖前值，
 /// 实测 `exercise_ids=6&exercise_ids=7` 只剩 7，且 `Vec<i64>` 会 422。
 ///
-/// ✅ 正确做法（本项目采用）：
+///  正确做法（本项目采用）：
 ///   name = 动作 id（唯一键），value = "1"（勾选标记）
 ///   <input type="checkbox" name="{id}" value="1">
 /// 提交后形如：name=模板名&6=1&7=1
@@ -274,34 +262,37 @@ pub async fn list_templates(
 /// 3. 查全部动作：SELECT * FROM exercises WHERE user_id = ?（供勾选）
 /// 4. 拼 HTML：表单 + 动作勾选列表（checkbox）+ 提交按钮
 pub async fn template_create_form(
-    State(state): State<AppState>,
-    AuthUser(user): AuthUser,
-    Path(phase_id): Path<i64>,
-) -> Result<Html<String>, AppError>
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    crate::handlers::auth::AuthUser(user): crate::handlers::auth::AuthUser,
+    axum::extract::Path(phase_id): axum::extract::Path<i64>,
+) -> Result<axum::response::Html<String>, crate::error::AppError>
 {
     let pool = state.pool.read().await.clone();
 
     // ① 两级验证：阶段必须属于当前用户
-    let phase_ret = sqlx::query_as::<_, Phase>("SELECT * FROM phases WHERE id = ? AND user_id = ?")
-        .bind(&phase_id)
-        .bind(&user.id)
-        .fetch_optional(&pool)
-        .await
-        .map_err(AppError::Database)?
-        .ok_or_else(|| AppError::NotFound("No such phase in your profile".to_string()))?;
+    let phase_ret = sqlx::query_as::<_, crate::models::Phase>(
+        "SELECT * FROM phases WHERE id = ? AND user_id = ?",
+    )
+    .bind(&phase_id)
+    .bind(&user.id)
+    .fetch_optional(&pool)
+    .await
+    .map_err(crate::error::AppError::Database)?
+    .ok_or_else(|| crate::error::AppError::NotFound("No such phase in your profile".to_string()))?;
 
     // ② 查全部动作 → checkbox 行（name = 动作 id，value = 1）
-    let all_exercises = sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE user_id = ?")
-        .bind(&user.id)
-        .fetch_all(&pool)
-        .await
-        .map_err(AppError::Database)?;
+    let all_exercises =
+        sqlx::query_as::<_, crate::models::Exercise>("SELECT * FROM exercises WHERE user_id = ?")
+            .bind(&user.id)
+            .fetch_all(&pool)
+            .await
+            .map_err(crate::error::AppError::Database)?;
 
     // ②b 部位筛选下拉框选项：从动作列表去重生成（"全部"用空串表示）
     let mut part_list: Vec<String> = all_exercises
         .iter()
         .map(|ex| ex.body_part.clone())
-        .collect::<HashSet<String>>()
+        .collect::<std::collections::HashSet<String>>()
         .into_iter()
         .collect();
     part_list.sort();
@@ -312,9 +303,9 @@ pub async fn template_create_form(
         .join("\n");
 
     let checkbox_rows = all_exercises
-        .iter()
+            .iter()
         .map(|ex| {
-            format!(
+                format!(
                 // checkbox 的 name 用动作 id（唯一键），value=1（勾选标记）
                 // 不能用 name="exercise_ids" 重复键——serde_urlencoded 会覆盖
                 // class="ex-row"：块级 div 整行，JS 按部位隐藏时不残留空行
@@ -323,15 +314,15 @@ pub async fn template_create_form(
                 part = ex.body_part,
                 id = ex.id,
                 name = ex.name
-            )
-        })
-        .collect::<Vec<String>>()
+    )
+            })
+            .collect::<Vec<String>>()
         .join("\n");
 
     // ③ 拼表单
-    Ok(Html(format!(
+    Ok(axum::response::Html(format!(
         r#"
-        {head}
+                {head}
         <h2>创建训练模板</h2>
         <form method="post" action="/phases/{phase_id}/templates">
             模板名：<input name="name"><br>
@@ -349,7 +340,7 @@ pub async fn template_create_form(
         <script>
             {javascript}
         </script>
-        "#,
+            "#,
         head = crate::page::page_head("创建训练模板"),
         phase_id = phase_ret.id,
         part_options = part_options,
@@ -359,7 +350,7 @@ pub async fn template_create_form(
                 document.querySelectorAll('#' + listId + ' .ex-row').forEach(function(row){
                     row.style.display = (part === '' || row.getAttribute('data-part') === part) ? '' : 'none';
                 });
-                }
+    }
                 filterByPart('exercise_list');"#
     )))
 }
@@ -386,34 +377,37 @@ pub async fn template_create_form(
 /// checkbox name = 动作 id（唯一键）、value = "1"，#[serde(flatten)] 收 HashMap，
 /// exercise_ids() 方法按"能 parse 成 i64 的键"过滤（serde_urlencoded 多选陷阱，见 todo.md §2.1）
 pub async fn template_create(
-    State(state): State<AppState>,
-    AuthUser(user): AuthUser,
-    Path(phase_id): Path<i64>,
-    Form(form): Form<TemplateCreateForm>,
-) -> Result<Redirect, AppError>
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    crate::handlers::auth::AuthUser(user): crate::handlers::auth::AuthUser,
+    axum::extract::Path(phase_id): axum::extract::Path<i64>,
+    axum::extract::Form(form): axum::extract::Form<TemplateCreateForm>,
+) -> Result<axum::response::Redirect, crate::error::AppError>
 {
     let pool = state.pool.read().await.clone();
 
     // ① 验证阶段属于当前用户 + 未归档
-    let target_phase =
-        sqlx::query_as::<_, Phase>("SELECT * FROM phases WHERE id = ? AND user_id = ?")
-            .bind(&phase_id)
-            .bind(&user.id)
-            .fetch_optional(&pool)
-            .await
-            .map_err(AppError::Database)?
-            .ok_or_else(|| AppError::NotFound("No such phase in your profile".to_string()))?;
+    let target_phase = sqlx::query_as::<_, crate::models::Phase>(
+        "SELECT * FROM phases WHERE id = ? AND user_id = ?",
+    )
+    .bind(&phase_id)
+    .bind(&user.id)
+    .fetch_optional(&pool)
+    .await
+    .map_err(crate::error::AppError::Database)?
+    .ok_or_else(|| crate::error::AppError::NotFound("No such phase in your profile".to_string()))?;
 
     if target_phase.archived
     {
-        return Err(AppError::Forbidden(
+        return Err(crate::error::AppError::Forbidden(
             "Can not edit archived phase".to_string(),
         ));
     }
 
     if form.exercise_ids().is_empty()
     {
-        return Err(AppError::Validation("至少选择一个动作".to_string()));
+        return Err(crate::error::AppError::Validation(
+            "至少选择一个动作".to_string(),
+        ));
     }
 
     let next_sort = sqlx::query_scalar::<_, i64>(
@@ -423,7 +417,10 @@ pub async fn template_create(
     .fetch_one(&pool)
     .await?;
 
-    let mut tx = pool.begin().await.map_err(AppError::Database)?;
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(crate::error::AppError::Database)?;
 
     let template_id = sqlx::query_scalar::<_, i64>(
         "INSERT INTO templates
@@ -435,7 +432,7 @@ pub async fn template_create(
     .bind(next_sort)
     .fetch_one(&mut *tx)
     .await
-    .map_err(AppError::Database)?;
+    .map_err(crate::error::AppError::Database)?;
 
     // form.exercise_ids 是 HashMap<String, String>（flatten 收集的勾选键值对）
     // checkbox name = 动作 id，值 = "1"（勾选标记）
@@ -444,7 +441,7 @@ pub async fn template_create(
     // 【M5 第 6 步打磨项：空动作校验（todo.md §1.2）】
     // 一个动作都不勾选 → ex_ids 为空 Vec → 生成"空壳模板"（0 个 template_items）。
     // 这里加校验：空 → 返回 Validation 错误"至少选择一个动作"。
-    // ⚠️ 校验要在开事务之前（tx 已 begin 了就在这之前判断——检查上面
+    //  校验要在开事务之前（tx 已 begin 了就在这之前判断——检查上面
     // 事务 begin 的位置，把校验挪到 begin 之前更干净：既省连接又避免空事务）。
     // 提示：ex_ids.is_empty() 判断即可。
 
@@ -458,12 +455,16 @@ pub async fn template_create(
         .bind(idx as i64) // ← usize 必须转 i64
         .execute(&mut *tx) // ← 事务要 &mut *tx（Transaction 可变解引用）
         .await
-        .map_err(AppError::Database)?;
+        .map_err(crate::error::AppError::Database)?;
     }
 
-    tx.commit().await.map_err(AppError::Database)?;
+    tx.commit()
+        .await
+        .map_err(crate::error::AppError::Database)?;
 
-    Ok(Redirect::to(&format!("/phases/{phase_id}/templates")))
+    Ok(axum::response::Redirect::to(&format!(
+        "/phases/{phase_id}/templates"
+    )))
 }
 
 // ============================================================
@@ -486,16 +487,16 @@ pub async fn template_create(
 ///    + ↑↓ + 删除）+ 添加动作区 + 保存
 ///    动作数据嵌入 JSON（EX_OPTIONS），JS 的 addRow 克隆行模板
 pub async fn template_edit_form(
-    State(state): State<AppState>,
-    AuthUser(user): AuthUser,
-    Path(template_id): Path<i64>,
-) -> Result<Html<String>, AppError>
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    crate::handlers::auth::AuthUser(user): crate::handlers::auth::AuthUser,
+    axum::extract::Path(template_id): axum::extract::Path<i64>,
+) -> Result<axum::response::Html<String>, crate::error::AppError>
 {
     let pool = state.pool.read().await.clone();
 
     // ① 查模板 + 验证归属：JOIN phases 一次性把 user_id 也取出来
     //    模板不属于当前用户 → NotFound（数据隔离）
-    let current_template = sqlx::query_as::<_, Template>(
+    let current_template = sqlx::query_as::<_, crate::models::Template>(
         "SELECT t.* FROM templates t INNER JOIN phases p ON t.phase_id = p.id
     WHERE t.id = ? AND p.user_id = ?",
     )
@@ -503,31 +504,35 @@ pub async fn template_edit_form(
     .bind(&user.id)
     .fetch_optional(&pool)
     .await
-    .map_err(AppError::Database)?
-    .ok_or_else(|| AppError::NotFound("No template found in such user and phase".to_string()))?;
+    .map_err(crate::error::AppError::Database)?
+    .ok_or_else(|| {
+        crate::error::AppError::NotFound("No template found in such user and phase".to_string())
+    })?;
 
     // ② 查模板已有的动作项（带 item id，供上移/下移路由用）
-    let current_items = sqlx::query_as::<_, TemplateItem>(
+    let current_items = sqlx::query_as::<_, crate::models::TemplateItem>(
         "SELECT * FROM template_items WHERE template_id = ? ORDER BY sort_order, id",
     )
     .bind(&template_id)
     .fetch_all(&pool)
     .await
-    .map_err(AppError::Database)?;
+    .map_err(crate::error::AppError::Database)?;
 
     // ③ 查【全部】动作（供下拉框 + 表格行名 + JSON）
-    let all_exercises = sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE user_id = ?")
-        .bind(&user.id)
-        .fetch_all(&pool)
-        .await
-        .map_err(AppError::Database)?;
-    let ex_map: HashMap<i64, Exercise> = all_exercises.iter().map(|e| (e.id, e.clone())).collect();
+    let all_exercises =
+        sqlx::query_as::<_, crate::models::Exercise>("SELECT * FROM exercises WHERE user_id = ?")
+            .bind(&user.id)
+            .fetch_all(&pool)
+            .await
+            .map_err(crate::error::AppError::Database)?;
+    let ex_map: std::collections::HashMap<i64, crate::models::Exercise> =
+        all_exercises.iter().map(|e| (e.id, e.clone())).collect();
 
     // ③b 部位下拉框选项（从动作列表去重，动态生成）
     let mut part_list: Vec<String> = all_exercises
         .iter()
         .map(|ex| ex.body_part.clone())
-        .collect::<HashSet<String>>()
+        .collect::<std::collections::HashSet<String>>()
         .into_iter()
         .collect();
     part_list.sort();
@@ -559,7 +564,7 @@ pub async fn template_edit_form(
     //     每组渲染一行 <tr class="group-header" data-part="部位"> 作分节标题，
     //     后跟本组行 —— 单表格内分区，JS addRow 只需在组头行后插入（见下）。
     let raw_rows = current_items
-        .iter()
+            .iter()
         .enumerate()
         .map(|(idx, item)| {
             let ex = ex_map.get(&item.exercise_id);
@@ -588,22 +593,23 @@ pub async fn template_edit_form(
                 order = idx,
             );
             (part, row)
-        })
+            })
         .collect::<Vec<_>>();
     // 分组渲染：组头行 + 组内行（colspan = 3 列）
     // 【M4 修订：组间顺序来自配置 AppConfig.body_part_order（环境变量可配）】
-    let item_rows = group_by_body_part(raw_rows.into_iter(), &state.config.body_part_order)
-        .iter()
-        .map(|(part, rows)| {
-            format!(
-                r#"<tr class="group-header" data-part="{part}"><td colspan="3">{part}</td></tr>
+    let item_rows =
+        crate::models::group_by_body_part(raw_rows.into_iter(), &state.config.body_part_order)
+            .iter()
+            .map(|(part, rows)| {
+                format!(
+                    r#"<tr class="group-header" data-part="{part}"><td colspan="3">{part}</td></tr>
 {rows}"#,
-                part = part,
-                rows = rows.join("\n"),
-            )
-        })
-        .collect::<Vec<String>>()
-        .join("\n");
+                    part = part,
+                    rows = rows.join("\n"),
+                )
+            })
+            .collect::<Vec<String>>()
+            .join("\n");
 
     // ③e 动作数据 JSON（JS 添加动作时用：名称/部位/默认组次）
     //     serde_json 序列化：动作名可能含引号等特殊字符，必须 JSON 转义
@@ -618,11 +624,11 @@ pub async fn template_edit_form(
         })
         .collect::<Vec<_>>();
     let ex_data_json = serde_json::to_string(&ex_data_json)
-        .map_err(|_| AppError::Validation("动作数据序列化失败".to_string()))?;
+        .map_err(|_| crate::error::AppError::Validation("动作数据序列化失败".to_string()))?;
 
     // ③f 部位顺序 JSON（JS 动态组头按配置顺序插入，与后端 group_by_body_part 一致）
     let body_part_order_json = serde_json::to_string(&state.config.body_part_order)
-        .map_err(|_| AppError::Validation("部位顺序序列化失败".to_string()))?;
+        .map_err(|_| crate::error::AppError::Validation("部位顺序序列化失败".to_string()))?;
 
     // ④ 拼表单：
     //    - action 指向编辑提交地址 /templates/{template_id}/edit（不是创建页！）
@@ -632,16 +638,16 @@ pub async fn template_edit_form(
     //    - 每行 ↑↓：表单用 form 属性关联外部隐藏 form（避免 form 嵌套）
     //    【M4 修订：单表格 + 组头行分组；JS 用 PART_HEADER_MAP 记录
     //      "部位 → 组头行 id"，addRow 新行插到对应组头行之后】
-    Ok(Html(format!(
+    Ok(axum::response::Html(format!(
         r#"
-        {head}
+                {head}
         <h2>编辑训练模板</h2>
         <form method="post" action="/templates/{template_id}/edit">
             模板名：<input name="name" value="{name}" required><br>
             <table border="1">
                 <tr><th>动作</th><th>排序</th><th>操作</th></tr>
                 {item_rows}
-            </table>
+                    </table>
             <button type="submit">保存</button>
         </form>
         <p>添加动作：
@@ -662,7 +668,7 @@ pub async fn template_edit_form(
                     if (String(EX_DATA[i].id) === String(id)) return EX_DATA[i];
                 }}
                 return null;
-            }}
+                }}
             /* 上移/下移：页面级动态 form（不能直接嵌 <tr> 里，HTML 解析器会忽略） */
             function submitMove(url) {{
                 var f = document.createElement('form');
@@ -671,13 +677,13 @@ pub async fn template_edit_form(
                 f.style.display = 'none';
                 document.body.appendChild(f);
                 f.submit();
-            }}
+                }}
             function filterExByPart() {{
                 var part = document.getElementById('part-select').value;
                 document.querySelectorAll('#ex-select option').forEach(function(opt) {{
                     opt.style.display = (part === '' || opt.getAttribute('data-part') === part) ? '' : 'none';
                 }});
-            }}
+                }}
             /* 部位 → 组头行 id：addRow 插行时定位目标组 */
             /* 【M4 修订：部位标准顺序】动态添加"新部位"时组头也按
                配置顺序（BODY_PART_ORDER 环境变量，默认腿→背→胸→核心→手臂→肩）
@@ -686,14 +692,14 @@ pub async fn template_edit_form(
             function partRank(p) {{
                 var i = PART_ORDER.indexOf(p);
                 return i === -1 ? PART_ORDER.length : i;
-            }}
+                }}
             var PART_HEADER_MAP = {{}};
             function initPartHeaders() {{
                 PART_HEADER_MAP = {{}};
                 document.querySelectorAll('tr.group-header').forEach(function(h) {{
                     PART_HEADER_MAP[h.getAttribute('data-part')] = h;
                 }});
-            }}
+                }}
             initPartHeaders();
             function addRow() {{
                 var sel = document.getElementById('ex-select');
@@ -733,31 +739,31 @@ pub async fn template_edit_form(
                     newHeader.innerHTML = '<td colspan="3">' + escapeHtml(ex.part) + '</td>';
                     // 找第一个标准顺序比它靠后的已有组头 → 插到其前面；否则插末尾
                     var after = null;
-                    document.querySelectorAll('tr.group-header').forEach(function(h) {{
+                document.querySelectorAll('tr.group-header').forEach(function(h) {{
                         if (after === null && partRank(h.getAttribute('data-part')) > partRank(ex.part)) {{
                             after = h;
-                        }}
-                    }});
+                }}
+                }});
                     if (after) {{
                         tbody.insertBefore(newHeader, after);
-                    }} else {{
+                }} else {{
                         tbody.appendChild(newHeader);
-                    }}
+                }}
                     tbody.insertBefore(tr, newHeader.nextSibling);
                     PART_HEADER_MAP[ex.part] = newHeader;
                 }}
                 // 重新筛选下拉框（保持当前部位过滤）
                 filterExByPart();
-            }}
+                }}
             function removeRow(id) {{
                 var row = document.getElementById('ex-row-' + id);
                 if (row) row.remove();
-            }}
+                }}
             function escapeHtml(s) {{
                 return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-            }}
+                }}
         </script>
-        "#,
+            "#,
         head = crate::page::page_head("编辑训练模板"),
         template_id = template_id,
         name = current_template.name,
@@ -788,18 +794,18 @@ pub async fn template_edit_form(
 /// 3. begin 事务 → UPDATE 父表 → DELETE 子表 → 循环 INSERT
 /// 4. commit → 重定向回模板列表
 pub async fn template_update(
-    State(state): State<AppState>,
-    AuthUser(user): AuthUser,
-    Path(template_id): Path<i64>,
-    Form(form): Form<TemplateCreateForm>,
-) -> Result<Redirect, AppError>
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    crate::handlers::auth::AuthUser(user): crate::handlers::auth::AuthUser,
+    axum::extract::Path(template_id): axum::extract::Path<i64>,
+    axum::extract::Form(form): axum::extract::Form<TemplateCreateForm>,
+) -> Result<axum::response::Redirect, crate::error::AppError>
 {
     let pool = state.pool.read().await.clone();
 
     // ① 先查后改：验证模板归属当前用户（JOIN phases 拿 user_id）
     //    顺带拿到 phase_id（重定向要用）——一条查询两个用途
     //    模板不存在或不属于当前用户 → 404，根本不进入事务
-    let current_template = sqlx::query_as::<_, Template>(
+    let current_template = sqlx::query_as::<_, crate::models::Template>(
         "SELECT t.* FROM templates t INNER JOIN phases p ON t.phase_id = p.id
     WHERE t.id = ? AND p.user_id = ?",
     )
@@ -807,33 +813,41 @@ pub async fn template_update(
     .bind(&user.id)
     .fetch_optional(&pool)
     .await
-    .map_err(AppError::Database)?
-    .ok_or_else(|| AppError::NotFound("No template found in such user and phase".to_string()))?;
+    .map_err(crate::error::AppError::Database)?
+    .ok_or_else(|| {
+        crate::error::AppError::NotFound("No template found in such user and phase".to_string())
+    })?;
 
     // ② 归档阶段不可编辑（改历史数据）
-    let target_phase =
-        sqlx::query_as::<_, Phase>("SELECT * FROM phases WHERE id = ? AND user_id = ?")
-            .bind(&current_template.phase_id)
-            .bind(&user.id)
-            .fetch_optional(&pool)
-            .await
-            .map_err(AppError::Database)?
-            .ok_or_else(|| AppError::NotFound("No such phase in your profile".to_string()))?;
+    let target_phase = sqlx::query_as::<_, crate::models::Phase>(
+        "SELECT * FROM phases WHERE id = ? AND user_id = ?",
+    )
+    .bind(&current_template.phase_id)
+    .bind(&user.id)
+    .fetch_optional(&pool)
+    .await
+    .map_err(crate::error::AppError::Database)?
+    .ok_or_else(|| crate::error::AppError::NotFound("No such phase in your profile".to_string()))?;
 
     if target_phase.archived
     {
-        return Err(AppError::Forbidden(
+        return Err(crate::error::AppError::Forbidden(
             "Can not edit archived phase".to_string(),
         ));
     }
 
     if form.exercise_ids().is_empty()
     {
-        return Err(AppError::Validation("至少选择一个动作".to_string()));
+        return Err(crate::error::AppError::Validation(
+            "至少选择一个动作".to_string(),
+        ));
     }
 
     // ③ 开事务：三步"先删后插"要么全成要么全败
-    let mut tx = pool.begin().await.map_err(AppError::Database)?;
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(crate::error::AppError::Database)?;
 
     // 3.1 更新父表（改名）——只改这一行，不会插入新记录
     sqlx::query("UPDATE templates SET name = ? WHERE id = ?")
@@ -841,7 +855,7 @@ pub async fn template_update(
         .bind(&template_id)
         .execute(&mut *tx)
         .await
-        .map_err(AppError::Database)?;
+        .map_err(crate::error::AppError::Database)?;
 
     // 3.1.5 【M7 修订：顺序真值 = order_{ex_id} 隐藏字段】
     //     旧版（M4）"删前存 old_order 沿用旧 sort_order"有个隐患：
@@ -858,7 +872,7 @@ pub async fn template_update(
         .bind(&template_id)
         .execute(&mut *tx)
         .await
-        .map_err(AppError::Database)?;
+        .map_err(crate::error::AppError::Database)?;
 
     // 3.3 重新插入所有勾选的动作（enumerate 生成 sort_order）
     //     【M7 修订：顺序真值 = order_{ex_id} 隐藏字段】
@@ -875,13 +889,15 @@ pub async fn template_update(
         .bind(idx as i64) // ← order 排序后的下标即 sort_order
         .execute(&mut *tx) // ← 事务要 &mut *tx（Transaction 可变解引用）
         .await
-        .map_err(AppError::Database)?;
+        .map_err(crate::error::AppError::Database)?;
     }
 
     // ④ 全部成功才提交
-    tx.commit().await.map_err(AppError::Database)?;
+    tx.commit()
+        .await
+        .map_err(crate::error::AppError::Database)?;
 
-    Ok(Redirect::to(&format!(
+    Ok(axum::response::Redirect::to(&format!(
         "/phases/{phase_id}/templates",
         phase_id = current_template.phase_id
     )))
@@ -903,16 +919,16 @@ pub async fn template_update(
 ///        → DELETE FROM templates WHERE id = ?
 /// 4. commit → 重定向回模板列表
 pub async fn template_delete(
-    State(state): State<AppState>,
-    AuthUser(user): AuthUser,
-    Path(template_id): Path<i64>,
-) -> Result<Redirect, AppError>
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    crate::handlers::auth::AuthUser(user): crate::handlers::auth::AuthUser,
+    axum::extract::Path(template_id): axum::extract::Path<i64>,
+) -> Result<axum::response::Redirect, crate::error::AppError>
 {
     let pool = state.pool.read().await.clone();
 
     // ① 先查后改：验证模板归属当前用户（JOIN phases 拿 user_id）
     //    顺带拿到 phase_id（重定向要用）——和 template_update 完全一样
-    let current_template = sqlx::query_as::<_, Template>(
+    let current_template = sqlx::query_as::<_, crate::models::Template>(
         "SELECT t.* FROM templates t INNER JOIN phases p ON t.phase_id = p.id
     WHERE t.id = ? AND p.user_id = ?",
     )
@@ -920,31 +936,38 @@ pub async fn template_delete(
     .bind(&user.id)
     .fetch_optional(&pool)
     .await
-    .map_err(AppError::Database)?
-    .ok_or_else(|| AppError::NotFound("No template found in such user and phase".to_string()))?;
+    .map_err(crate::error::AppError::Database)?
+    .ok_or_else(|| {
+        crate::error::AppError::NotFound("No template found in such user and phase".to_string())
+    })?;
 
     // ② 开事务：先删子（template_items）后删父（templates）
     //    顺序不能反：父表被子表引用时先删父会留孤儿数据
-    let mut tx = pool.begin().await.map_err(AppError::Database)?;
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(crate::error::AppError::Database)?;
 
     // 2.1 删孩子：模板的所有动作项
     sqlx::query("DELETE FROM template_items WHERE template_id = ?")
         .bind(&template_id)
         .execute(&mut *tx)
         .await
-        .map_err(AppError::Database)?;
+        .map_err(crate::error::AppError::Database)?;
 
     // 2.2 删父亲：模板本身
     sqlx::query("DELETE FROM templates WHERE id = ?")
         .bind(&template_id)
         .execute(&mut *tx)
         .await
-        .map_err(AppError::Database)?;
+        .map_err(crate::error::AppError::Database)?;
 
     // ③ 全部成功才提交
-    tx.commit().await.map_err(AppError::Database)?;
+    tx.commit()
+        .await
+        .map_err(crate::error::AppError::Database)?;
 
-    Ok(Redirect::to(&format!(
+    Ok(axum::response::Redirect::to(&format!(
         "/phases/{phase_id}/templates",
         phase_id = current_template.phase_id
     )))
@@ -965,27 +988,29 @@ pub async fn template_delete(
 /// 3. 查计划：SELECT * FROM plans WHERE phase_id = ? ORDER BY date DESC
 /// 4. 拼 HTML：表格列出日期 + 备注 + 操作（详情/编辑/删除）
 pub async fn list_plans(
-    State(state): State<AppState>,
-    AuthUser(user): AuthUser,
-    Path(phase_id): Path<i64>,
-    Query(query): Query<CalQuery>,
-) -> Result<Html<String>, AppError>
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    crate::handlers::auth::AuthUser(user): crate::handlers::auth::AuthUser,
+    axum::extract::Path(phase_id): axum::extract::Path<i64>,
+    axum::extract::Query(query): axum::extract::Query<crate::handlers::stats::CalQuery>,
+) -> Result<axum::response::Html<String>, crate::error::AppError>
 {
     let pool = state.pool.read().await.clone();
 
     // ① 两级验证：阶段必须属于当前用户
-    let phase_ret = sqlx::query_as::<_, Phase>("SELECT * FROM phases WHERE id = ? AND user_id = ?")
-        .bind(&phase_id)
-        .bind(&user.id)
-        .fetch_optional(&pool)
-        .await
-        .map_err(AppError::Database)?
-        .ok_or_else(|| AppError::NotFound("No such phase in your profile".to_string()))?;
+    let phase_ret = sqlx::query_as::<_, crate::models::Phase>(
+        "SELECT * FROM phases WHERE id = ? AND user_id = ?",
+    )
+    .bind(&phase_id)
+    .bind(&user.id)
+    .fetch_optional(&pool)
+    .await
+    .map_err(crate::error::AppError::Database)?
+    .ok_or_else(|| crate::error::AppError::NotFound("No such phase in your profile".to_string()))?;
 
     // ② 归档阶段显示"只读"提示
     let archived_note = if phase_ret.archived
     {
-        "<p style=\"color:red\">⚠️ 该阶段已归档，只读（不能新建/编辑/删除计划）</p>"
+        "<p style=\"color:red\"> 该阶段已归档，只读（不能新建/编辑/删除计划）</p>"
     }
     else
     {
@@ -995,12 +1020,12 @@ pub async fn list_plans(
     // ③ 【M6 修订：日历模式（与 history 同款）——取消列表显示】
     //    有计划的日期 → 绿色可点击；无计划 → 灰色。
     //    批量查"日期 → 计划 id"映射（一次查询，避免逐日 N+1）。
-    let plan_date_map: HashMap<String, i64> =
+    let plan_date_map: std::collections::HashMap<String, i64> =
         sqlx::query_as::<_, (String, i64)>("SELECT date, id FROM plans WHERE phase_id = ?")
             .bind(&phase_ret.id)
             .fetch_all(&pool)
             .await
-            .map_err(AppError::Database)?
+            .map_err(crate::error::AppError::Database)?
             .into_iter()
             .collect();
 
@@ -1009,7 +1034,7 @@ pub async fn list_plans(
         sqlx::query_scalar::<_, String>("SELECT strftime('%Y-%m', date('now','localtime'))")
             .fetch_one(&pool)
             .await
-            .map_err(AppError::Database)?;
+            .map_err(crate::error::AppError::Database)?;
     let target_ym = match (query.year, query.month)
     {
         (Some(y), Some(m)) => format!("{y}-{m}"),
@@ -1019,7 +1044,7 @@ pub async fn list_plans(
     let target_month = target_ym[5..7].to_string();
 
     // 年份选项（从计划日期去重 + 目标年兜底）
-    let mut year_set: HashSet<String> =
+    let mut year_set: std::collections::HashSet<String> =
         plan_date_map.keys().map(|dt| dt[..4].to_string()).collect();
     year_set.insert(target_year.clone());
     let mut year_list: Vec<String> = year_set.into_iter().collect();
@@ -1053,7 +1078,7 @@ pub async fn list_plans(
     .bind(format!("{target_ym}-01"))
     .fetch_one(&pool)
     .await
-    .map_err(AppError::Database)?;
+    .map_err(crate::error::AppError::Database)?;
 
     // 【bugfix：日历对齐 —— 1 号是星期几？】
     // 旧版 day=1 直接渲染 + 每 7 格换行 → 1 号永远在"一"列，
@@ -1063,7 +1088,7 @@ pub async fn list_plans(
         .bind(format!("{target_ym}-01"))
         .fetch_one(&pool)
         .await
-        .map_err(AppError::Database)?;
+        .map_err(crate::error::AppError::Database)?;
     let lead_offset = (first_wday + 6) % 7;
     // 1 号前面的空白占位格（上月的空位）
     let lead_cells = std::iter::repeat_n(r#"<td></td>"#, lead_offset as usize).collect::<String>();
@@ -1093,34 +1118,34 @@ pub async fn list_plans(
         .collect::<String>();
 
     // ④ 拼页面（日历 + 年月导航 + 创建入口）
-    Ok(Html(format!(
+    Ok(axum::response::Html(format!(
         r#"
-        {head}
+                {head}
         <h2>训练计划</h2>
-        {archived_note}
+                {archived_note}
         <p>年份：
         <select id="cal-year-filter" onchange="changeCalMonth()">
             {year_options}
-        </select>
+            </select>
         月份：
         <select id="cal-month-filter" onchange="changeCalMonth()">
             {month_options}
         </select></p>
         <h3>日历（绿色 = 有计划）</h3>
-        <table border="1">
+            <table border="1">
         <tr><th>一</th><th>二</th><th>三</th><th>四</th><th>五</th><th>六</th><th>日</th></tr>
         <tr>{lead_cells}{cells}</tr>
-        </table>
+                    </table>
         <p><a href="/phases/{phase_id}/plans/new">创建当日计划</a></p>
-        <p><a href="/">返回首页</a></p>
+                <p><a href="/">返回首页</a></p>
         <script>
             function changeCalMonth(){{
                 var y = document.getElementById('cal-year-filter').value;
                 var m = document.getElementById('cal-month-filter').value;
                 if (y && m) {{ window.location.href = '/phases/{phase_id}/plans?year=' + y + '&month=' + m; }}
-            }}
+                }}
         </script>
-        "#,
+            "#,
         head = crate::page::page_head("训练计划"),
         archived_note = archived_note,
         year_options = year_options,
@@ -1154,38 +1179,39 @@ pub async fn list_plans(
 /// 3. 查模板列表（供下拉）+ 查全部动作（供勾选）
 /// 4. 拼 HTML
 pub async fn plan_create_form(
-    State(state): State<AppState>,
-    AuthUser(user): AuthUser,
-    Path(phase_id): Path<i64>,
-) -> Result<Html<String>, AppError>
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    crate::handlers::auth::AuthUser(user): crate::handlers::auth::AuthUser,
+    axum::extract::Path(phase_id): axum::extract::Path<i64>,
+) -> Result<axum::response::Html<String>, crate::error::AppError>
 {
     let pool = state.pool.read().await.clone();
 
     // ① 验证阶段属于当前用户 + 未归档
-    let target_phase =
-        sqlx::query_as::<_, Phase>("SELECT * FROM phases WHERE id = ? AND user_id = ?")
-            .bind(&phase_id)
-            .bind(&user.id)
-            .fetch_optional(&pool)
-            .await
-            .map_err(AppError::Database)?
-            .ok_or_else(|| AppError::NotFound("No such phase in your profile".to_string()))?;
+    let target_phase = sqlx::query_as::<_, crate::models::Phase>(
+        "SELECT * FROM phases WHERE id = ? AND user_id = ?",
+    )
+    .bind(&phase_id)
+    .bind(&user.id)
+    .fetch_optional(&pool)
+    .await
+    .map_err(crate::error::AppError::Database)?
+    .ok_or_else(|| crate::error::AppError::NotFound("No such phase in your profile".to_string()))?;
 
     if target_phase.archived
     {
-        return Err(AppError::Forbidden(
+        return Err(crate::error::AppError::Forbidden(
             "Can not edit archived phase".to_string(),
         ));
     }
 
     // ② 查该阶段的模板列表（下拉框选项）
-    let template_rows = sqlx::query_as::<_, Template>(
+    let template_rows = sqlx::query_as::<_, crate::models::Template>(
         "SELECT * FROM templates WHERE phase_id = ? ORDER BY sort_order, id",
     )
     .bind(&phase_id)
     .fetch_all(&pool)
     .await
-    .map_err(AppError::Database)?
+    .map_err(crate::error::AppError::Database)?
     .iter()
     .map(|t| {
         format!(
@@ -1199,19 +1225,20 @@ pub async fn plan_create_form(
     .join("\n");
 
     // ③ 查全部动作（checkbox 列表）
-    //    ⚠️ checkbox name 用动作 id（唯一键）！不能都叫 exercise_ids
+    //     checkbox name 用动作 id（唯一键）！不能都叫 exercise_ids
     //    （serde_urlencoded map 语义会覆盖，见 PlanCreateForm 注释）
-    let all_exercises = sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE user_id = ?")
-        .bind(&user.id)
-        .fetch_all(&pool)
-        .await
-        .map_err(AppError::Database)?;
+    let all_exercises =
+        sqlx::query_as::<_, crate::models::Exercise>("SELECT * FROM exercises WHERE user_id = ?")
+            .bind(&user.id)
+            .fetch_all(&pool)
+            .await
+            .map_err(crate::error::AppError::Database)?;
 
     // ③b 部位筛选下拉框选项（从动作列表去重，动态生成）
     let mut part_list: Vec<String> = all_exercises
         .iter()
         .map(|ex| ex.body_part.clone())
-        .collect::<HashSet<String>>()
+        .collect::<std::collections::HashSet<String>>()
         .into_iter()
         .collect();
     part_list.sort();
@@ -1222,24 +1249,24 @@ pub async fn plan_create_form(
         .join("\n");
 
     let checkbox_rows = all_exercises
-        .iter()
+            .iter()
         .map(|ex| {
-            format!(
+                format!(
                 // class="ex-row"：块级 div 整行，JS 按部位隐藏时不残留空行
                 r#"<div class="ex-row" data-part="{part}"><label><input type="checkbox" name="{id}" value="1"> {name}</label></div>"#,
                 part = ex.body_part,
                 id = ex.id,
                 name = ex.name
-            )
-        })
-        .collect::<Vec<String>>()
+    )
+            })
+            .collect::<Vec<String>>()
         .join("\n");
 
     // ④ 今天日期：和数据库保持一致用 SQLite 的 localtime（避免 Rust 端时区偏差）
     let today = sqlx::query_scalar::<_, String>("SELECT date('now', 'localtime')")
         .fetch_one(&pool)
         .await
-        .map_err(AppError::Database)?;
+        .map_err(crate::error::AppError::Database)?;
 
     // ⑤ 拼表单
     //    【教学：JS 控制"动作勾选区"显隐】
@@ -1249,11 +1276,11 @@ pub async fn plan_create_form(
     //      1. 模板下拉 <select id="template_id" onchange="toggleManualExercises()">
     //      2. 勾选区包 <div id="manual_exercises">（默认显示）
     //      3. JS：select.value 为空串（"不选模板"）→ 显示，否则隐藏
-    //    ⚠️ JS 内容用命名参数 {javascript} 传入 format!（避开 {} 冲突，
+    //     JS 内容用命名参数 {javascript} 传入 format!（避开 {} 冲突，
     //    与 exercises.rs 的 toggleBarWeight 同款写法）。
-    Ok(Html(format!(
+    Ok(axum::response::Html(format!(
         r#"
-        {head}
+                {head}
         <h2>新建当日计划</h2>
         <form method="post" action="/phases/{phase_id}/plans">
             日期：<input type="date" name="date" value="{today}"><br>
@@ -1264,11 +1291,11 @@ pub async fn plan_create_form(
             </select><br>
             <div id="manual_exercises">
                 动作（不选模板时手动勾选）：<br>
-                部位筛选：
+            部位筛选：
                 <select id="part_filter" onchange="filterByPart('manual_exercises')">
-                    <option value="">全部</option>
-                    {part_options}
-                </select><br>
+                <option value="">全部</option>
+                {part_options}
+            </select><br>
                 {checkbox_rows}
             </div>
             <button type="submit">创建计划</button>
@@ -1277,7 +1304,7 @@ pub async fn plan_create_form(
         <script>
             {javascript}
         </script>
-        "#,
+            "#,
         head = crate::page::page_head("新建当日计划"),
         phase_id = phase_id,
         today = today,
@@ -1288,13 +1315,13 @@ pub async fn plan_create_form(
                 var select = document.getElementById('template_id');
                 var box = document.getElementById('manual_exercises');
                 box.style.display = (select.value === '') ? '' : 'none';
-                }
+    }
                 function filterByPart(listId){
                 var part = document.getElementById('part_filter').value;
                 document.querySelectorAll('#' + listId + ' .ex-row').forEach(function(row){
-                row.style.display = (part === '' || row.getAttribute('data-part') === part) ? '' : 'none';
+                    row.style.display = (part === '' || row.getAttribute('data-part') === part) ? '' : 'none';
                 });
-                }
+    }
                 toggleManualExercises();
                 filterByPart('manual_exercises');"
     )))
@@ -1324,27 +1351,28 @@ pub async fn plan_create_form(
 /// 6. 每个计划项都要解决"组/次从哪来"（模板项 → 动作库默认 兜底链）
 /// 7. commit → 重定向到计划详情
 pub async fn plan_create(
-    State(state): State<AppState>,
-    AuthUser(user): AuthUser,
-    Path(phase_id): Path<i64>,
-    Form(form): Form<PlanCreateForm>,
-) -> Result<Redirect, AppError>
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    crate::handlers::auth::AuthUser(user): crate::handlers::auth::AuthUser,
+    axum::extract::Path(phase_id): axum::extract::Path<i64>,
+    axum::extract::Form(form): axum::extract::Form<PlanCreateForm>,
+) -> Result<axum::response::Redirect, crate::error::AppError>
 {
     let pool = state.pool.read().await.clone();
 
     // ① 验证阶段属于当前用户 + 未归档
-    let target_phase =
-        sqlx::query_as::<_, Phase>("SELECT * FROM phases WHERE id = ? AND user_id = ?")
-            .bind(&phase_id)
-            .bind(&user.id)
-            .fetch_optional(&pool)
-            .await
-            .map_err(AppError::Database)?
-            .ok_or_else(|| AppError::NotFound("No such phase in your profile".to_string()))?;
+    let target_phase = sqlx::query_as::<_, crate::models::Phase>(
+        "SELECT * FROM phases WHERE id = ? AND user_id = ?",
+    )
+    .bind(&phase_id)
+    .bind(&user.id)
+    .fetch_optional(&pool)
+    .await
+    .map_err(crate::error::AppError::Database)?
+    .ok_or_else(|| crate::error::AppError::NotFound("No such phase in your profile".to_string()))?;
 
     if target_phase.archived
     {
-        return Err(AppError::Forbidden(
+        return Err(crate::error::AppError::Forbidden(
             "Can not edit archived phase".to_string(),
         ));
     }
@@ -1357,10 +1385,10 @@ pub async fn plan_create(
             .bind(&form.date)
             .fetch_optional(&pool)
             .await
-            .map_err(AppError::Database)?;
+            .map_err(crate::error::AppError::Database)?;
     if exists.is_some()
     {
-        return Err(AppError::Validation(format!(
+        return Err(crate::error::AppError::Validation(format!(
             "该日期 {} 已有计划，不能重复创建",
             form.date
         )));
@@ -1370,11 +1398,11 @@ pub async fn plan_create(
     //    模板项有值 → 用模板项；没有 → 查动作库默认值
     //    （default_sets/default_reps/default_mode/bar_weight/key_points）
     //    返回的都是 Option：都没有就保持 None
-    //    ⚠️ 注意：template_items 表没有 plan_mode/plan_bar_weight/plan_key_points 列
+    //     注意：template_items 表没有 plan_mode/plan_bar_weight/plan_key_points 列
     //    （模板层不做计重预设），所以创建计划时这三项永远落回动作库默认。
     //    plan_rest 同理：动作库没有默认休息 → None（record_form 让用户填）。
     async fn resolve_plan_values(
-        pool: &SqlitePool,
+        pool: &sqlx::SqlitePool,
         t_sets: Option<i64>,
         t_reps: Option<i64>,
         ex_id: i64,
@@ -1386,14 +1414,15 @@ pub async fn plan_create(
             Option<f64>,
             Option<String>,
         ),
-        AppError,
+        crate::error::AppError,
     >
     {
-        let ex = sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE id = ?")
-            .bind(&ex_id)
-            .fetch_one(pool)
-            .await
-            .map_err(AppError::Database)?;
+        let ex =
+            sqlx::query_as::<_, crate::models::Exercise>("SELECT * FROM exercises WHERE id = ?")
+                .bind(&ex_id)
+                .fetch_one(pool)
+                .await
+                .map_err(crate::error::AppError::Database)?;
         let sets = t_sets.or(Some(ex.default_sets));
         let reps = t_reps.or(Some(ex.default_reps));
         let mode = Some(ex.default_mode);
@@ -1407,16 +1436,21 @@ pub async fn plan_create(
     //   ① form.parsed_template_id() 选了模板 → 复制模板项（模板自身已有校验，不会空）
     //   ② 没选模板 → 用 form.exercise_ids()（手动勾选）
     // 校验：template_id 为 None 且 exercise_ids() 为空 → Validation"至少选择一个动作"。
-    // ⚠️ 放在 ④ 事务 begin 之前，避免空动作也开事务插一条空壳计划。
+    //  放在 ④ 事务 begin 之前，避免空动作也开事务插一条空壳计划。
     // 【M8 bugfix：用 parsed_template_id()（空字符串 → None），
     //   否则自选动作（template_id=）会把空串 parse 失败/误判成有模板】
     if form.parsed_template_id().is_none() && form.exercise_ids().is_empty()
     {
-        return Err(AppError::Validation("至少选择一个动作".to_string()));
+        return Err(crate::error::AppError::Validation(
+            "至少选择一个动作".to_string(),
+        ));
     }
 
     // ④ 事务：写两张表（plans 父 + plan_items 子）要么全成要么全败
-    let mut tx = pool.begin().await.map_err(AppError::Database)?;
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(crate::error::AppError::Database)?;
 
     // 4.1 插入计划（父表），拿回 plan_id
     //     【M5 修订：备注随表单保存（之前硬编码 ''）】
@@ -1428,20 +1462,20 @@ pub async fn plan_create(
     .bind(&form.note)
     .fetch_one(&mut *tx)
     .await
-    .map_err(AppError::Database)?;
+    .map_err(crate::error::AppError::Database)?;
 
     // 4.2 分支：选模板 → 复制模板项；没选 → 手动选的动作
     //     【M8 bugfix：parsed_template_id() 解析空串 → None】
     if let Some(tid) = form.parsed_template_id()
     {
         // ⑤ 从模板复制：查模板的 template_items，逐个复制成 plan_items
-        let template_items = sqlx::query_as::<_, TemplateItem>(
+        let template_items = sqlx::query_as::<_, crate::models::TemplateItem>(
             "SELECT * FROM template_items WHERE template_id = ? ORDER BY sort_order",
         )
         .bind(&tid)
         .fetch_all(&mut *tx)
         .await
-        .map_err(AppError::Database)?;
+        .map_err(crate::error::AppError::Database)?;
 
         for (idx, ti) in template_items.iter().enumerate()
         {
@@ -1463,7 +1497,7 @@ pub async fn plan_create(
             .bind(key_points)
             .execute(&mut *tx)
             .await
-            .map_err(AppError::Database)?;
+            .map_err(crate::error::AppError::Database)?;
         }
     }
     else
@@ -1490,14 +1524,16 @@ pub async fn plan_create(
             .bind(key_points)
             .execute(&mut *tx)
             .await
-            .map_err(AppError::Database)?;
+            .map_err(crate::error::AppError::Database)?;
         }
     }
 
     // ⑦ 全部成功才提交
-    tx.commit().await.map_err(AppError::Database)?;
+    tx.commit()
+        .await
+        .map_err(crate::error::AppError::Database)?;
 
-    Ok(Redirect::to(&format!("/plans/{plan_id}")))
+    Ok(axum::response::Redirect::to(&format!("/plans/{plan_id}")))
 }
 
 // ============================================================
@@ -1536,15 +1572,15 @@ pub async fn plan_create(
 ///   - 下方"添加动作"区：身体部位下拉 + 动作下拉 + 添加按钮（JS addRow）
 ///   - 动作数据以 JSON 嵌入（EX_OPTIONS），JS 动态加行
 pub async fn plan_detail(
-    State(state): State<AppState>,
-    AuthUser(user): AuthUser,
-    Path(plan_id): Path<i64>,
-) -> Result<Html<String>, AppError>
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    crate::handlers::auth::AuthUser(user): crate::handlers::auth::AuthUser,
+    axum::extract::Path(plan_id): axum::extract::Path<i64>,
+) -> Result<axum::response::Html<String>, crate::error::AppError>
 {
     let pool = state.pool.read().await.clone();
 
     // ① 查计划 + 验证归属（JOIN phases 拿 user_id）
-    let current_plan = sqlx::query_as::<_, Plan>(
+    let current_plan = sqlx::query_as::<_, crate::models::Plan>(
         "SELECT p.* FROM plans p INNER JOIN phases ph ON p.phase_id = ph.id
     WHERE p.id = ? AND ph.user_id = ?",
     )
@@ -1552,34 +1588,38 @@ pub async fn plan_detail(
     .bind(&user.id)
     .fetch_optional(&pool)
     .await
-    .map_err(AppError::Database)?
-    .ok_or_else(|| AppError::NotFound("No plan found in such user and phase".to_string()))?;
+    .map_err(crate::error::AppError::Database)?
+    .ok_or_else(|| {
+        crate::error::AppError::NotFound("No plan found in such user and phase".to_string())
+    })?;
 
     // ② 查计划项（按 sort_order 排序，带 item id 供上移/下移路由用）
-    let plan_items = sqlx::query_as::<_, PlanItem>(
+    let plan_items = sqlx::query_as::<_, crate::models::PlanItem>(
         "SELECT * FROM plan_items WHERE plan_id = ? ORDER BY sort_order, id",
     )
     .bind(&plan_id)
     .fetch_all(&pool)
     .await
-    .map_err(AppError::Database)?;
+    .map_err(crate::error::AppError::Database)?;
 
     // ③ 查全部动作 → HashMap 索引（一次查询换 N 次查询）
     //    需要 name（显示）+ body_part（部位）+ 默认值（新动作回显）
-    let all_exercises = sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE user_id = ?")
-        .bind(&user.id)
-        .fetch_all(&pool)
-        .await
-        .map_err(AppError::Database)?;
-    let ex_map: HashMap<i64, Exercise> = all_exercises.iter().map(|e| (e.id, e.clone())).collect();
+    let all_exercises =
+        sqlx::query_as::<_, crate::models::Exercise>("SELECT * FROM exercises WHERE user_id = ?")
+            .bind(&user.id)
+            .fetch_all(&pool)
+            .await
+            .map_err(crate::error::AppError::Database)?;
+    let ex_map: std::collections::HashMap<i64, crate::models::Exercise> =
+        all_exercises.iter().map(|e| (e.id, e.clone())).collect();
 
     // ③a 【M5 修订（随 M4 迁移到合并页）：最近记录参考（不入库）】
     //    按 exercise_id 取最近一条记录的 weight + strategy，渲染在每行作灰字参考
     //    （渐进超负荷：本次计划重量应比上次实际强度略高；
     //     最近策略提示上次怎么安排的 —— 用户诉求 2）
-    //    ⚠️ 数据隔离：JOIN exercises 过滤 user_id
+    //     数据隔离：JOIN exercises 过滤 user_id
     //    【M7 修订：查询扩展取 r.mode —— "上次观测"逆换算需要上次计重模式】
-    let last_record_map: HashMap<i64, (f64, String, String)> =
+    let last_record_map: std::collections::HashMap<i64, (f64, String, String)> =
         sqlx::query_as::<_, (i64, f64, String, String)>(
             "SELECT r.exercise_id AS \"_1\", r.weight AS \"_2\", r.strategy AS \"_3\", r.mode AS \"_4\" FROM records r
              JOIN exercises e ON r.exercise_id = e.id AND e.user_id = ?
@@ -1588,11 +1628,11 @@ pub async fn plan_detail(
                  FROM records GROUP BY exercise_id
              ) latest ON r.exercise_id = latest.exercise_id
              WHERE (r.record_date || '#' || printf('%010d', r.id)) = latest.k",
-        )
+    )
         .bind(&user.id)
-        .fetch_all(&pool)
+    .fetch_all(&pool)
         .await
-        .map_err(AppError::Database)?
+        .map_err(crate::error::AppError::Database)?
         .into_iter()
         .map(|(ex_id, w, s, m)| (ex_id, (w, s, m)))
         .collect();
@@ -1601,7 +1641,7 @@ pub async fn plan_detail(
     let mut part_list: Vec<String> = all_exercises
         .iter()
         .map(|ex| ex.body_part.clone())
-        .collect::<HashSet<String>>()
+        .collect::<std::collections::HashSet<String>>()
         .into_iter()
         .collect();
     part_list.sort();
@@ -1635,9 +1675,9 @@ pub async fn plan_detail(
             (
                 ex.id.to_string(),
                 serde_json::json!({
-                    "id": ex.id,
-                    "name": ex.name,
-                    "part": ex.body_part,
+                "id": ex.id,
+                "name": ex.name,
+                "part": ex.body_part,
                     "default_sets": ex.default_sets,
                     "default_reps": ex.default_reps,
                     "default_mode": mode,
@@ -1652,7 +1692,7 @@ pub async fn plan_detail(
 
     // ③d 部位顺序 JSON（JS 动态组头按配置顺序插入，与后端 group_by_body_part 一致）
     let body_part_order_json = serde_json::to_string(&state.config.body_part_order)
-        .map_err(|_| AppError::Validation("部位顺序序列化失败".to_string()))?;
+        .map_err(|_| crate::error::AppError::Validation("部位顺序序列化失败".to_string()))?;
 
     // ③d-2 【M5 修订：全局体重（users.body_weight，首页维护）】
     //     用户问题 0：support 模式的体重来自"可编辑的通用变量"。
@@ -1675,16 +1715,16 @@ pub async fn plan_detail(
     //     回显链：计划项有值 → 用计划项；没有 → 动作库默认
     //     每行：hidden checkbox（保证提交收集）+ 全部编辑输入 + ↑↓ + 删除
     let raw_rows = plan_items
-        .iter()
+            .iter()
         .enumerate()
         .map(|(idx, item)| {
             let ex = ex_map.get(&item.exercise_id);
             // 动作名 + 部位（查不到显示 "?"，理论不发生）
             let (ex_name, ex_part) = match ex
-            {
+{
                 Some(e) => (e.name.clone(), e.body_part.clone()),
                 None => ("?".to_string(), "未分组".to_string()),
-            };
+};
             // 组/次/重/计重/杆重/休息/要领/备注 回显
             let sets = item
                 .plan_sets
@@ -1702,15 +1742,15 @@ pub async fn plan_detail(
             // 【M5 修订：单位回显 —— 动作 default_unit 决定观测强度下拉预填】
             let unit = ex.map_or("kg".to_string(), |e| e.default_unit.clone());
             let unit_options = ["kg", "lb"]
-                .iter()
+            .iter()
                 .map(|u| {
-                    format!(
+                format!(
                         r#"<option value="{u}"{sel}>{u}</option>"#,
                         sel = if *u == unit { " selected" } else { "" },
-                    )
-                })
+    )
+            })
                 .collect::<Vec<_>>()
-                .join("\n");
+        .join("\n");
             let rest = item
                 .plan_rest
                 .map_or(String::new(), |v| v.to_string());
@@ -1721,48 +1761,48 @@ pub async fn plan_detail(
             let note = item.plan_note.clone().unwrap_or_default();
             // 计重方式下拉选项（当前模式 selected，与 record_form 同款）
             let mode_options = ["bar", "support", "std"]
-                .iter()
-                .map(|m| {
-                    format!(
+            .iter()
+        .map(|m| {
+                format!(
                         r#"<option value="{m}"{sel}>{name}</option>"#,
                         sel = if *m == mode { " selected" } else { "" },
                         name = match *m
-                        {
+{
                             "bar" => "杠铃",
                             "support" => "支撑",
                             "std" => "标准",
                             _ => *m,
                         },
-                    )
-                })
+    )
+            })
                 .collect::<Vec<_>>()
-                .join("\n");
+        .join("\n");
             // 杆重下拉选项（四种规格，与 record_form 同款）
             let bar_weight_options = ["20", "11.3", "10", "0"]
-                .iter()
+            .iter()
                 .map(|bw| {
-                    format!(
+                format!(
                         r#"<option value="{bw}"{sel}>{name}</option>"#,
                         sel = if *bw == format!("{bar_weight}")
-                        {
+{
                             " selected"
-                        }
-                        else
-                        {
-                            ""
+    }
+    else
+{
+        ""
                         },
                         name = match *bw
-                        {
+{
                             "20" => "Olympic(20kg)",
                             "11.3" => "Smith(11.3kg)",
                             "10" => "短杠(10kg)",
                             "0" => "双边(0kg)",
                             _ => *bw,
                         },
-                    )
-                })
+    )
+            })
                 .collect::<Vec<_>>()
-                .join("\n");
+        .join("\n");
             // 上次记录参考（有记录才显示灰字）：实际强度 + 最近策略
             //     【M5 修订：用户诉求 2 —— 备注列旁显示最近一次 strategy】
             //     策略是"上次怎么安排的"（如"维持"、"加 5kg"），训练时
@@ -1770,22 +1810,22 @@ pub async fn plan_detail(
             let last_actual_ref = last_record_map
                 .get(&item.exercise_id)
                 .map(|(w, _, _)| {
-                    format!(
+                format!(
                         r#"<span style="color:#888">（上次实际：{w}kg）</span>"#,
                         w = w
-                    )
-                })
+    )
+            })
                 .unwrap_or_default();
             let last_strategy_ref = last_record_map
                 .get(&item.exercise_id)
                 .map(|(_, s, _)| s.clone())
                 .filter(|s| !s.is_empty())
                 .map(|s| {
-                    format!(
+                format!(
                         r#"<br><span style="color:#888;font-size:0.85em">上次策略：{s}</span>"#,
                         s = s
-                    )
-                })
+    )
+            })
                 .unwrap_or_default();
             // 【M7 修订：观测强度旁的上次参考 —— 反向计算（mode_display 同款逻辑）】
             // 实际强度列旁已有"上次实际"，观测强度列旁补"上次观测"：
@@ -1799,7 +1839,7 @@ pub async fn plan_detail(
             let last_observed_ref = last_record_map
                 .get(&item.exercise_id)
                 .map(|(w, _, m)| {
-                    format!(
+                format!(
                         r#"<br><span style="color:#888;font-size:0.85em">上次观测：{obs}</span>"#,
                         obs = crate::handlers::record::mode_display(
                             m,
@@ -1807,9 +1847,9 @@ pub async fn plan_detail(
                             bar_weight,
                             user.body_weight,
                             &unit,
-                        ),
-                    )
-                })
+                ),
+    )
+            })
                 .unwrap_or_default();
             // 【M5 修订：Bug 1 —— 杆重/支撑列合并成单 td + std 占位符】
             // 旧版拆两个 td（bar-cell + body-cell），std 模式两个都 display:none
@@ -1871,30 +1911,31 @@ pub async fn plan_detail(
                 bar_body_cell = bar_body_cell,
             );
             (ex_part, row)
-        })
+            })
         .collect::<Vec<_>>();
     // 分组渲染：组头行 + 组内行（colspan = 11 列）
     // 【M4 修订：组间顺序来自配置 AppConfig.body_part_order（环境变量可配）】
-    let item_rows = group_by_body_part(raw_rows.into_iter(), &state.config.body_part_order)
-        .iter()
-        .map(|(part, rows)| {
-            format!(
-                r#"<tr class="group-header" data-part="{part}"><td colspan="11">{part}</td></tr>
+    let item_rows =
+        crate::models::group_by_body_part(raw_rows.into_iter(), &state.config.body_part_order)
+            .iter()
+            .map(|(part, rows)| {
+                format!(
+                    r#"<tr class="group-header" data-part="{part}"><td colspan="11">{part}</td></tr>
 {rows}"#,
-                part = part,
-                rows = rows.join("\n"),
-            )
-        })
-        .collect::<Vec<String>>()
-        .join("\n");
+                    part = part,
+                    rows = rows.join("\n"),
+                )
+            })
+            .collect::<Vec<String>>()
+            .join("\n");
 
     // ④ 拼页面：
     //    - form（action=/plans/{id}/edit）：日期 + 备注 + 表格 + 保存
     //    - 表格外"添加动作"区（部位下拉 + 动作下拉 + 添加按钮）
     //    - JS：EX_OPTIONS + addRow/removeRow + 多实例换算器（移植自 plan_edit_form）
-    Ok(Html(format!(
+    Ok(axum::response::Html(format!(
         r#"
-        {head}
+                {head}
         <h2>编辑计划（{plan_date}）</h2>
         <form method="post" action="/plans/{plan_id}/edit">
             日期：<input type="date" name="date" value="{plan_date}">
@@ -1902,7 +1943,7 @@ pub async fn plan_detail(
             <table border="1">
                 <tr><th>动作</th><th>备注</th><th>实际强度</th><th>计重方式</th><th>杆重/支撑</th><th>观测强度换算</th><th>组数</th><th>次数</th><th>休息(秒)</th><th>要领</th><th>操作</th></tr>
                 {item_rows}
-            </table>
+                    </table>
             <button type="submit">保存</button>
         </form>
         <p>添加动作：
@@ -1924,7 +1965,7 @@ pub async fn plan_detail(
         <script>
             {javascript}
         </script>
-        "#,
+            "#,
         head = crate::page::page_head("编辑计划"),
         plan_id = current_plan.id,
         plan_date = current_plan.date,
@@ -1937,7 +1978,7 @@ pub async fn plan_detail(
                 /* 【M5 修订：全局体重注入（users.body_weight，首页维护）】
                  * addRow 动态新行的 body input 与逆换算兜底都用它。 */
                 var BODY_WEIGHT = __BODY_WEIGHT__;
-                /* 上移/下移：页面级动态 form（不能直接嵌 <tr> 里，HTML 解析器会忽略） */
+            /* 上移/下移：页面级动态 form（不能直接嵌 <tr> 里，HTML 解析器会忽略） */
                 function submitMove(url){
                 var f = document.createElement('form');
                 f.method = 'post';
@@ -1945,24 +1986,24 @@ pub async fn plan_detail(
                 f.style.display = 'none';
                 document.body.appendChild(f);
                 f.submit();
-                }
+    }
                 function escapeHtml(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
                 function modeOptions(sel){
                 var opts = [['bar','杠铃'],['support','支撑'],['std','标准']];
                 var html = '';
                 for (var i=0;i<opts.length;i++){
                 html += '<option value="' + opts[i][0] + '"' + (opts[i][0]===sel?' selected':'') + '>' + opts[i][1] + '</option>';
-                }
+    }
                 return html;
-                }
+    }
                 function barOptions(sel){
                 var opts = [['20','Olympic(20kg)'],['11.3','Smith(11.3kg)'],['10','短杠(10kg)'],['0','双边(0kg)']];
                 var html = '';
                 for (var i=0;i<opts.length;i++){
                 html += '<option value="' + opts[i][0] + '"' + (String(opts[i][0])===String(sel)?' selected':'') + '>' + opts[i][1] + '</option>';
-                }
+    }
                 return html;
-                }
+    }
                 /* ---- 添加动作：从下拉框取动作 → 按默认值克隆一行 ---- */
                 /* 【M4 修订：列序与组头对齐】
                    动作 | 备注 | 实际强度 | 计重方式 | 杆重/支撑 | 观测强度换算 |
@@ -1973,15 +2014,15 @@ pub async fn plan_detail(
                 function partRank(p){
                 var i = PART_ORDER.indexOf(p);
                 return i === -1 ? PART_ORDER.length : i;
-                }
+    }
                 var PART_HEADER_MAP = {};
                 function initPartHeaders(){
                 PART_HEADER_MAP = {};
                 document.querySelectorAll('tr.group-header').forEach(function(h){
-                PART_HEADER_MAP[h.getAttribute('data-part')] = h;
+                    PART_HEADER_MAP[h.getAttribute('data-part')] = h;
                 });
-                }
-                initPartHeaders();
+    }
+            initPartHeaders();
                 function addRow(){
                 var sel = document.getElementById('ex-select');
                 var id = sel.value;
@@ -1995,13 +2036,13 @@ pub async fn plan_detail(
                 /* 【M7 修订：order_{ex_id} 隐藏序号 —— 后端排序真值 */
                 var maxOrder = 0;
                 document.querySelectorAll('input[name^="order_"]').forEach(function(inp){
-                var v = parseInt(inp.value, 10);
-                if (!isNaN(v) && v > maxOrder) maxOrder = v;
+                    var v = parseInt(inp.value, 10);
+                    if (!isNaN(v) && v > maxOrder) maxOrder = v;
                 });
                 tr.innerHTML =
-                '<td><input type="checkbox" name="' + id + '" value="1" checked hidden>' +
-                '<input type="hidden" name="order_' + id + '" value="' + (maxOrder + 1) + '">' +
-                escapeHtml(ex.name) + '</td>' +
+                    '<td><input type="checkbox" name="' + id + '" value="1" checked hidden>' +
+                    '<input type="hidden" name="order_' + id + '" value="' + (maxOrder + 1) + '">' +
+                    escapeHtml(ex.name) + '</td>' +
                 '<td><input name="note_' + id + '" size="12"></td>' +
                 '<td><input name="weight_' + id + '" id="weight-input-' + id + '" type="number" step="0.5" readonly style="background:#eee;"></td>' +
                 '<td><select name="mode_' + id + '" id="mode-' + id + '" class="mode-select" data-ex="' + id + '">' + modeOptions(ex.default_mode) + '</select></td>' +
@@ -2017,48 +2058,48 @@ pub async fn plan_detail(
                 '<td><input name="reps_' + id + '" type="number" step="1" value="' + ex.default_reps + '"></td>' +
                 '<td><input name="rest_' + id + '" type="number" step="1" value=""></td>' +
                 '<td><input name="key_points_' + id + '" value="' + escapeHtml(ex.key_points) + '" size="12"></td>' +
-                '<td><button type="button" onclick="removeRow(' + id + ')">删除</button></td>';
+                    '<td><button type="button" onclick="removeRow(' + id + ')">删除</button></td>';
                 /* 插到该部位的组头行之后（组头不存在 → 按常量顺序新建组头） */
                 var header = PART_HEADER_MAP[ex.part];
                 if (header) {
-                header.parentNode.insertBefore(tr, header.nextSibling);
+                    header.parentNode.insertBefore(tr, header.nextSibling);
                 } else {
-                var table = document.querySelector('table');
-                var tbody = table.tBodies[0] || table; // 浏览器隐式 tbody
-                var newHeader = document.createElement('tr');
-                newHeader.className = 'group-header';
-                newHeader.setAttribute('data-part', ex.part);
+                    var table = document.querySelector('table');
+                    var tbody = table.tBodies[0] || table; // 浏览器隐式 tbody
+                    var newHeader = document.createElement('tr');
+                    newHeader.className = 'group-header';
+                    newHeader.setAttribute('data-part', ex.part);
                 newHeader.innerHTML = '<td colspan="11">' + escapeHtml(ex.part) + '</td>';
                 /* 找第一个标准顺序比它靠后的已有组头 → 插到其前面；否则插末尾 */
-                var after = null;
+                    var after = null;
                 document.querySelectorAll('tr.group-header').forEach(function(h){
                 if (after === null && partRank(h.getAttribute('data-part')) > partRank(ex.part)) {
-                after = h;
-                }
+                            after = h;
+    }
                 });
                 if (after) {
-                tbody.insertBefore(newHeader, after);
+                        tbody.insertBefore(newHeader, after);
                 } else {
-                tbody.appendChild(newHeader);
-                }
-                tbody.insertBefore(tr, newHeader.nextSibling);
-                PART_HEADER_MAP[ex.part] = newHeader;
-                }
+                        tbody.appendChild(newHeader);
+    }
+                    tbody.insertBefore(tr, newHeader.nextSibling);
+                    PART_HEADER_MAP[ex.part] = newHeader;
+    }
                 syncModeRow(id);
                 setupRow(id);
                 filterExByPart();
-                }
+    }
                 function removeRow(id){
                 var row = document.getElementById('row-' + id);
                 if (row) row.remove();
-                }
+    }
                 /* ---- 部位筛选（添加动作下拉框） ---- */
                 function filterExByPart(){
                 var part = document.getElementById('part-select').value;
                 document.querySelectorAll('#ex-select option').forEach(function(opt){
-                opt.style.display = (part === '' || opt.getAttribute('data-part') === part) ? '' : 'none';
+                    opt.style.display = (part === '' || opt.getAttribute('data-part') === part) ? '' : 'none';
                 });
-                }
+    }
                 /* ---- 行级重量换算器（多实例版，与 record_form 的 weight_converter.js 同逻辑）----
                  * bar     总重 = 杆重 + 2×片重
                  * support 总重 = 体重 − 支撑量（下限 0）
@@ -2078,8 +2119,8 @@ pub async fn plan_detail(
                 case 'support': return Math.max(0, bodyKg - plateKg);
                 case 'std': return plateKg;
                 default: return 0;
-                }
-                }
+    }
+    }
                 function roundToHalf(x){ return Math.round(x * 2) / 2; }
                 /* 【M5 修订：逆换算 —— 实际强度 → 观测强度（与 weight_converter.js 同逻辑）】
                  * bar:     片重 = (总重 - 杆重) / 2
@@ -2096,10 +2137,10 @@ pub async fn plan_detail(
                 case 'support': plateKg = bodyKg - weightKg; break;
                 case 'std': plateKg = weightKg; break;
                 default: plateKg = 0;
-                }
+    }
                 plateKg = Math.max(0, plateKg);
                 return (unit === 'lb') ? plateKg / 0.4536 : plateKg;
-                }
+    }
                 /* 【M5 修订：Bug 1 —— 单 td 三态切换】
                  * 杆重/支撑列合并后，syncModeRow 控制 td 内三个子元素的显隐：
                  *   bar     → 显示杆重 select
@@ -2111,7 +2152,7 @@ pub async fn plan_detail(
                 document.getElementById('bar-' + exId).style.display = (mode === 'bar') ? '' : 'none';
                 document.getElementById('body-' + exId).style.display = (mode === 'support') ? '' : 'none';
                 document.getElementById('bar-body-na-' + exId).style.display = (mode === 'std') ? '' : 'none';
-                }
+    }
                 function rowTotal(exId){
                 var mode = document.getElementById('mode-' + exId).value;
                 var plate = document.getElementById('plate-' + exId).value;
@@ -2120,13 +2161,13 @@ pub async fn plan_detail(
                 var unit = document.getElementById('unit-' + exId).value;
                 var defaultBody = Number(localStorage.getItem('weight_converter_body')) || BODY_WEIGHT || 70;
                 return roundToHalf(convertWeight(mode, plate, bar, body || defaultBody, unit));
-                }
+    }
                 function updateRow(exId){
                 document.getElementById('result-' + exId).textContent = rowTotal(exId) + ' kg';
                 if (document.getElementById('plate-' + exId).value !== '') {
                 document.getElementById('weight-input-' + exId).value = rowTotal(exId);
-                }
-                }
+    }
+    }
                 function setupRow(exId){
                 var sel = document.getElementById('mode-' + exId);
                 syncModeRow(exId);
@@ -2162,12 +2203,12 @@ pub async fn plan_detail(
                 document.getElementById('bar-' + exId).value,
                 document.getElementById('body-' + exId).value || BODY_WEIGHT || 70,
                 document.getElementById('unit-' + exId).value || 'kg',
-                ));
-                }
+        ));
+    }
                 if (plateEl.value === '') {
                 document.getElementById('result-' + exId).textContent = '';
-                }
-                }
+    }
+    }
                 /* 初始化：已有行全部 setup + 部位下拉联动 */
                 document.querySelectorAll('.mode-select').forEach(function(sel){
                 setupRow(sel.getAttribute('data-ex'));
@@ -2190,16 +2231,16 @@ pub async fn plan_detail(
 /// 3. 事务：UPDATE plans SET date/note → DELETE plan_items → 循环 INSERT
 /// 4. commit → 重定向回计划详情
 pub async fn plan_update(
-    State(state): State<AppState>,
-    AuthUser(user): AuthUser,
-    Path(plan_id): Path<i64>,
-    Form(form): Form<PlanEditForm>,
-) -> Result<Redirect, AppError>
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    crate::handlers::auth::AuthUser(user): crate::handlers::auth::AuthUser,
+    axum::extract::Path(plan_id): axum::extract::Path<i64>,
+    axum::extract::Form(form): axum::extract::Form<PlanEditForm>,
+) -> Result<axum::response::Redirect, crate::error::AppError>
 {
     let pool = state.pool.read().await.clone();
 
     // ① 先查后改：验证归属（JOIN phases）→ 拿到 phase_id 供重定向
-    let current_plan = sqlx::query_as::<_, Plan>(
+    let current_plan = sqlx::query_as::<_, crate::models::Plan>(
         "SELECT p.* FROM plans p INNER JOIN phases ph ON p.phase_id = ph.id
     WHERE p.id = ? AND ph.user_id = ?",
     )
@@ -2207,21 +2248,24 @@ pub async fn plan_update(
     .bind(&user.id)
     .fetch_optional(&pool)
     .await
-    .map_err(AppError::Database)?
-    .ok_or_else(|| AppError::NotFound("No plan found in such user and phase".to_string()))?;
+    .map_err(crate::error::AppError::Database)?
+    .ok_or_else(|| {
+        crate::error::AppError::NotFound("No plan found in such user and phase".to_string())
+    })?;
 
     // ② 归档阶段不可编辑
-    let target_phase =
-        sqlx::query_as::<_, Phase>("SELECT * FROM phases WHERE id = ? AND user_id = ?")
-            .bind(&current_plan.phase_id)
-            .bind(&user.id)
-            .fetch_optional(&pool)
-            .await
-            .map_err(AppError::Database)?
-            .ok_or_else(|| AppError::NotFound("No such phase in your profile".to_string()))?;
+    let target_phase = sqlx::query_as::<_, crate::models::Phase>(
+        "SELECT * FROM phases WHERE id = ? AND user_id = ?",
+    )
+    .bind(&current_plan.phase_id)
+    .bind(&user.id)
+    .fetch_optional(&pool)
+    .await
+    .map_err(crate::error::AppError::Database)?
+    .ok_or_else(|| crate::error::AppError::NotFound("No such phase in your profile".to_string()))?;
     if target_phase.archived
     {
-        return Err(AppError::Forbidden(
+        return Err(crate::error::AppError::Forbidden(
             "Can not edit archived phase".to_string(),
         ));
     }
@@ -2236,17 +2280,20 @@ pub async fn plan_update(
     .bind(&plan_id)
     .fetch_optional(&pool)
     .await
-    .map_err(AppError::Database)?;
+    .map_err(crate::error::AppError::Database)?;
     if exists.is_some()
     {
-        return Err(AppError::Validation(format!(
+        return Err(crate::error::AppError::Validation(format!(
             "该日期 {} 已有计划，不能重复",
             form.date
         )));
     }
 
     // ④ 事务：先删后插（和模板 update 一样的套路）
-    let mut tx = pool.begin().await.map_err(AppError::Database)?;
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(crate::error::AppError::Database)?;
 
     // 4.1 更新父表（日期 + 备注）
     sqlx::query("UPDATE plans SET date = ?, note = ? WHERE id = ?")
@@ -2255,33 +2302,36 @@ pub async fn plan_update(
         .bind(&plan_id)
         .execute(&mut *tx)
         .await
-        .map_err(AppError::Database)?;
+        .map_err(crate::error::AppError::Database)?;
 
     // 4.2 删掉所有旧计划项
-    //     ⚠️【外键陷阱：同 plan_delete】已训练过的计划项有 records 引用，
+    //     【外键陷阱：同 plan_delete】已训练过的计划项有 records 引用，
     //     直接删会报 FOREIGN KEY constraint failed。
     //     先解除关联（保留训练历史），再删。
     //     【M7 修订：排序真值 = order_{ex_id} 隐藏字段（同 template_update），
     //     不再需要删前存 old_order —— 见 4.3 注释】
 
-    // ⚠️【M5 修订：重新关联训练记录】
+    // 【M5 修订：重新关联训练记录】
     // 解除关联前先备份 (exercise_id → record_id 列表)，
     // 4.3 重建 plan_items（新 id）后按此清单精确还原——
     // 否则 today 页/record_form 按 plan_item_id 查记录 → 全部"未训练"！
     // 不能事后按 (plan_id, exercise_id) 猜，会误捞其他计划/历史遗留的 NULL 记录。
-    let orphaned: HashMap<i64, Vec<i64>> = sqlx::query_as::<_, (i64, i64)>(
+    let orphaned: std::collections::HashMap<i64, Vec<i64>> = sqlx::query_as::<_, (i64, i64)>(
         "SELECT r.exercise_id, r.id FROM records r
         WHERE r.plan_item_id IN (SELECT id FROM plan_items WHERE plan_id = ?)",
     )
     .bind(&plan_id)
     .fetch_all(&pool)
     .await
-    .map_err(AppError::Database)?
+    .map_err(crate::error::AppError::Database)?
     .into_iter()
-    .fold(HashMap::new(), |mut acc, (ex_id, rec_id)| {
-        acc.entry(ex_id).or_default().push(rec_id);
-        acc
-    });
+    .fold(
+        std::collections::HashMap::new(),
+        |mut acc, (ex_id, rec_id)| {
+            acc.entry(ex_id).or_default().push(rec_id);
+            acc
+        },
+    );
 
     sqlx::query(
         "UPDATE records SET plan_item_id = NULL
@@ -2290,13 +2340,13 @@ pub async fn plan_update(
     .bind(&plan_id)
     .execute(&mut *tx)
     .await
-    .map_err(AppError::Database)?;
+    .map_err(crate::error::AppError::Database)?;
 
     sqlx::query("DELETE FROM plan_items WHERE plan_id = ?")
         .bind(&plan_id)
         .execute(&mut *tx)
         .await
-        .map_err(AppError::Database)?;
+        .map_err(crate::error::AppError::Database)?;
 
     // 4.3 重新插入勾选的动作
     //    组/次/重/计重方式/杆重/休息/要领直接来自表单
@@ -2304,7 +2354,7 @@ pub async fn plan_update(
     //    空字符串 → None → 存 NULL（plan_detail 显示 "-"）
     //    【M7 修订：顺序真值 = order_{ex_id} 隐藏字段（同 template_update）】
     //    按页面展示顺序排序后再插入；无 order 键 → 退化原顺序。
-    //    ⚠️【M5 修订：重建后按备份清单精确还原记录关联】
+    //    【M5 修订：重建后按备份清单精确还原记录关联】
     //    4.2 已把该计划下所有 records.plan_item_id 置 NULL（外键防冲突），
     //    重建的 plan_items 是新 id——这里用 orphaned 清单还原：
     //    同一计划内每个动作唯一，exercise_id → 新 plan_item_id 一一对应。
@@ -2328,7 +2378,7 @@ pub async fn plan_update(
         .bind(form.plan_note(ex_id))
         .execute(&mut *tx)
         .await
-        .map_err(AppError::Database)?;
+        .map_err(crate::error::AppError::Database)?;
         let new_item_id = result.last_insert_rowid();
 
         // 精确还原：仅把备份清单中该动作的记录挂回新 plan_item_id
@@ -2342,20 +2392,22 @@ pub async fn plan_update(
                     .bind(rec_id)
                     .execute(&mut *tx)
                     .await
-                    .map_err(AppError::Database)?;
+                    .map_err(crate::error::AppError::Database)?;
             }
         }
     }
 
     // ⑤ 提交
-    tx.commit().await.map_err(AppError::Database)?;
+    tx.commit()
+        .await
+        .map_err(crate::error::AppError::Database)?;
 
     // ⑥ 重定向回计划列表（本阶段的 plans 列表页）
     //     【M5 修订：原重定向回 /plans/{plan_id}（编辑页自身），
     //     用户要求保存后离开编辑态，回到列表。】
-    //     ⚠️ 不能跳裸 /plans（无该路由，会 404）——计划列表挂在阶段下：
+    //      不能跳裸 /plans（无该路由，会 404）——计划列表挂在阶段下：
     //     GET /phases/{phase_id}/plans（main.rs 已注册）
-    Ok(Redirect::to(&format!(
+    Ok(axum::response::Redirect::to(&format!(
         "/phases/{phase_id}/plans",
         phase_id = current_plan.phase_id
     )))
@@ -2372,22 +2424,22 @@ pub async fn plan_update(
 /// 3. 事务：UPDATE records 解除关联 → DELETE FROM plan_items → DELETE FROM plans
 /// 4. commit → 重定向回计划列表
 ///
-/// ⚠️【踩坑记录：外键约束失败（787）】
+/// 【踩坑记录：外键约束失败（787）】
 /// records.plan_item_id 外键引用 plan_items(id)。
 /// 直接删 plan_items 时，若该计划项已被训练过（有 records 引用），
 /// SQLite 会报 FOREIGN KEY constraint failed，删除失败。
 /// 修复：先 UPDATE records SET plan_item_id = NULL（保留训练历史，解除关联），
 /// 再删 plan_items。
 pub async fn plan_delete(
-    State(state): State<AppState>,
-    AuthUser(user): AuthUser,
-    Path(plan_id): Path<i64>,
-) -> Result<Redirect, AppError>
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    crate::handlers::auth::AuthUser(user): crate::handlers::auth::AuthUser,
+    axum::extract::Path(plan_id): axum::extract::Path<i64>,
+) -> Result<axum::response::Redirect, crate::error::AppError>
 {
     let pool = state.pool.read().await.clone();
 
     // ① 先查后改：验证归属（JOIN phases）→ 拿 phase_id 供重定向
-    let current_plan = sqlx::query_as::<_, Plan>(
+    let current_plan = sqlx::query_as::<_, crate::models::Plan>(
         "SELECT p.* FROM plans p INNER JOIN phases ph ON p.phase_id = ph.id
     WHERE p.id = ? AND ph.user_id = ?",
     )
@@ -2395,11 +2447,16 @@ pub async fn plan_delete(
     .bind(&user.id)
     .fetch_optional(&pool)
     .await
-    .map_err(AppError::Database)?
-    .ok_or_else(|| AppError::NotFound("No plan found in such user and phase".to_string()))?;
+    .map_err(crate::error::AppError::Database)?
+    .ok_or_else(|| {
+        crate::error::AppError::NotFound("No plan found in such user and phase".to_string())
+    })?;
 
     // ② 事务：解除 records 外键关联 → 删子（plan_items）→ 删父（plans）
-    let mut tx = pool.begin().await.map_err(AppError::Database)?;
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(crate::error::AppError::Database)?;
 
     // 2.1 该计划下的所有计划项 id → 对应 records 的 plan_item_id 置 NULL
     //     训练记录是用户的历史数据，删除计划不该连记录一起删，
@@ -2411,23 +2468,25 @@ pub async fn plan_delete(
     .bind(&plan_id)
     .execute(&mut *tx)
     .await
-    .map_err(AppError::Database)?;
+    .map_err(crate::error::AppError::Database)?;
 
     sqlx::query("DELETE FROM plan_items WHERE plan_id = ?")
         .bind(&plan_id)
         .execute(&mut *tx)
         .await
-        .map_err(AppError::Database)?;
+        .map_err(crate::error::AppError::Database)?;
 
     sqlx::query("DELETE FROM plans WHERE id = ?")
         .bind(&plan_id)
         .execute(&mut *tx)
         .await
-        .map_err(AppError::Database)?;
+        .map_err(crate::error::AppError::Database)?;
 
-    tx.commit().await.map_err(AppError::Database)?;
+    tx.commit()
+        .await
+        .map_err(crate::error::AppError::Database)?;
 
-    Ok(Redirect::to(&format!(
+    Ok(axum::response::Redirect::to(&format!(
         "/phases/{phase_id}/plans",
         phase_id = current_plan.phase_id
     )))
@@ -2448,7 +2507,7 @@ pub async fn plan_delete(
 //   （模板项/计划项的 sort_order 本来就是 1..n，重写后行为一致。）
 
 /// 查询参数：?dir=up | ?dir=down
-#[derive(Deserialize)]
+#[derive(serde::Deserialize)]
 pub struct MoveQuery
 {
     pub dir: String,
@@ -2457,16 +2516,16 @@ pub struct MoveQuery
 /// 模板上移/下移（POST /templates/{id}/sort?dir=up|down）
 /// 在【同一阶段】内交换相邻模板的 sort_order
 pub async fn template_sort(
-    State(state): State<AppState>,
-    AuthUser(user): AuthUser,
-    Path(template_id): Path<i64>,
-    Query(query): Query<MoveQuery>,
-) -> Result<Redirect, AppError>
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    crate::handlers::auth::AuthUser(user): crate::handlers::auth::AuthUser,
+    axum::extract::Path(template_id): axum::extract::Path<i64>,
+    axum::extract::Query(query): axum::extract::Query<MoveQuery>,
+) -> Result<axum::response::Redirect, crate::error::AppError>
 {
     let pool = state.pool.read().await.clone();
 
     // ① 验证归属：JOIN phases 拿 user_id（模板不存在/不属于你 → NotFound）
-    let current = sqlx::query_as::<_, Template>(
+    let current = sqlx::query_as::<_, crate::models::Template>(
         "SELECT t.* FROM templates t INNER JOIN phases p ON t.phase_id = p.id
     WHERE t.id = ? AND p.user_id = ?",
     )
@@ -2474,23 +2533,23 @@ pub async fn template_sort(
     .bind(&user.id)
     .fetch_optional(&pool)
     .await
-    .map_err(AppError::Database)?
-    .ok_or_else(|| AppError::NotFound("No template found".to_string()))?;
+    .map_err(crate::error::AppError::Database)?
+    .ok_or_else(|| crate::error::AppError::NotFound("No template found".to_string()))?;
 
     // ② 查同阶段全部模板（按 sort_order, id 排）→ 找当前行下标
-    let siblings = sqlx::query_as::<_, Template>(
+    let siblings = sqlx::query_as::<_, crate::models::Template>(
         "SELECT * FROM templates WHERE phase_id = ? ORDER BY sort_order, id",
     )
     .bind(&current.phase_id)
     .fetch_all(&pool)
     .await
-    .map_err(AppError::Database)?;
+    .map_err(crate::error::AppError::Database)?;
     let index = siblings.iter().position(|t| t.id == template_id);
     let Some(index) = index
     else
     {
         // 理论上不发生（归属已验证），防御性处理
-        return Ok(Redirect::to(&format!(
+        return Ok(axum::response::Redirect::to(&format!(
             "/phases/{phase_id}/templates",
             phase_id = current.phase_id
         )));
@@ -2504,20 +2563,28 @@ pub async fn template_sort(
             let t = index + 1;
             (t < siblings.len()).then_some(t)
         },
-        _ => return Err(AppError::Validation("dir must be up or down".to_string())),
+        _ =>
+        {
+            return Err(crate::error::AppError::Validation(
+                "dir must be up or down".to_string(),
+            ));
+        },
     };
     let Some(target) = target
     else
     {
         // 首行/尾行：无需变化，直接回列表
-        return Ok(Redirect::to(&format!(
+        return Ok(axum::response::Redirect::to(&format!(
             "/phases/{phase_id}/templates",
             phase_id = current.phase_id
         )));
     };
 
     // ③ 事务：先重写 1..n 再交换（见文件头注释）
-    let mut tx = pool.begin().await.map_err(AppError::Database)?;
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(crate::error::AppError::Database)?;
     for (i, t) in siblings.iter().enumerate()
     {
         sqlx::query("UPDATE templates SET sort_order = ? WHERE id = ?")
@@ -2525,7 +2592,7 @@ pub async fn template_sort(
             .bind(t.id)
             .execute(&mut *tx)
             .await
-            .map_err(AppError::Database)?;
+            .map_err(crate::error::AppError::Database)?;
     }
     let (a, b) = (&siblings[index], &siblings[target]);
     sqlx::query("UPDATE templates SET sort_order = ? WHERE id = ?")
@@ -2533,16 +2600,18 @@ pub async fn template_sort(
         .bind(a.id)
         .execute(&mut *tx)
         .await
-        .map_err(AppError::Database)?;
+        .map_err(crate::error::AppError::Database)?;
     sqlx::query("UPDATE templates SET sort_order = ? WHERE id = ?")
         .bind((index + 1) as i64)
         .bind(b.id)
         .execute(&mut *tx)
         .await
-        .map_err(AppError::Database)?;
-    tx.commit().await.map_err(AppError::Database)?;
+        .map_err(crate::error::AppError::Database)?;
+    tx.commit()
+        .await
+        .map_err(crate::error::AppError::Database)?;
 
-    Ok(Redirect::to(&format!(
+    Ok(axum::response::Redirect::to(&format!(
         "/phases/{phase_id}/templates",
         phase_id = current.phase_id
     )))
@@ -2551,16 +2620,16 @@ pub async fn template_sort(
 /// 模板项上移/下移（POST /templates/{id}/items/{item_id}/move?dir=up|down）
 /// 同一模板内交换相邻 template_items 的 sort_order
 pub async fn template_item_move(
-    State(state): State<AppState>,
-    AuthUser(user): AuthUser,
-    Path((template_id, item_id)): Path<(i64, i64)>,
-    Query(query): Query<MoveQuery>,
-) -> Result<Redirect, AppError>
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    crate::handlers::auth::AuthUser(user): crate::handlers::auth::AuthUser,
+    axum::extract::Path((template_id, item_id)): axum::extract::Path<(i64, i64)>,
+    axum::extract::Query(query): axum::extract::Query<MoveQuery>,
+) -> Result<axum::response::Redirect, crate::error::AppError>
 {
     let pool = state.pool.read().await.clone();
 
     // ① 验证模板归属（JOIN phases）
-    let _current = sqlx::query_as::<_, Template>(
+    let _current = sqlx::query_as::<_, crate::models::Template>(
         "SELECT t.* FROM templates t INNER JOIN phases p ON t.phase_id = p.id
     WHERE t.id = ? AND p.user_id = ?",
     )
@@ -2568,22 +2637,22 @@ pub async fn template_item_move(
     .bind(&user.id)
     .fetch_optional(&pool)
     .await
-    .map_err(AppError::Database)?
-    .ok_or_else(|| AppError::NotFound("No template found".to_string()))?;
+    .map_err(crate::error::AppError::Database)?
+    .ok_or_else(|| crate::error::AppError::NotFound("No template found".to_string()))?;
 
     // ② 查同模板全部项（按 sort_order, id 排）→ 找当前行下标
-    let siblings = sqlx::query_as::<_, TemplateItem>(
+    let siblings = sqlx::query_as::<_, crate::models::TemplateItem>(
         "SELECT * FROM template_items WHERE template_id = ? ORDER BY sort_order, id",
     )
     .bind(&template_id)
     .fetch_all(&pool)
     .await
-    .map_err(AppError::Database)?;
+    .map_err(crate::error::AppError::Database)?;
     let index = siblings.iter().position(|i| i.id == item_id);
     let Some(index) = index
     else
     {
-        return Ok(Redirect::to(&format!(
+        return Ok(axum::response::Redirect::to(&format!(
             "/templates/{template_id}/edit",
             template_id = template_id
         )));
@@ -2596,19 +2665,27 @@ pub async fn template_item_move(
             let t = index + 1;
             (t < siblings.len()).then_some(t)
         },
-        _ => return Err(AppError::Validation("dir must be up or down".to_string())),
+        _ =>
+        {
+            return Err(crate::error::AppError::Validation(
+                "dir must be up or down".to_string(),
+            ));
+        },
     };
     let Some(target) = target
     else
     {
-        return Ok(Redirect::to(&format!(
+        return Ok(axum::response::Redirect::to(&format!(
             "/templates/{template_id}/edit",
             template_id = template_id
         )));
     };
 
     // ③ 事务：先重写 1..n 再交换
-    let mut tx = pool.begin().await.map_err(AppError::Database)?;
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(crate::error::AppError::Database)?;
     for (i, item) in siblings.iter().enumerate()
     {
         sqlx::query("UPDATE template_items SET sort_order = ? WHERE id = ?")
@@ -2616,7 +2693,7 @@ pub async fn template_item_move(
             .bind(item.id)
             .execute(&mut *tx)
             .await
-            .map_err(AppError::Database)?;
+            .map_err(crate::error::AppError::Database)?;
     }
     let (a, b) = (&siblings[index], &siblings[target]);
     sqlx::query("UPDATE template_items SET sort_order = ? WHERE id = ?")
@@ -2624,16 +2701,18 @@ pub async fn template_item_move(
         .bind(a.id)
         .execute(&mut *tx)
         .await
-        .map_err(AppError::Database)?;
+        .map_err(crate::error::AppError::Database)?;
     sqlx::query("UPDATE template_items SET sort_order = ? WHERE id = ?")
         .bind((index + 1) as i64)
         .bind(b.id)
         .execute(&mut *tx)
         .await
-        .map_err(AppError::Database)?;
-    tx.commit().await.map_err(AppError::Database)?;
+        .map_err(crate::error::AppError::Database)?;
+    tx.commit()
+        .await
+        .map_err(crate::error::AppError::Database)?;
 
-    Ok(Redirect::to(&format!(
+    Ok(axum::response::Redirect::to(&format!(
         "/templates/{template_id}/edit",
         template_id = template_id
     )))
@@ -2642,16 +2721,16 @@ pub async fn template_item_move(
 /// 计划项上移/下移（POST /plans/{id}/items/{item_id}/move?dir=up|down）
 /// 同一计划内交换相邻 plan_items 的 sort_order
 pub async fn plan_item_move(
-    State(state): State<AppState>,
-    AuthUser(user): AuthUser,
-    Path((plan_id, item_id)): Path<(i64, i64)>,
-    Query(query): Query<MoveQuery>,
-) -> Result<Redirect, AppError>
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    crate::handlers::auth::AuthUser(user): crate::handlers::auth::AuthUser,
+    axum::extract::Path((plan_id, item_id)): axum::extract::Path<(i64, i64)>,
+    axum::extract::Query(query): axum::extract::Query<MoveQuery>,
+) -> Result<axum::response::Redirect, crate::error::AppError>
 {
     let pool = state.pool.read().await.clone();
 
     // ① 验证计划归属（JOIN phases）
-    let _current = sqlx::query_as::<_, Plan>(
+    let _current = sqlx::query_as::<_, crate::models::Plan>(
         "SELECT p.* FROM plans p INNER JOIN phases ph ON p.phase_id = ph.id
     WHERE p.id = ? AND ph.user_id = ?",
     )
@@ -2659,22 +2738,22 @@ pub async fn plan_item_move(
     .bind(&user.id)
     .fetch_optional(&pool)
     .await
-    .map_err(AppError::Database)?
-    .ok_or_else(|| AppError::NotFound("No plan found".to_string()))?;
+    .map_err(crate::error::AppError::Database)?
+    .ok_or_else(|| crate::error::AppError::NotFound("No plan found".to_string()))?;
 
     // ② 查同计划全部项（按 sort_order, id 排）→ 找当前行下标
-    let siblings = sqlx::query_as::<_, PlanItem>(
+    let siblings = sqlx::query_as::<_, crate::models::PlanItem>(
         "SELECT * FROM plan_items WHERE plan_id = ? ORDER BY sort_order, id",
     )
     .bind(&plan_id)
     .fetch_all(&pool)
     .await
-    .map_err(AppError::Database)?;
+    .map_err(crate::error::AppError::Database)?;
     let index = siblings.iter().position(|i| i.id == item_id);
     let Some(index) = index
     else
     {
-        return Ok(Redirect::to(&format!(
+        return Ok(axum::response::Redirect::to(&format!(
             "/plans/{plan_id}",
             plan_id = plan_id
         )));
@@ -2687,19 +2766,27 @@ pub async fn plan_item_move(
             let t = index + 1;
             (t < siblings.len()).then_some(t)
         },
-        _ => return Err(AppError::Validation("dir must be up or down".to_string())),
+        _ =>
+        {
+            return Err(crate::error::AppError::Validation(
+                "dir must be up or down".to_string(),
+            ));
+        },
     };
     let Some(target) = target
     else
     {
-        return Ok(Redirect::to(&format!(
+        return Ok(axum::response::Redirect::to(&format!(
             "/plans/{plan_id}",
             plan_id = plan_id
         )));
     };
 
     // ③ 事务：先重写 1..n 再交换
-    let mut tx = pool.begin().await.map_err(AppError::Database)?;
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(crate::error::AppError::Database)?;
     for (i, item) in siblings.iter().enumerate()
     {
         sqlx::query("UPDATE plan_items SET sort_order = ? WHERE id = ?")
@@ -2707,7 +2794,7 @@ pub async fn plan_item_move(
             .bind(item.id)
             .execute(&mut *tx)
             .await
-            .map_err(AppError::Database)?;
+            .map_err(crate::error::AppError::Database)?;
     }
     let (a, b) = (&siblings[index], &siblings[target]);
     sqlx::query("UPDATE plan_items SET sort_order = ? WHERE id = ?")
@@ -2715,16 +2802,18 @@ pub async fn plan_item_move(
         .bind(a.id)
         .execute(&mut *tx)
         .await
-        .map_err(AppError::Database)?;
+        .map_err(crate::error::AppError::Database)?;
     sqlx::query("UPDATE plan_items SET sort_order = ? WHERE id = ?")
         .bind((index + 1) as i64)
         .bind(b.id)
         .execute(&mut *tx)
         .await
-        .map_err(AppError::Database)?;
-    tx.commit().await.map_err(AppError::Database)?;
+        .map_err(crate::error::AppError::Database)?;
+    tx.commit()
+        .await
+        .map_err(crate::error::AppError::Database)?;
 
-    Ok(Redirect::to(&format!(
+    Ok(axum::response::Redirect::to(&format!(
         "/plans/{plan_id}",
         plan_id = plan_id
     )))
@@ -2735,13 +2824,13 @@ pub async fn plan_item_move(
 // ============================================================
 
 /// 模板创建/编辑表单（名字 + 勾选的动作集合）
-#[derive(Deserialize)]
+#[derive(serde::Deserialize)]
 pub struct TemplateCreateForm
 {
     pub name: String,
     /// 勾选的动作 id 集合：checkbox 的 name 直接用动作 id，值是 "1"
     ///
-    /// ⚠️ 不能用 exercise_ids: Vec<i64> 或同名重复键！
+    ///  不能用 exercise_ids: Vec<i64> 或同名重复键！
     /// axum 的 Form 用 serde_urlencoded 解析，它是 **map 语义**：
     /// 重复键后值覆盖前值（实测 exercise_ids=6&exercise_ids=7 → 只剩 7），
     /// 无法收集成数组（实测报 422: invalid type: string "6", expected a sequence）。
@@ -2749,7 +2838,7 @@ pub struct TemplateCreateForm
     /// 正确做法：checkbox name = 动作 id（唯一键），#[serde(flatten)] 收集全部，
     /// handler 里按"能解析成 i64 的键"过滤出选中的动作。
     #[serde(flatten)]
-    pub rest: HashMap<String, String>,
+    pub rest: std::collections::HashMap<String, String>,
 }
 
 impl TemplateCreateForm
@@ -2804,7 +2893,7 @@ impl TemplateCreateForm
 }
 
 /// 计划创建表单（日期 + 可选模板 + 可选手动选动作）
-#[derive(Deserialize)]
+#[derive(serde::Deserialize)]
 pub struct PlanCreateForm
 {
     pub date: String,
@@ -2812,7 +2901,7 @@ pub struct PlanCreateForm
     pub note: String,
     /// 模板 id（可选）。
     ///
-    /// ⚠️【M8 bugfix：不能声明成 Option<i64>！】
+    /// 【M8 bugfix：不能声明成 Option<i64>！】
     /// 表单里 <select> 不选模板时提交的是 **空字符串**（template_id=），
     /// serde_urlencoded 把 Option<i64> 收到 "" → 解析 i64 失败 → 422 报错。
     /// 这就是"自选动作创建计划报错"的根因（选模板 template_id=5 反而正常）。
@@ -2821,7 +2910,7 @@ pub struct PlanCreateForm
     pub template_id: Option<String>,
     /// 手动选的动作集合：checkbox 的 name 直接用动作 id，值是 "1"
     ///
-    /// ⚠️【serde_urlencoded 多选陷阱】（模板表单踩过的坑，这里再讲一遍）
+    /// 【serde_urlencoded 多选陷阱】（模板表单踩过的坑，这里再讲一遍）
     /// axum 的 Form<T> 底层用 serde_urlencoded 解析，它是 **map 语义**：
     ///   - 重复键：后值覆盖前值
     ///     `exercise_ids=6&exercise_ids=7` → 解析结果只剩 `7`
@@ -2830,13 +2919,13 @@ pub struct PlanCreateForm
     ///   - 加 `[]` 后缀（`exercise_ids[]=6`）也不生效
     /// 结论：**同名重复键无法收集成数组**，这是 serde_urlencoded 的固有行为。
     ///
-    /// ✅ 本项目方案：checkbox name = 动作 id（唯一键），value = "1"
+    ///  本项目方案：checkbox name = 动作 id（唯一键），value = "1"
     ///   <input type="checkbox" name="6" value="1"> 卧推
     ///   <input type="checkbox" name="7" value="1"> 深蹲
     /// 提交后形如：date=2026-08-09&template_id=2&6=1&7=1
     /// 结构体用 #[serde(flatten)] 把未匹配键收进 HashMap，再按数字键过滤。
     #[serde(flatten)]
-    pub rest: HashMap<String, String>,
+    pub rest: std::collections::HashMap<String, String>,
 }
 
 impl PlanCreateForm
@@ -2873,18 +2962,18 @@ impl PlanCreateForm
 }
 
 /// 计划编辑表单（日期 + 备注 + 动作集合 + 每动作组/次/重）
-#[derive(Deserialize)]
+#[derive(serde::Deserialize)]
 pub struct PlanEditForm
 {
     pub date: String,
     pub note: String,
-    /// ⚠️ 多选陷阱：和 TemplateCreateForm / PlanCreateForm 一样，
+    ///  多选陷阱：和 TemplateCreateForm / PlanCreateForm 一样，
     /// 不能用 exercise_ids: Vec<i64>（serde_urlencoded map 语义，重复键覆盖）
     /// 用 flatten 收集所有未匹配键，再按规则解析：
     ///   - 纯数字键（"6"）值 == "1" → 勾选的动作 id
     ///   - "{前缀}_{动作id}"（"sets_6"）→ 该动作的组/次/重
     #[serde(flatten)]
-    pub rest: HashMap<String, String>,
+    pub rest: std::collections::HashMap<String, String>,
 }
 
 impl PlanEditForm
@@ -2968,7 +3057,7 @@ impl PlanEditForm
         self.plan_value("weight", ex_id)
     }
 
-    // ⚠️【M6 清理：plan_mode()/plan_bar_weight() 已删除】
+    // 【M6 清理：plan_mode()/plan_bar_weight() 已删除】
     // 计重方式/杆重不再由计划项维护（单一事实来源 = exercises），
     // 这两个解析方法已无调用方。表单里的 mode_{id}/bar_weight_{id}
     // 键仍会提交，但后端不再读取（plan_detail 的计重回显直取动作库）。

@@ -31,14 +31,14 @@
 // 它只是复制 state 的 Arc 指针，不会复制连接池/数据库。
 // 与 axum 的 with_state 是同一个道理（M0 的 AppState 教学）。
 //
-// 📌 本目录挖空清单（都要你实现，共 8 处，每处上方有【实现步骤】）：
+//  本目录挖空清单（都要你实现，共 8 处，每处上方有【实现步骤】）：
 //   auth.rs      login                        （一元 + 建会话）
 //   phases.rs    set_phase_archived           （一元 + 复用 REST 的归档逻辑）
-//   exercises.rs stream_exercise_series       （★ 服务器流式）
+//   exercises.rs stream_exercise_series       （ 服务器流式）
 //   plans.rs     create_plan                  （一元 + 嵌套 repeated 写入）
 //   records.rs   get_today / upsert_record    （一元：读今日 + 写记录）
-//   records.rs   submit_workout               （★ 客户端流式）
-//   stats.rs     stream_records               （★ 服务器流式 + 区间过滤）
+//   records.rs   submit_workout               （ 客户端流式）
+//   stats.rs     stream_records               （ 服务器流式 + 区间过滤）
 // （另有 4 处基础件挖空：error.rs 的映射、auth.rs 的守卫、convert.rs 的两个转换）
 // ============================================================
 
@@ -49,9 +49,6 @@ pub mod plans;
 pub mod records;
 pub mod stats;
 
-use crate::AppState;
-use sqlx::SqlitePool;
-
 /// 取连接池快照
 ///
 /// 【教学：为什么要"读锁 + clone"这一套？】
@@ -61,7 +58,7 @@ use sqlx::SqlitePool;
 ///             关键是**锁不跨 await 持有**——克隆完立刻释放锁，
 ///             再拿这个克隆去做耗时的查询。
 /// （如果直接持锁去查询，一旦有写操作排队，就会拖慢整个服务器。）
-pub(crate) async fn pool_of(state: &AppState) -> SqlitePool
+pub(crate) async fn pool_of(state: &crate::AppState) -> sqlx::SqlitePool
 {
     state.pool.read().await.clone()
 }

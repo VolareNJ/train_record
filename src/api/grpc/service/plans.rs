@@ -22,26 +22,15 @@
 // 但也意味着：**绝不能绕过 REST 层的这些函数自己写 SQL**（一条错误路径就够了）。
 // ============================================================
 
-use tonic::{Request, Response, Status};
-
-use super::pool_of;
-use crate::{
-    AppState,
-    api::{
-        grpc::{auth, pb},
-        rest::plans as rest_plans,
-    },
-};
-
 #[derive(Clone)]
 pub struct PlanServiceImpl
 {
-    pub(crate) state: AppState,
+    pub(crate) state: crate::AppState,
 }
 
 impl PlanServiceImpl
 {
-    pub fn new(state: AppState) -> Self
+    pub fn new(state: crate::AppState) -> Self
     {
         Self { state }
     }
@@ -61,7 +50,7 @@ impl PlanServiceImpl
 // ============================================================
 
 #[tonic::async_trait]
-impl pb::plan_service_server::PlanService for PlanServiceImpl
+impl crate::api::grpc::pb::plan_service_server::PlanService for PlanServiceImpl
 {
     // ------------------------------------------------------------
     // 模板
@@ -69,66 +58,83 @@ impl pb::plan_service_server::PlanService for PlanServiceImpl
     /// 阶段下的模板列表（每个模板含有序动作项）
     async fn list_templates(
         &self,
-        request: Request<pb::ListTemplatesRequest>,
-    ) -> Result<Response<pb::ListTemplatesResponse>, Status>
+        request: tonic::Request<crate::api::grpc::pb::ListTemplatesRequest>,
+    ) -> Result<tonic::Response<crate::api::grpc::pb::ListTemplatesResponse>, tonic::Status>
     {
-        let user = auth::require_user(&request, &self.state).await?;
+        let user = crate::api::grpc::auth::require_user(&request, &self.state).await?;
         let req = request.into_inner();
-        let pool = pool_of(&self.state).await;
+        let pool = crate::api::grpc::service::pool_of(&self.state).await;
 
-        let list = rest_plans::template_list_impl(&pool, user.id, req.phase_id).await?;
+        let list =
+            crate::api::rest::plans::template_list_impl(&pool, user.id, req.phase_id).await?;
 
-        Ok(Response::new(pb::ListTemplatesResponse {
-            templates: list.iter().map(pb::Template::from).collect(),
-        }))
+        Ok(tonic::Response::new(
+            crate::api::grpc::pb::ListTemplatesResponse {
+                templates: list
+                    .iter()
+                    .map(crate::api::grpc::pb::Template::from)
+                    .collect(),
+            },
+        ))
     }
 
     /// 创建模板（含动作项，顺序 = items 数组顺序）
     async fn create_template(
         &self,
-        request: Request<pb::CreateTemplateRequest>,
-    ) -> Result<Response<pb::Template>, Status>
+        request: tonic::Request<crate::api::grpc::pb::CreateTemplateRequest>,
+    ) -> Result<tonic::Response<crate::api::grpc::pb::Template>, tonic::Status>
     {
-        let user = auth::require_user(&request, &self.state).await?;
+        let user = crate::api::grpc::auth::require_user(&request, &self.state).await?;
         let req = request.into_inner();
-        let pool = pool_of(&self.state).await;
+        let pool = crate::api::grpc::service::pool_of(&self.state).await;
 
-        let template_req = rest_plans::TemplateReq::from(&req);
-        let out =
-            rest_plans::template_create_impl(&pool, user.id, req.phase_id, &template_req).await?;
+        let template_req = crate::api::rest::plans::TemplateReq::from(&req);
+        let out = crate::api::rest::plans::template_create_impl(
+            &pool,
+            user.id,
+            req.phase_id,
+            &template_req,
+        )
+        .await?;
 
-        Ok(Response::new(pb::Template::from(&out)))
+        Ok(tonic::Response::new(crate::api::grpc::pb::Template::from(
+            &out,
+        )))
     }
 
     /// 更新模板（全量替换 name + items）
     async fn update_template(
         &self,
-        request: Request<pb::UpdateTemplateRequest>,
-    ) -> Result<Response<pb::Template>, Status>
+        request: tonic::Request<crate::api::grpc::pb::UpdateTemplateRequest>,
+    ) -> Result<tonic::Response<crate::api::grpc::pb::Template>, tonic::Status>
     {
-        let user = auth::require_user(&request, &self.state).await?;
+        let user = crate::api::grpc::auth::require_user(&request, &self.state).await?;
         let req = request.into_inner();
-        let pool = pool_of(&self.state).await;
+        let pool = crate::api::grpc::service::pool_of(&self.state).await;
 
-        let template_req = rest_plans::TemplateReq::from(&req);
-        let out = rest_plans::template_update_impl(&pool, user.id, req.id, &template_req).await?;
+        let template_req = crate::api::rest::plans::TemplateReq::from(&req);
+        let out =
+            crate::api::rest::plans::template_update_impl(&pool, user.id, req.id, &template_req)
+                .await?;
 
-        Ok(Response::new(pb::Template::from(&out)))
+        Ok(tonic::Response::new(crate::api::grpc::pb::Template::from(
+            &out,
+        )))
     }
 
     /// 删除模板
     async fn delete_template(
         &self,
-        request: Request<pb::DeleteTemplateRequest>,
-    ) -> Result<Response<pb::Ack>, Status>
+        request: tonic::Request<crate::api::grpc::pb::DeleteTemplateRequest>,
+    ) -> Result<tonic::Response<crate::api::grpc::pb::Ack>, tonic::Status>
     {
-        let user = auth::require_user(&request, &self.state).await?;
+        let user = crate::api::grpc::auth::require_user(&request, &self.state).await?;
         let req = request.into_inner();
-        let pool = pool_of(&self.state).await;
+        let pool = crate::api::grpc::service::pool_of(&self.state).await;
 
-        rest_plans::template_delete_impl(&pool, user.id, req.id).await?;
+        crate::api::rest::plans::template_delete_impl(&pool, user.id, req.id).await?;
 
-        Ok(Response::new(pb::Ack { ok: true }))
+        Ok(tonic::Response::new(crate::api::grpc::pb::Ack { ok: true }))
     }
 
     // ------------------------------------------------------------
@@ -137,38 +143,45 @@ impl pb::plan_service_server::PlanService for PlanServiceImpl
     /// 阶段下的计划列表（可选按日期过滤）
     async fn list_plans(
         &self,
-        request: Request<pb::ListPlansRequest>,
-    ) -> Result<Response<pb::ListPlansResponse>, Status>
+        request: tonic::Request<crate::api::grpc::pb::ListPlansRequest>,
+    ) -> Result<tonic::Response<crate::api::grpc::pb::ListPlansResponse>, tonic::Status>
     {
-        let user = auth::require_user(&request, &self.state).await?;
+        let user = crate::api::grpc::auth::require_user(&request, &self.state).await?;
         let req = request.into_inner();
-        let pool = pool_of(&self.state).await;
+        let pool = crate::api::grpc::service::pool_of(&self.state).await;
 
-        let list =
-            rest_plans::plan_list_impl(&pool, user.id, req.phase_id, req.date.as_deref()).await?;
+        let list = crate::api::rest::plans::plan_list_impl(
+            &pool,
+            user.id,
+            req.phase_id,
+            req.date.as_deref(),
+        )
+        .await?;
 
-        Ok(Response::new(pb::ListPlansResponse {
-            plans: list.iter().map(pb::Plan::from).collect(),
-        }))
+        Ok(tonic::Response::new(
+            crate::api::grpc::pb::ListPlansResponse {
+                plans: list.iter().map(crate::api::grpc::pb::Plan::from).collect(),
+            },
+        ))
     }
 
     /// 计划详情（含动作项）
     async fn get_plan(
         &self,
-        request: Request<pb::GetPlanRequest>,
-    ) -> Result<Response<pb::Plan>, Status>
+        request: tonic::Request<crate::api::grpc::pb::GetPlanRequest>,
+    ) -> Result<tonic::Response<crate::api::grpc::pb::Plan>, tonic::Status>
     {
-        let user = auth::require_user(&request, &self.state).await?;
+        let user = crate::api::grpc::auth::require_user(&request, &self.state).await?;
         let req = request.into_inner();
-        let pool = pool_of(&self.state).await;
+        let pool = crate::api::grpc::service::pool_of(&self.state).await;
 
-        let out = rest_plans::plan_detail_impl(&pool, user.id, req.id).await?;
+        let out = crate::api::rest::plans::plan_detail_impl(&pool, user.id, req.id).await?;
 
-        Ok(Response::new(pb::Plan::from(&out)))
+        Ok(tonic::Response::new(crate::api::grpc::pb::Plan::from(&out)))
     }
 
     // ============================================================
-    // CreatePlan（一元 RPC，★ 挖空练习）
+    // CreatePlan（一元 RPC， 挖空练习）
     // ============================================================
     /// 创建今日/某日计划（含动作项）
     ///
@@ -192,11 +205,12 @@ impl pb::plan_service_server::PlanService for PlanServiceImpl
     ///
     /// 【提示：可以先看 update_plan 的写法（已实现），它和这里几乎一样，
     ///   只是 id 与 phase_id 的位置不同。】
+    // 挖空期间允许 unused（todo! 占位），实现完成后删掉下一行 allow
     #[allow(unused_variables)]
     async fn create_plan(
         &self,
-        request: Request<pb::CreatePlanRequest>,
-    ) -> Result<Response<pb::Plan>, Status>
+        request: tonic::Request<crate::api::grpc::pb::CreatePlanRequest>,
+    ) -> Result<tonic::Response<crate::api::grpc::pb::Plan>, tonic::Status>
     {
         // 【实现步骤】见上方注释
         todo!("M9 练习：CreatePlan 实现") // 【待实现】
@@ -212,31 +226,32 @@ impl pb::plan_service_server::PlanService for PlanServiceImpl
     /// 想局部改一项 → 先 GetPlan 拿到全部，改完再 UpdatePlan（客户端拉-改-推）。
     async fn update_plan(
         &self,
-        request: Request<pb::UpdatePlanRequest>,
-    ) -> Result<Response<pb::Plan>, Status>
+        request: tonic::Request<crate::api::grpc::pb::UpdatePlanRequest>,
+    ) -> Result<tonic::Response<crate::api::grpc::pb::Plan>, tonic::Status>
     {
-        let user = auth::require_user(&request, &self.state).await?;
+        let user = crate::api::grpc::auth::require_user(&request, &self.state).await?;
         let req = request.into_inner();
-        let pool = pool_of(&self.state).await;
+        let pool = crate::api::grpc::service::pool_of(&self.state).await;
 
-        let plan_req = rest_plans::PlanReq::from(&req);
-        let out = rest_plans::plan_update_impl(&pool, user.id, req.id, &plan_req).await?;
+        let plan_req = crate::api::rest::plans::PlanReq::from(&req);
+        let out =
+            crate::api::rest::plans::plan_update_impl(&pool, user.id, req.id, &plan_req).await?;
 
-        Ok(Response::new(pb::Plan::from(&out)))
+        Ok(tonic::Response::new(crate::api::grpc::pb::Plan::from(&out)))
     }
 
     /// 删除计划
     async fn delete_plan(
         &self,
-        request: Request<pb::DeletePlanRequest>,
-    ) -> Result<Response<pb::Ack>, Status>
+        request: tonic::Request<crate::api::grpc::pb::DeletePlanRequest>,
+    ) -> Result<tonic::Response<crate::api::grpc::pb::Ack>, tonic::Status>
     {
-        let user = auth::require_user(&request, &self.state).await?;
+        let user = crate::api::grpc::auth::require_user(&request, &self.state).await?;
         let req = request.into_inner();
-        let pool = pool_of(&self.state).await;
+        let pool = crate::api::grpc::service::pool_of(&self.state).await;
 
-        rest_plans::plan_delete_impl(&pool, user.id, req.id).await?;
+        crate::api::rest::plans::plan_delete_impl(&pool, user.id, req.id).await?;
 
-        Ok(Response::new(pb::Ack { ok: true }))
+        Ok(tonic::Response::new(crate::api::grpc::pb::Ack { ok: true }))
     }
 }

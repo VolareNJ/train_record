@@ -71,7 +71,7 @@ pub struct AppConfig
     /// 通行证   = 之后每次亮的东西（cookie/session）
     /// is_admin = 登记簿里的角色记录（数据库字段）
     ///
-    /// ⚠️ 项目实现说明：上面是经典的"签名验签"方案。
+    ///  项目实现说明：上面是经典的"签名验签"方案。
     /// 本项目 M1 实际用更简单的"查数据库"方案：
     ///   登录成功 → 生成随机 token（uuid）→ 存进 sessions 表
     ///   每次请求 → 拿 cookie 里的 token 去数据库查，查得到就是有效 session
@@ -242,14 +242,13 @@ impl AppConfig
 #[cfg(test)]
 mod tests
 {
-    use super::*;
 
     #[test]
     fn from_reader_uses_defaults_when_empty()
     {
         // |_| None：任何名字都读不到 → 全部走默认值
         // 闭包里的 _ 表示"忽略参数"（这里我们不需要读到的名字）
-        let config = AppConfig::from_reader(|_| None);
+        let config = crate::config::AppConfig::from_reader(|_| None);
         // assert_eq! 是断言宏：如果两边不等就 panic，测试失败
         assert_eq!(config.port, 8080);
         // M9：gRPC 端口默认 50051
@@ -270,7 +269,7 @@ mod tests
     fn from_reader_honors_custom_values()
     {
         // 模拟一个"什么都能读到"的环境：根据名字返回不同值
-        let config = AppConfig::from_reader(|name| match name
+        let config = crate::config::AppConfig::from_reader(|name| match name
         {
             "PORT" => Some("9000".to_string()),
             "GRPC_PORT" => Some("50052".to_string()),

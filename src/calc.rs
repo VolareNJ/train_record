@@ -31,7 +31,7 @@
 //     例：1RM 100kg，想算 2 次能举多重 → 100 / (1.67 − 0.134) ≈ 65.1kg
 //     页面展示 1RM / 2RM / 3RM 就是用 target_reps = 1 / 2 / 3。
 //
-// 📌 阶段要求：M5 你来实现这两个函数 + 单元测试。
+// 阶段要求：M5 你来实现这两个函数 + 单元测试。
 //   实现完成后对照检查（完整实现备份在 docs/learning_path/M5_ref/）。
 // ============================================================
 
@@ -127,29 +127,29 @@ pub fn wathan_mrm(one_rm: f64, target_reps: i64) -> f64
 #[cfg(test)]
 mod tests
 {
-    // 【教学：super:: 是什么？】
-    // tests 是 calc 的子模块，super 指"上一层的 calc 模块"。
-    // use super::* 把 calc 里的函数（epley_1rm 等）都引入测试作用域。
-    use super::*;
+    // 【教学：测试模块怎么访问被测函数？】
+    // 旧写法：`use super::*;`（把父模块的东西全导进来）——
+    // M9 起统一全路径约定，所以直接写 `crate::calc::epley_1rm`：
+    // 好处是“一眼看出用的是哪个模块的函数”，也不怕名字撞车。
 
     // 你在这里写 3 个 #[test] 函数：
     #[test]
     fn test_epley_1rm()
     {
-        assert!((epley_1rm(60.0, 8) - 76.0).abs() < 0.01);
+        assert!((crate::calc::epley_1rm(60.0, 8) - 76.0).abs() < 0.01);
     }
     #[test]
     fn test_wathan_mrm()
     {
-        assert!((wathan_mrm(100.0, 2) - 65.1).abs() < 0.01);
+        assert!((crate::calc::wathan_mrm(100.0, 2) - 65.1).abs() < 0.01);
     }
     #[test]
     fn test_invalid_input()
     {
-        assert_eq!(wathan_mrm(0.0, 2), 0.0);
-        assert_eq!(wathan_mrm(100.0, 0), 0.0);
-        assert_eq!(epley_1rm(0.0, 8), 0.0);
-        assert_eq!(epley_1rm(60.0, 0), 0.0);
-        assert_eq!(epley_1rm(-10.0, 8), 0.0);
+        assert_eq!(crate::calc::wathan_mrm(0.0, 2), 0.0);
+        assert_eq!(crate::calc::wathan_mrm(100.0, 0), 0.0);
+        assert_eq!(crate::calc::epley_1rm(0.0, 8), 0.0);
+        assert_eq!(crate::calc::epley_1rm(60.0, 0), 0.0);
+        assert_eq!(crate::calc::epley_1rm(-10.0, 8), 0.0);
     }
 }

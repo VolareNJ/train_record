@@ -13,22 +13,9 @@
 // 好处：改训练量（weight/reps）历史 1RM 自动变，不用回写历史。
 // API 层复用 calc::epley_1rm（M5 第 1 步写的纯函数）。
 //
-// 📌 阶段要求：M8 你来实现本文件所有函数。
+//  阶段要求：M8 你来实现本文件所有函数。
 //   完整实现已备份在 docs/learning_path/M8_ref/，实现完成后对照检查。
 // ============================================================
-use axum::{
-    Json,
-    extract::{Path, Query, State},
-};
-use serde::{Deserialize, Serialize};
-use sqlx::SqlitePool;
-
-use crate::{
-    AppState,
-    api::{ApiError, rest::auth::ApiAuthUser},
-    calc::epley_1rm,
-    models::{Exercise, Record},
-};
 
 // ============================================================
 // 【教学：DTO —— 历史日历】
@@ -39,7 +26,7 @@ use crate::{
 //   "train_days": ["2026-03-01", "2026-03-15", ...]
 // }
 // 客户端自己按 train_days 画日历（iced 不需要渲染 HTML）。
-#[derive(Serialize)]
+#[derive(serde::Serialize)]
 pub struct CalendarOut
 {
     pub year: String,
@@ -67,7 +54,7 @@ pub struct CalendarOut
 ///    WHERE e.user_id = ? AND record_date LIKE ? ORDER BY record_date
 ///    （LIKE '2026-03%' 前缀匹配）
 /// 4. 组装 CalendarOut
-#[derive(Deserialize)]
+#[derive(serde::Deserialize)]
 pub struct CalendarQuery
 {
     pub year: Option<String>,
@@ -75,14 +62,14 @@ pub struct CalendarQuery
 }
 
 pub async fn calendar(
-    State(state): State<AppState>,
-    ApiAuthUser(user): ApiAuthUser,
-    Query(query): Query<CalendarQuery>,
-) -> Result<Json<CalendarOut>, ApiError>
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    crate::api::rest::auth::ApiAuthUser(user): crate::api::rest::auth::ApiAuthUser,
+    axum::extract::Query(query): axum::extract::Query<CalendarQuery>,
+) -> Result<axum::Json<CalendarOut>, crate::api::rest::ApiError>
 {
     let pool = state.pool.read().await.clone();
     // 【M9】协议无关逻辑抽到下方 calendar_view（gRPC 服务复用同一份 SQL）
-    Ok(Json(
+    Ok(axum::Json(
         calendar_view(
             &pool,
             user.id,
@@ -95,18 +82,18 @@ pub async fn calendar(
 
 /// 协议无关实现（REST handler 与 M9 gRPC 服务共用）
 pub(crate) async fn calendar_view(
-    pool: &SqlitePool,
+    pool: &sqlx::SqlitePool,
     user_id: i64,
     year: Option<&str>,
     month: Option<&str>,
-) -> Result<CalendarOut, ApiError>
+) -> Result<CalendarOut, crate::api::rest::ApiError>
 {
     // 目标年月：参数优先，默认当前年月
     let now_ym =
         sqlx::query_scalar::<_, String>("SELECT strftime('%Y-%m', date('now','localtime'))")
             .fetch_one(pool)
             .await
-            .map_err(ApiError::Database)?;
+            .map_err(crate::api::rest::ApiError::Database)?;
 
     let year = year.unwrap_or(&now_ym[..4]).to_string();
     let month = month.unwrap_or(&now_ym[5..7]).to_string();
@@ -114,11 +101,15 @@ pub(crate) async fn calendar_view(
     // 校验：年份 4 位数字、月份 2 位数字
     if year.len() != 4 || !year.chars().all(|c| c.is_ascii_digit())
     {
-        return Err(ApiError::Validation("年份格式错误".to_string()));
+        return Err(crate::api::rest::ApiError::Validation(
+            "年份格式错误".to_string(),
+        ));
     }
     if month.len() != 2 || !month.chars().all(|c| c.is_ascii_digit())
     {
-        return Err(ApiError::Validation("月份格式错误".to_string()));
+        return Err(crate::api::rest::ApiError::Validation(
+            "月份格式错误".to_string(),
+        ));
     }
 
     let prefix = format!("{year}-{month}");
@@ -133,7 +124,7 @@ pub(crate) async fn calendar_view(
     .bind(format!("{prefix}%"))
     .fetch_all(pool)
     .await
-    .map_err(ApiError::Database)?;
+    .map_err(crate::api::rest::ApiError::Database)?;
 
     Ok(CalendarOut {
         year,
@@ -150,7 +141,7 @@ pub(crate) async fn calendar_view(
 /// 【教学：数据隔离 —— records 表没有 user_id，走 JOIN exercises】
 /// 页面层同款 SQL（M5 注释里的"数据隔离纪律"）：
 ///   SELECT ... FROM records r
-///   INNER JOIN exercises e ON r.exercise_id = e.id
+///    INNER JOIN exercises e ON r.exercise_id = e.id
 ///   WHERE e.user_id = ?
 /// records 只挂 exercise_id/plan_item_id，用户归属经 exercises 确定。
 ///
@@ -165,7 +156,7 @@ pub(crate) async fn calendar_view(
 ///    → 元组查询（和页面层同款，拿部位/模式/杆重）
 /// 4. 查动作索引（id → 名字）
 /// 5. 组装 DayRecordOut（含 1rm）
-#[derive(Serialize)]
+#[derive(serde::Serialize)]
 pub struct DayRecordOut
 {
     pub id: i64,
@@ -186,22 +177,22 @@ pub struct DayRecordOut
 }
 
 pub async fn history_day(
-    State(state): State<AppState>,
-    ApiAuthUser(user): ApiAuthUser,
-    Path(date): Path<String>,
-) -> Result<Json<Vec<DayRecordOut>>, ApiError>
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    crate::api::rest::auth::ApiAuthUser(user): crate::api::rest::auth::ApiAuthUser,
+    axum::extract::Path(date): axum::extract::Path<String>,
+) -> Result<axum::Json<Vec<DayRecordOut>>, crate::api::rest::ApiError>
 {
     let pool = state.pool.read().await.clone();
     // 【M9】协议无关逻辑抽到下方 day_records（gRPC 服务复用同一份 SQL）
-    Ok(Json(day_records(&pool, user.id, &date).await?))
+    Ok(axum::Json(day_records(&pool, user.id, &date).await?))
 }
 
 /// 协议无关实现（REST handler 与 M9 gRPC 服务共用）
 pub(crate) async fn day_records(
-    pool: &SqlitePool,
+    pool: &sqlx::SqlitePool,
     user_id: i64,
     date: &str,
-) -> Result<Vec<DayRecordOut>, ApiError>
+) -> Result<Vec<DayRecordOut>, crate::api::rest::ApiError>
 {
     // 日期格式校验
     validate_date(date)?;
@@ -241,15 +232,15 @@ pub(crate) async fn day_records(
     .bind(date)
     .fetch_all(pool)
     .await
-    .map_err(ApiError::Database)?;
+    .map_err(crate::api::rest::ApiError::Database)?;
 
     // 动作名索引（id → 名字）
     let ex_names: std::collections::HashMap<i64, String> =
-        sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE user_id = ?")
+        sqlx::query_as::<_, crate::models::Exercise>("SELECT * FROM exercises WHERE user_id = ?")
             .bind(&user_id)
             .fetch_all(pool)
             .await
-            .map_err(ApiError::Database)?
+            .map_err(crate::api::rest::ApiError::Database)?
             .into_iter()
             .map(|e| (e.id, e.name))
             .collect();
@@ -289,7 +280,7 @@ pub(crate) async fn day_records(
                     feeling: feeling.clone(),
                     strategy: strategy.clone(),
                     key_points: key_points.clone(),
-                    one_rm: epley_1rm(*weight, *reps),
+                    one_rm: crate::calc::epley_1rm(*weight, *reps),
                 }
             },
         )
@@ -318,7 +309,7 @@ pub(crate) async fn day_records(
 /// 3. 查全部记录：SELECT * FROM records WHERE exercise_id = ?
 ///    ORDER BY record_date ASC, id ASC
 /// 4. 组装 ExerciseStatsOut（1rm 实时算，best_1rm = max）
-#[derive(Serialize)]
+#[derive(serde::Serialize)]
 pub struct ExerciseStatsOut
 {
     pub exercise: ExerciseBriefOut,
@@ -326,7 +317,7 @@ pub struct ExerciseStatsOut
     pub best_1rm: f64,
 }
 
-#[derive(Serialize)]
+#[derive(serde::Serialize)]
 pub struct ExerciseBriefOut
 {
     pub id: i64,
@@ -334,7 +325,7 @@ pub struct ExerciseBriefOut
     pub body_part: String,
 }
 
-#[derive(Serialize)]
+#[derive(serde::Serialize)]
 pub struct ExerciseRecordOut
 {
     pub date: String,
@@ -346,40 +337,42 @@ pub struct ExerciseRecordOut
 }
 
 pub async fn exercise_stats(
-    State(state): State<AppState>,
-    ApiAuthUser(user): ApiAuthUser,
-    Path(id): Path<i64>,
-) -> Result<Json<ExerciseStatsOut>, ApiError>
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    crate::api::rest::auth::ApiAuthUser(user): crate::api::rest::auth::ApiAuthUser,
+    axum::extract::Path(id): axum::extract::Path<i64>,
+) -> Result<axum::Json<ExerciseStatsOut>, crate::api::rest::ApiError>
 {
     let pool = state.pool.read().await.clone();
     // 【M9】协议无关逻辑抽到下方 exercise_stats_view（gRPC 服务复用同一份 SQL）
-    Ok(Json(exercise_stats_view(&pool, user.id, id).await?))
+    Ok(axum::Json(exercise_stats_view(&pool, user.id, id).await?))
 }
 
 /// 协议无关实现（REST handler 与 M9 gRPC 服务共用）
 pub(crate) async fn exercise_stats_view(
-    pool: &SqlitePool,
+    pool: &sqlx::SqlitePool,
     user_id: i64,
     exercise_id: i64,
-) -> Result<ExerciseStatsOut, ApiError>
+) -> Result<ExerciseStatsOut, crate::api::rest::ApiError>
 {
     // 归属验证
-    let ex = sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE id = ? AND user_id = ?")
-        .bind(&exercise_id)
-        .bind(&user_id)
-        .fetch_optional(pool)
-        .await
-        .map_err(ApiError::Database)?
-        .ok_or_else(|| ApiError::NotFound("动作不存在".to_string()))?;
+    let ex = sqlx::query_as::<_, crate::models::Exercise>(
+        "SELECT * FROM exercises WHERE id = ? AND user_id = ?",
+    )
+    .bind(&exercise_id)
+    .bind(&user_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(crate::api::rest::ApiError::Database)?
+    .ok_or_else(|| crate::api::rest::ApiError::NotFound("动作不存在".to_string()))?;
 
     // 全部记录（升序 → 趋势自然有序）
-    let records = sqlx::query_as::<_, Record>(
+    let records = sqlx::query_as::<_, crate::models::Record>(
         "SELECT * FROM records WHERE exercise_id = ? ORDER BY record_date ASC, id ASC",
     )
     .bind(&exercise_id)
     .fetch_all(pool)
     .await
-    .map_err(ApiError::Database)?;
+    .map_err(crate::api::rest::ApiError::Database)?;
 
     // 组装（1rm 实时算）
     let recs_out = records
@@ -389,7 +382,7 @@ pub(crate) async fn exercise_stats_view(
             weight: r.weight,
             sets: r.sets,
             reps: r.reps,
-            one_rm: epley_1rm(r.weight, r.reps),
+            one_rm: crate::calc::epley_1rm(r.weight, r.reps),
         })
         .collect::<Vec<_>>();
 
@@ -410,21 +403,23 @@ pub(crate) async fn exercise_stats_view(
 // ============================================================
 // 【教学：日期格式校验 —— YYYY-MM-DD】
 // ============================================================
-fn validate_date(date: &str) -> Result<(), ApiError>
+fn validate_date(date: &str) -> Result<(), crate::api::rest::ApiError>
 {
     match date.split('-').collect::<Vec<&str>>().as_slice()
     {
         [yyyy, mm, dd] =>
         {
-            yyyy.parse::<i64>()
-                .map_err(|_| ApiError::Validation("年份必须是数字".to_string()))?;
-            mm.parse::<i64>()
-                .map_err(|_| ApiError::Validation("月份必须是数字".to_string()))?;
+            yyyy.parse::<i64>().map_err(|_| {
+                crate::api::rest::ApiError::Validation("年份必须是数字".to_string())
+            })?;
+            mm.parse::<i64>().map_err(|_| {
+                crate::api::rest::ApiError::Validation("月份必须是数字".to_string())
+            })?;
             dd.parse::<i64>()
-                .map_err(|_| ApiError::Validation("日必须是数字".to_string()))?;
+                .map_err(|_| crate::api::rest::ApiError::Validation("日必须是数字".to_string()))?;
             Ok(())
         },
-        _ => Err(ApiError::Validation(
+        _ => Err(crate::api::rest::ApiError::Validation(
             "日期格式必须是 YYYY-MM-DD".to_string(),
         )),
     }

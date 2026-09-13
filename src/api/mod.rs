@@ -35,18 +35,17 @@
 //     api/rest/mod.rs  ← M8：ApiError（HTTP 状态码 + JSON）+ rest::router()
 //     api/grpc/mod.rs  ← M9：Status（gRPC 状态码）+ 服务实现
 //
-// 📌 阶段要求：
+//  阶段要求：
 //   M8：REST 层实现在 api/rest/（已完成，验收通过）
 //   M9：gRPC 层实现在 api/grpc/（本阶段，见 docs/learning_path/M9.md）
 //
-// ⚠️ 注意：下面这一行 `pub use rest::ApiError;` 是**兼容转发的别名**。
-//    M8 的代码里写的是 `use crate::api::ApiError;`，移到 rest/ 之后
-//    那条路径本身已不存在；加这一行，M8 的 7 个文件一行都不用改。
-//    （教学：这就是"改结构不改调用方"的最小改动原则——迁移目录时，
-//      尽量让调用方"零改动"，否则一次搬迁会牵出几十处无意义的 diff。）
+// ============================================================
+// 【M8 → M9 的“兼容转发”演进（教学）】
+// M8 阶段本文件是 `src/api/mod.rs`，M9 归并成 `api/rest/` 时加过一行
+// `pub use rest::ApiError;` 做兼容转发（让 M8 的 7 个文件零改动）。
+// M9 之后全项目统一“全路径”约定（见 AGENTS.md），转发已无必要：
+//   调用方直接写 `crate::api::rest::ApiError`，一条路径一个出处。
+// 结论：能靠“路径”表达的关系，不靠“导入”——少一层间接就少一处要同步的地方。
 // ============================================================
 pub mod grpc;
 pub mod rest;
-
-/// M8 的 API 错误类型（定义在 `api/rest/mod.rs`，此处转发兼容旧路径）
-pub use rest::ApiError;

@@ -16,27 +16,17 @@
 //   HTTP 层（handlers/auth.rs）负责解析请求、设置 cookie、重定向。
 //   这样职责清晰：auth.rs 管"逻辑"，handlers 管"请求响应"。
 //
-// 📌 阶段要求：M1 你来实现本文件的 4 个函数。
+// 阶段要求：M1 你来实现本文件的 4 个函数。
 //   完整实现已备份在 docs/learning_path/M1_ref/auth_ref.rs，
 //   实现完成后对照检查（不要提前看）。
 // ============================================================
 
-// 【教学：本文件用到的导入】
-// 下面每个导入都会在实现时用上（骨架阶段 unused 警告是正常的）。
-use argon2::{
-    Argon2,           // 哈希算法本体
-    PasswordHash,     // 解析存下来的哈希串（verify 用）
-    PasswordHasher,   // trait：提供 hash_password 方法
-    PasswordVerifier, // trait：提供 verify_password 方法
-    password_hash::{SaltString, rand_core::OsRng},
-    //   SaltString = 盐的类型
-    //   OsRng      = 操作系统安全随机数生成器（生成随机盐用）
-};
-use sqlx::SqlitePool; // 数据库连接池（所有函数都接收它）
-
-use crate::{error::AppError, models::User};
-//   AppError = 统一错误类型
-//   User     = 用户结构体（get_user_by_session 的返回类型）
+// 【教学：本文件用到的导入（M9 起改为全路径 + 最小 trait 引用）】
+// 类型/函数都写全路径（sqlx::SqlitePool、crate::error::AppError、crate::models::User……）；
+// 唯一需要"引入"的是 trait——trait 方法调用（.hash_password() / .verify_password()）
+// 必须让对应 trait 在作用域里。按最小引用原则，一个 trait 一行：
+use argon2::PasswordHasher; // 提供 .hash_password()
+use argon2::PasswordVerifier; // 提供 .verify_password()
 
 // ============================================================
 // 【教学：密码哈希】
@@ -95,7 +85,7 @@ use crate::{error::AppError, models::User};
 ///    Argon2::default().hash_password(plain.as_bytes(), &salt)
 ///    返回 Result<PasswordHash, Error>，用 .map_err 转成 AppError
 /// 3. 取哈希字符串：.to_string()
-pub fn hash_password(plain: &str) -> Result<String, AppError>
+pub fn hash_password(plain: &str) -> Result<String, crate::error::AppError>
 {
     // TODO(M1): 学生实现
     // 提示：
@@ -106,10 +96,11 @@ pub fn hash_password(plain: &str) -> Result<String, AppError>
     //   Ok(hash.to_string())
     // unimplemented!("M1 学生实现：密码哈希")
 
-    let random_salt = SaltString::generate(&mut OsRng);
-    let hashed = Argon2::default()
+    let random_salt =
+        argon2::password_hash::SaltString::generate(&mut argon2::password_hash::rand_core::OsRng);
+    let hashed = argon2::Argon2::default()
         .hash_password(plain.as_bytes(), &random_salt)
-        .map_err(|e| AppError::Other(format!("密码哈希失败: {}", e)))?;
+        .map_err(|e| crate::error::AppError::Other(format!("密码哈希失败: {}", e)))?;
     Ok(hashed.to_string())
 }
 
@@ -156,7 +147,7 @@ pub fn hash_password(plain: &str) -> Result<String, AppError>
 /// 1. 解析存储的哈希串：PasswordHash::new(hash)，Err 转 AppError
 /// 2. 验证：Argon2::default().verify_password(plain.as_bytes(), &parsed_hash)
 ///    返回 Result，用 .is_ok() 转成 bool
-pub fn verify_password(plain: &str, hash: &str) -> Result<bool, AppError>
+pub fn verify_password(plain: &str, hash: &str) -> Result<bool, crate::error::AppError>
 {
     // TODO(M1): 学生实现
     // 提示：
@@ -167,9 +158,9 @@ pub fn verify_password(plain: &str, hash: &str) -> Result<bool, AppError>
     //       .is_ok())
     // unimplemented!("M1 学生实现：密码校验")
 
-    let parsed_hash =
-        PasswordHash::new(hash).map_err(|e| AppError::Other(format!("解析哈希失败: {}", e)))?;
-    Ok(Argon2::default()
+    let parsed_hash = argon2::PasswordHash::new(hash)
+        .map_err(|e| crate::error::AppError::Other(format!("解析哈希失败: {}", e)))?;
+    Ok(argon2::Argon2::default()
         .verify_password(plain.as_bytes(), &parsed_hash)
         .is_ok())
 }
@@ -188,7 +179,7 @@ pub fn verify_password(plain: &str, hash: &str) -> Result<bool, AppError>
 //   自增 id 可被遍历：1, 2, 3... 攻击者能伪造任意用户的 session。
 //   随机 uuid 不可预测，只能从服务器发的 cookie 里拿到。
 //
-// 为什么下面三个 session 函数都要带 &SqlitePool（数据库连接池）参数？
+// 为什么下面三个 session 函数都要带 &sqlx::SqlitePool（数据库连接池）参数？
 //   因为本项目把 session 记录存在【数据库】的 sessions 表里，而不是内存里。
 //   pool 就是执行 SQL 的"入口"——所有读/写数据库的操作都要通过它：
 //     - create_session      → INSERT（把通行证登记进登记簿）
@@ -204,7 +195,7 @@ pub fn verify_password(plain: &str, hash: &str) -> Result<bool, AppError>
 //   & 是什么意思？
 //     & 是引用（借用）。函数只是【借用】连接池去查一下库，
 //     用完就还回去，不把它拿走、不独占。
-//     这也解释了为什么参数是 &SqlitePool 而不是 SqlitePool。
+// 这也解释了为什么参数是 &sqlx::SqlitePool 而不是 SqlitePool。
 //
 //   反例印证规律：
 //     hash_password / verify_password 是纯计算（不碰数据库），所以不带 pool。
@@ -227,9 +218,9 @@ pub fn verify_password(plain: &str, hash: &str) -> Result<bool, AppError>
 //   sessions 表里 user_id=1 对应三行。
 // 登出 = 只销毁【当前这台设备】的 session：
 //   用 token 删：DELETE ... WHERE token = ?
-//     → 精确删一行，其他设备不受影响 ✅
+//     → 精确删一行，其他设备不受影响
 //   用 user_id 删：DELETE ... WHERE user_id = ?
-//     → 该用户所有设备全部被登出 ❌
+//     → 该用户所有设备全部被登出
 // 而且登出请求的 cookie 里本来就带着 token，服务器手头就有，直接用最自然。
 //
 // 【教学：查数据库方案 vs 签名验签方案】
@@ -274,7 +265,7 @@ pub fn verify_password(plain: &str, hash: &str) -> Result<bool, AppError>
 ///
 /// 【教学：sqlx 参数化查询（为什么用 ? + bind 而不是拼字符串？）】
 /// 初学者容易把 sqlx::query 当 println! 用：
-///   sqlx::query("INSERT ... VALUES ({}, {}, {})", a, b, c)  ❌
+///   sqlx::query("INSERT ... VALUES ({}, {}, {})", a, b, c)
 /// sqlx::query 只接受【一个】SQL 字符串参数，真正的流程是：
 ///   1. SQL 里用 ? 占位（不是 {}）
 ///   2. .bind(值) 按顺序把每个 ? 绑定上
@@ -309,7 +300,10 @@ pub fn verify_password(plain: &str, hash: &str) -> Result<bool, AppError>
 ///    .format(&time::format_description::well_known::Rfc3339)
 /// 3. INSERT INTO sessions (user_id, token, expires_at) VALUES (?, ?, ?)
 /// 4. 返回 token
-pub async fn create_session(pool: &SqlitePool, user_id: i64) -> Result<String, AppError>
+pub async fn create_session(
+    pool: &sqlx::SqlitePool,
+    user_id: i64,
+) -> Result<String, crate::error::AppError>
 {
     // TODO(M1): 学生实现
     // 提示：
@@ -331,14 +325,14 @@ pub async fn create_session(pool: &SqlitePool, user_id: i64) -> Result<String, A
     let new_token = uuid::Uuid::new_v4().to_string();
     let expire_dt = (time::OffsetDateTime::now_utc() + time::Duration::days(30))
         .format(&time::format_description::well_known::Rfc3339)
-        .map_err(|e| AppError::Other(format!("计算时间失败: {}", e)))?;
+        .map_err(|e| crate::error::AppError::Other(format!("计算时间失败: {}", e)))?;
     sqlx::query("INSERT INTO sessions (user_id, token, expires_at) VALUES (?, ?, ?)")
         .bind(user_id)
         .bind(&new_token)
         .bind(expire_dt)
         .execute(pool)
         .await
-        .map_err(|e| AppError::Database(e))?;
+        .map_err(|e| crate::error::AppError::Database(e))?;
     Ok(new_token)
 }
 
@@ -361,7 +355,7 @@ pub async fn create_session(pool: &SqlitePool, user_id: i64) -> Result<String, A
 ///                数据库类型  行转换类型
 /// - 第二个 User：每行转成什么类型（我们关心的）
 /// - 第一个 _：数据库类型（SQLite/MySQL/PostgreSQL）
-///   写 _ 让编译器自己推断（pool: &SqlitePool 已确定是 SQLite）
+/// 写 _ 让编译器自己推断（pool: &sqlx::SqlitePool 已确定是 SQLite）
 /// 记忆点：见到 _ 就是"这里有个类型，但让编译器猜"。
 ///
 /// 【教学：fetch_optional 是"SQL 套 CASE WHEN EXISTS"吗？】
@@ -388,7 +382,10 @@ pub async fn create_session(pool: &SqlitePool, user_id: i64) -> Result<String, A
 /// 2. fetch_optional 拿到 Option<User>，查不到 → Err(Unauthorized)
 ///    Option 的 .ok_or_else(|| AppError::Unauthorized) 适配器
 /// 3. 返回用户
-pub async fn get_user_by_session(pool: &SqlitePool, token: &str) -> Result<User, AppError>
+pub async fn get_user_by_session(
+    pool: &sqlx::SqlitePool,
+    token: &str,
+) -> Result<crate::models::User, crate::error::AppError>
 {
     // TODO(M1): 学生实现
     // 提示：
@@ -399,8 +396,8 @@ pub async fn get_user_by_session(pool: &SqlitePool, token: &str) -> Result<User,
     //   )
     //   .bind(token)
     //   .fetch_optional(pool)
-    //   .await
-    //   .map_err(AppError::Database)?;
+    //       .await
+    //       .map_err(AppError::Database)?;
     //
     //   let user = user.ok_or_else(|| AppError::Unauthorized)?;
     //   Ok(user)
@@ -408,7 +405,7 @@ pub async fn get_user_by_session(pool: &SqlitePool, token: &str) -> Result<User,
     //     这里为教学清晰先简化，以后在 M4+ 完善。）
     // unimplemented!("M1 学生实现：凭 token 查用户")
 
-    let user_op = sqlx::query_as::<_, User>(
+    let user_op = sqlx::query_as::<_, crate::models::User>(
         "SELECT u.* FROM users u
          INNER JOIN sessions s ON s.user_id = u.id
          WHERE s.token = ?
@@ -417,8 +414,8 @@ pub async fn get_user_by_session(pool: &SqlitePool, token: &str) -> Result<User,
     .bind(token)
     .fetch_optional(pool)
     .await
-    .map_err(AppError::Database)?;
-    let existing_user = user_op.ok_or_else(|| AppError::Unauthorized)?;
+    .map_err(crate::error::AppError::Database)?;
+    let existing_user = user_op.ok_or_else(|| crate::error::AppError::Unauthorized)?;
     Ok(existing_user)
 }
 
@@ -426,7 +423,10 @@ pub async fn get_user_by_session(pool: &SqlitePool, token: &str) -> Result<User,
 ///
 /// 【实现步骤】
 /// DELETE FROM sessions WHERE token = ?
-pub async fn destroy_session(pool: &SqlitePool, token: &str) -> Result<(), AppError>
+pub async fn destroy_session(
+    pool: &sqlx::SqlitePool,
+    token: &str,
+) -> Result<(), crate::error::AppError>
 {
     // TODO(M1): 学生实现
     // 提示：
@@ -442,6 +442,6 @@ pub async fn destroy_session(pool: &SqlitePool, token: &str) -> Result<(), AppEr
         .bind(token)
         .execute(pool)
         .await
-        .map_err(AppError::Database)?;
+        .map_err(crate::error::AppError::Database)?;
     Ok(())
 }

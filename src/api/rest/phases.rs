@@ -21,21 +21,9 @@
 // 页面层用 SQL：SELECT CAST(julianday('now','localtime') - julianday(?) AS INTEGER)
 // start_date 为空（未设置）→ days = 0
 //
-// 📌 阶段要求：M8 你来实现本文件所有函数。
+//  阶段要求：M8 你来实现本文件所有函数。
 //   完整实现已备份在 docs/learning_path/M8_ref/，实现完成后对照检查。
 // ============================================================
-use axum::{
-    Json,
-    extract::{Path, State},
-};
-use serde::{Deserialize, Serialize};
-use sqlx::SqlitePool;
-
-use crate::{
-    AppState,
-    api::{ApiError, rest::auth::ApiAuthUser},
-    models::Phase,
-};
 
 // ============================================================
 // 【教学：PhaseOut —— 阶段 DTO】
@@ -43,7 +31,7 @@ use crate::{
 // 比 models::Phase 多一个 days 字段（坚持天数，实时计算）。
 // 为什么不在 models::Phase 里加？因为 days 不是数据库列，
 // 是"展示层派生数据"——模型保持数据库镜像，DTO 负责加派生字段。
-#[derive(Serialize)]
+#[derive(serde::Serialize)]
 pub struct PhaseOut
 {
     pub id: i64,
@@ -61,7 +49,7 @@ pub struct PhaseOut
 // 页面层表单 start_date 用 String（空串 = 未设置），
 // API 层客户端直接传 null 表示"未设置" → Option<String>。
 // serde_json 里 null → None，缺字段 → None，语义一致。
-#[derive(Deserialize)]
+#[derive(serde::Deserialize)]
 pub struct PhaseCreateReq
 {
     pub name: String,
@@ -75,7 +63,10 @@ pub struct PhaseCreateReq
 // ============================================================
 // 返回"今天 - start_date"的自然日差。
 // start_date = None → 0（未设置开始日期）
-async fn calc_days(pool: &SqlitePool, start_date: &Option<String>) -> Result<i64, ApiError>
+async fn calc_days(
+    pool: &sqlx::SqlitePool,
+    start_date: &Option<String>,
+) -> Result<i64, crate::api::rest::ApiError>
 {
     match start_date
     {
@@ -85,7 +76,7 @@ async fn calc_days(pool: &SqlitePool, start_date: &Option<String>) -> Result<i64
         .bind(d)
         .fetch_one(pool)
         .await
-        .map_err(ApiError::Database),
+        .map_err(crate::api::rest::ApiError::Database),
         None => Ok(0),
     }
 }
@@ -95,7 +86,10 @@ async fn calc_days(pool: &SqlitePool, start_date: &Option<String>) -> Result<i64
 // ============================================================
 // async fn 里没法用 sync 的 From（要 await 查天数），
 // 所以用普通函数 phase_out，传 pool 进去。
-async fn phase_out(pool: &SqlitePool, p: &Phase) -> Result<PhaseOut, ApiError>
+async fn phase_out(
+    pool: &sqlx::SqlitePool,
+    p: &crate::models::Phase,
+) -> Result<PhaseOut, crate::api::rest::ApiError>
 {
     let days = calc_days(pool, &p.start_date).await?;
     Ok(PhaseOut {
@@ -125,25 +119,28 @@ async fn phase_out(pool: &SqlitePool, p: &Phase) -> Result<PhaseOut, ApiError>
 /// 3. 迭代器 map 转 PhaseOut（每个要查 days）
 /// 4. collect Vec<PhaseOut> → Json
 pub async fn list(
-    State(state): State<AppState>,
-    ApiAuthUser(user): ApiAuthUser,
-) -> Result<Json<Vec<PhaseOut>>, ApiError>
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    crate::api::rest::auth::ApiAuthUser(user): crate::api::rest::auth::ApiAuthUser,
+) -> Result<axum::Json<Vec<PhaseOut>>, crate::api::rest::ApiError>
 {
     let pool = state.pool.read().await.clone();
     // 【M9】协议无关逻辑抽到下方 phase_list（gRPC 服务复用同一份 SQL）
-    Ok(Json(phase_list(&pool, user.id).await?))
+    Ok(axum::Json(phase_list(&pool, user.id).await?))
 }
 
 /// 协议无关实现（REST handler 与 M9 gRPC 服务共用）
-pub(crate) async fn phase_list(pool: &SqlitePool, user_id: i64) -> Result<Vec<PhaseOut>, ApiError>
+pub(crate) async fn phase_list(
+    pool: &sqlx::SqlitePool,
+    user_id: i64,
+) -> Result<Vec<PhaseOut>, crate::api::rest::ApiError>
 {
-    let phases = sqlx::query_as::<_, Phase>(
+    let phases = sqlx::query_as::<_, crate::models::Phase>(
         "SELECT * FROM phases WHERE user_id = ? ORDER BY archived ASC, created_at DESC",
     )
     .bind(&user_id)
     .fetch_all(pool)
     .await
-    .map_err(ApiError::Database)?;
+    .map_err(crate::api::rest::ApiError::Database)?;
 
     // 【教学：map + collect —— 逐个转换】
     // phases.iter() 是借用迭代器，map 里调 async 函数要 .await
@@ -182,27 +179,29 @@ pub(crate) async fn phase_list(pool: &SqlitePool, user_id: i64) -> Result<Vec<Ph
 /// 5. INSERT ... RETURNING id → fetch_one
 /// 6. 按新 id 查完整 Phase → phase_out → Json
 pub async fn create(
-    State(state): State<AppState>,
-    ApiAuthUser(user): ApiAuthUser,
-    Json(req): Json<PhaseCreateReq>,
-) -> Result<Json<PhaseOut>, ApiError>
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    crate::api::rest::auth::ApiAuthUser(user): crate::api::rest::auth::ApiAuthUser,
+    axum::Json(req): axum::Json<PhaseCreateReq>,
+) -> Result<axum::Json<PhaseOut>, crate::api::rest::ApiError>
 {
     let pool = state.pool.read().await.clone();
     // 【M9】协议无关逻辑抽到下方 phase_create（gRPC 服务复用同一份 SQL）
-    Ok(Json(phase_create(&pool, user.id, &req).await?))
+    Ok(axum::Json(phase_create(&pool, user.id, &req).await?))
 }
 
 /// 协议无关实现（REST handler 与 M9 gRPC 服务共用）
 pub(crate) async fn phase_create(
-    pool: &SqlitePool,
+    pool: &sqlx::SqlitePool,
     user_id: i64,
     req: &PhaseCreateReq,
-) -> Result<PhaseOut, ApiError>
+) -> Result<PhaseOut, crate::api::rest::ApiError>
 {
     // 校验：name 非空
     if req.name.trim().is_empty()
     {
-        return Err(ApiError::Validation("阶段名称不能为空".to_string()));
+        return Err(crate::api::rest::ApiError::Validation(
+            "阶段名称不能为空".to_string(),
+        ));
     }
 
     // 查重（数据隔离 + 防重名）
@@ -211,10 +210,12 @@ pub(crate) async fn phase_create(
         .bind(&req.name)
         .fetch_optional(pool)
         .await
-        .map_err(ApiError::Database)?
+        .map_err(crate::api::rest::ApiError::Database)?
         .is_some()
     {
-        return Err(ApiError::Validation("阶段名已存在".to_string()));
+        return Err(crate::api::rest::ApiError::Validation(
+            "阶段名已存在".to_string(),
+        ));
     }
 
     // 转换 start_date：空串 → None（和页面表单一致）
@@ -235,15 +236,17 @@ pub(crate) async fn phase_create(
     .bind(&start_date)
     .fetch_one(pool)
     .await
-    .map_err(ApiError::Database)?;
+    .map_err(crate::api::rest::ApiError::Database)?;
 
     // 查完整行 → 转 DTO → 返回
-    let phase = sqlx::query_as::<_, Phase>("SELECT * FROM phases WHERE id = ? AND user_id = ?")
-        .bind(&new_id)
-        .bind(&user_id)
-        .fetch_one(pool)
-        .await
-        .map_err(ApiError::Database)?;
+    let phase = sqlx::query_as::<_, crate::models::Phase>(
+        "SELECT * FROM phases WHERE id = ? AND user_id = ?",
+    )
+    .bind(&new_id)
+    .bind(&user_id)
+    .fetch_one(pool)
+    .await
+    .map_err(crate::api::rest::ApiError::Database)?;
 
     Ok(phase_out(pool, &phase).await?)
 }
@@ -263,30 +266,32 @@ pub(crate) async fn phase_create(
 /// 2. SELECT * FROM phases WHERE id = ? AND user_id = ? → fetch_optional
 /// 3. None → Err(NotFound)；Some → phase_out → Json
 pub async fn detail(
-    State(state): State<AppState>,
-    ApiAuthUser(user): ApiAuthUser,
-    Path(id): Path<i64>,
-) -> Result<Json<PhaseOut>, ApiError>
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    crate::api::rest::auth::ApiAuthUser(user): crate::api::rest::auth::ApiAuthUser,
+    axum::extract::Path(id): axum::extract::Path<i64>,
+) -> Result<axum::Json<PhaseOut>, crate::api::rest::ApiError>
 {
     let pool = state.pool.read().await.clone();
     // 【M9】协议无关逻辑抽到下方 phase_detail（gRPC 服务复用同一份 SQL）
-    Ok(Json(phase_detail(&pool, user.id, id).await?))
+    Ok(axum::Json(phase_detail(&pool, user.id, id).await?))
 }
 
 /// 协议无关实现（REST handler 与 M9 gRPC 服务共用）
 pub(crate) async fn phase_detail(
-    pool: &SqlitePool,
+    pool: &sqlx::SqlitePool,
     user_id: i64,
     phase_id: i64,
-) -> Result<PhaseOut, ApiError>
+) -> Result<PhaseOut, crate::api::rest::ApiError>
 {
-    let phase = sqlx::query_as::<_, Phase>("SELECT * FROM phases WHERE id = ? AND user_id = ?")
-        .bind(&phase_id)
-        .bind(&user_id)
-        .fetch_optional(pool)
-        .await
-        .map_err(ApiError::Database)?
-        .ok_or_else(|| ApiError::NotFound("阶段不存在".to_string()))?;
+    let phase = sqlx::query_as::<_, crate::models::Phase>(
+        "SELECT * FROM phases WHERE id = ? AND user_id = ?",
+    )
+    .bind(&phase_id)
+    .bind(&user_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(crate::api::rest::ApiError::Database)?
+    .ok_or_else(|| crate::api::rest::ApiError::NotFound("阶段不存在".to_string()))?;
 
     Ok(phase_out(pool, &phase).await?)
 }
@@ -299,10 +304,10 @@ pub(crate) async fn phase_detail(
 //   - 缺字段 → None（不改）
 //   - 传 null → None（不改）
 //   - 传值    → Some（更新）
-// ⚠️ 注意：这和"把字段设为 null"（清空 start_date）冲突——
+//  注意：这和"把字段设为 null"（清空 start_date）冲突——
 // M8 教学简化：PATCH 不支持清空 start_date（传 null 视为不改）。
 // 若需要清空，用 ""（空串）→ 转 None 存库。
-#[derive(Deserialize)]
+#[derive(serde::Deserialize)]
 pub struct PhaseUpdateReq
 {
     #[serde(default)]
@@ -332,33 +337,35 @@ pub struct PhaseUpdateReq
 ///    （rows_affected() == 0 → NotFound，理论上不会发生）
 /// 5. 查新行 → phase_out → Json
 pub async fn update(
-    State(state): State<AppState>,
-    ApiAuthUser(user): ApiAuthUser,
-    Path(id): Path<i64>,
-    Json(req): Json<PhaseUpdateReq>,
-) -> Result<Json<PhaseOut>, ApiError>
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    crate::api::rest::auth::ApiAuthUser(user): crate::api::rest::auth::ApiAuthUser,
+    axum::extract::Path(id): axum::extract::Path<i64>,
+    axum::Json(req): axum::Json<PhaseUpdateReq>,
+) -> Result<axum::Json<PhaseOut>, crate::api::rest::ApiError>
 {
     let pool = state.pool.read().await.clone();
     // 【M9】协议无关逻辑抽到下方 phase_update（gRPC 服务复用同一份 SQL）
-    Ok(Json(phase_update(&pool, user.id, id, &req).await?))
+    Ok(axum::Json(phase_update(&pool, user.id, id, &req).await?))
 }
 
 /// 协议无关实现（REST handler 与 M9 gRPC 服务共用）
 pub(crate) async fn phase_update(
-    pool: &SqlitePool,
+    pool: &sqlx::SqlitePool,
     user_id: i64,
     phase_id: i64,
     req: &PhaseUpdateReq,
-) -> Result<PhaseOut, ApiError>
+) -> Result<PhaseOut, crate::api::rest::ApiError>
 {
     // ① 查旧行（数据隔离）
-    let old = sqlx::query_as::<_, Phase>("SELECT * FROM phases WHERE id = ? AND user_id = ?")
-        .bind(&phase_id)
-        .bind(&user_id)
-        .fetch_optional(pool)
-        .await
-        .map_err(ApiError::Database)?
-        .ok_or_else(|| ApiError::NotFound("阶段不存在".to_string()))?;
+    let old = sqlx::query_as::<_, crate::models::Phase>(
+        "SELECT * FROM phases WHERE id = ? AND user_id = ?",
+    )
+    .bind(&phase_id)
+    .bind(&user_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(crate::api::rest::ApiError::Database)?
+    .ok_or_else(|| crate::api::rest::ApiError::NotFound("阶段不存在".to_string()))?;
 
     // ② 合并（没传的用旧值）
     let name = req.name.clone().unwrap_or(old.name);
@@ -374,7 +381,9 @@ pub(crate) async fn phase_update(
     // 校验 name 非空
     if name.trim().is_empty()
     {
-        return Err(ApiError::Validation("阶段名称不能为空".to_string()));
+        return Err(crate::api::rest::ApiError::Validation(
+            "阶段名称不能为空".to_string(),
+        ));
     }
 
     // ③ 全量 UPDATE
@@ -388,20 +397,24 @@ pub(crate) async fn phase_update(
     .bind(&user_id)
     .execute(pool)
     .await
-    .map_err(ApiError::Database)?;
+    .map_err(crate::api::rest::ApiError::Database)?;
 
     if ret.rows_affected() == 0
     {
-        return Err(ApiError::NotFound("阶段不存在".to_string()));
+        return Err(crate::api::rest::ApiError::NotFound(
+            "阶段不存在".to_string(),
+        ));
     }
 
     // ④ 查新行返回
-    let phase = sqlx::query_as::<_, Phase>("SELECT * FROM phases WHERE id = ? AND user_id = ?")
-        .bind(&phase_id)
-        .bind(&user_id)
-        .fetch_one(pool)
-        .await
-        .map_err(ApiError::Database)?;
+    let phase = sqlx::query_as::<_, crate::models::Phase>(
+        "SELECT * FROM phases WHERE id = ? AND user_id = ?",
+    )
+    .bind(&phase_id)
+    .bind(&user_id)
+    .fetch_one(pool)
+    .await
+    .map_err(crate::api::rest::ApiError::Database)?;
 
     Ok(phase_out(pool, &phase).await?)
 }
@@ -421,14 +434,16 @@ pub(crate) async fn phase_update(
 /// 3. rows_affected() == 0 → NotFound
 /// 4. 返回更新后的 PhaseOut
 pub async fn archive(
-    State(state): State<AppState>,
-    ApiAuthUser(user): ApiAuthUser,
-    Path(id): Path<i64>,
-) -> Result<Json<PhaseOut>, ApiError>
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    crate::api::rest::auth::ApiAuthUser(user): crate::api::rest::auth::ApiAuthUser,
+    axum::extract::Path(id): axum::extract::Path<i64>,
+) -> Result<axum::Json<PhaseOut>, crate::api::rest::ApiError>
 {
     let pool = state.pool.read().await.clone();
     // 【M9】协议无关逻辑抽到下方 phase_set_archived（gRPC 服务复用同一份 SQL）
-    Ok(Json(phase_set_archived(&pool, user.id, id, true).await?))
+    Ok(axum::Json(
+        phase_set_archived(&pool, user.id, id, true).await?,
+    ))
 }
 
 // ============================================================
@@ -436,24 +451,26 @@ pub async fn archive(
 // ============================================================
 /// 启用归档阶段（archived = 0，恢复可编辑）
 pub async fn unarchive(
-    State(state): State<AppState>,
-    ApiAuthUser(user): ApiAuthUser,
-    Path(id): Path<i64>,
-) -> Result<Json<PhaseOut>, ApiError>
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    crate::api::rest::auth::ApiAuthUser(user): crate::api::rest::auth::ApiAuthUser,
+    axum::extract::Path(id): axum::extract::Path<i64>,
+) -> Result<axum::Json<PhaseOut>, crate::api::rest::ApiError>
 {
     let pool = state.pool.read().await.clone();
     // 【M9】协议无关逻辑抽到下方 phase_set_archived（gRPC 服务复用同一份 SQL）
-    Ok(Json(phase_set_archived(&pool, user.id, id, false).await?))
+    Ok(axum::Json(
+        phase_set_archived(&pool, user.id, id, false).await?,
+    ))
 }
 
 /// 归档/启用共用实现（DRY：两个 handler 只有 archived 值不同）
 /// 协议无关实现（REST handler 与 M9 gRPC 服务共用）
 pub(crate) async fn phase_set_archived(
-    pool: &SqlitePool,
+    pool: &sqlx::SqlitePool,
     user_id: i64,
     phase_id: i64,
     archived: bool,
-) -> Result<PhaseOut, ApiError>
+) -> Result<PhaseOut, crate::api::rest::ApiError>
 {
     let ret = sqlx::query("UPDATE phases SET archived = ? WHERE id = ? AND user_id = ?")
         .bind(archived)
@@ -461,19 +478,23 @@ pub(crate) async fn phase_set_archived(
         .bind(&user_id)
         .execute(pool)
         .await
-        .map_err(ApiError::Database)?;
+        .map_err(crate::api::rest::ApiError::Database)?;
 
     if ret.rows_affected() == 0
     {
-        return Err(ApiError::NotFound("阶段不存在".to_string()));
+        return Err(crate::api::rest::ApiError::NotFound(
+            "阶段不存在".to_string(),
+        ));
     }
 
-    let phase = sqlx::query_as::<_, Phase>("SELECT * FROM phases WHERE id = ? AND user_id = ?")
-        .bind(&phase_id)
-        .bind(&user_id)
-        .fetch_one(pool)
-        .await
-        .map_err(ApiError::Database)?;
+    let phase = sqlx::query_as::<_, crate::models::Phase>(
+        "SELECT * FROM phases WHERE id = ? AND user_id = ?",
+    )
+    .bind(&phase_id)
+    .bind(&user_id)
+    .fetch_one(pool)
+    .await
+    .map_err(crate::api::rest::ApiError::Database)?;
 
     Ok(phase_out(pool, &phase).await?)
 }

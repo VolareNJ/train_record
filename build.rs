@@ -18,12 +18,12 @@
 //   用 build.rs 后，proto 是唯一事实来源：改 proto → 自动重编（下面的
 //   rerun-if-changed 就是告诉 Cargo "这个文件变了要重新跑我"）。
 //
-// 【教学：protoc 从哪来？★ 这是 gRPC 项目最常见的环境坑】
+// 【教学：protoc 从哪来？ 这是 gRPC 项目最常见的环境坑】
 // protoc 是 Google 的 protobuf 编译器（C++ 写的二进制），tonic 自己不含它。
 // 三种搞到它的办法：
 //   a. 系统安装（apt install protobuf-compiler）→ 换机器就忘了装，CI 也常漏
 //   b. 提交进仓库           → 二进制进 git（体积大、平台相关），不优雅
-//   c. 用 protoc-bin-vendored crate（✅ 本项目采用）
+//   c. 用 protoc-bin-vendored crate（ 本项目采用）
 //      → 它把各平台的 protoc 二进制打包成 crate，cargo 自动下载当前平台的
 // 于是"克隆仓库 → cargo build"就能跑，零前置条件。
 //

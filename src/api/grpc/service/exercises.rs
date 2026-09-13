@@ -3,7 +3,7 @@
 // ============================================================
 // 【教学：本文件两个重点】
 //   1. 前 5 个一元方法：照抄 phases.rs 的三步骨架（读作参考，不挖空）
-//   2. 第 6 个 `stream_exercise_series`：**服务器流式**（★ 挖空练习）
+//   2. 第 6 个 `stream_exercise_series`：**服务器流式**（ 挖空练习）
 //      —— 这是 gRPC 相对 REST 的第一个硬能力，值得慢慢看注释。
 //
 // 【教学：DeleteExercise 为什么用 Ack 而不是"返回被删的 Exercise"？】
@@ -14,39 +14,26 @@
 // 那就该返回完整对象——需求驱动契约，而不是反过来。
 // ============================================================
 
-use tonic::{Request, Response, Status};
-
-use super::pool_of;
-use crate::{
-    AppState,
-    api::{
-        grpc::{auth, pb},
-        rest::exercises as rest_exercises,
-    },
-};
-// ⚠️ 挖空练习期间 stream_exercise_series 还没实现，下面两个 import 暂时无用；
-//    实现它时会用到（转换函数 + 统计查询），实现后删掉这些 allow。
-#[allow(unused_imports)]
-use crate::api::grpc::convert;
-#[allow(unused_imports)]
-use crate::api::rest::stats as rest_stats;
+// 【M9 约定（全路径）：本文件不需要任何 import】
+// 待实现的 stream_exercise_series 里直接写全路径，例如：
+//   crate::api::rest::stats::exercise_stats_view(...)、crate::api::grpc::convert::series_point(...)
 
 #[derive(Clone)]
 pub struct ExerciseServiceImpl
 {
-    pub(crate) state: AppState,
+    pub(crate) state: crate::AppState,
 }
 
 impl ExerciseServiceImpl
 {
-    pub fn new(state: AppState) -> Self
+    pub fn new(state: crate::AppState) -> Self
     {
         Self { state }
     }
 }
 
 #[tonic::async_trait]
-impl pb::exercise_service_server::ExerciseService for ExerciseServiceImpl
+impl crate::api::grpc::pb::exercise_service_server::ExerciseService for ExerciseServiceImpl
 {
     /// 动作列表（可按部位筛选）
     ///
@@ -57,33 +44,42 @@ impl pb::exercise_service_server::ExerciseService for ExerciseServiceImpl
     /// 这个小适配器在本项目里到处都是（凡是"把 Option<String> 喂给收 &str 的函数"）。
     async fn list_exercises(
         &self,
-        request: Request<pb::ListExercisesRequest>,
-    ) -> Result<Response<pb::ListExercisesResponse>, Status>
+        request: tonic::Request<crate::api::grpc::pb::ListExercisesRequest>,
+    ) -> Result<tonic::Response<crate::api::grpc::pb::ListExercisesResponse>, tonic::Status>
     {
-        let user = auth::require_user(&request, &self.state).await?;
+        let user = crate::api::grpc::auth::require_user(&request, &self.state).await?;
         let req = request.into_inner();
-        let pool = pool_of(&self.state).await;
+        let pool = crate::api::grpc::service::pool_of(&self.state).await;
 
-        let list = rest_exercises::exercise_list(&pool, user.id, req.body_part.as_deref()).await?;
+        let list =
+            crate::api::rest::exercises::exercise_list(&pool, user.id, req.body_part.as_deref())
+                .await?;
 
-        Ok(Response::new(pb::ListExercisesResponse {
-            exercises: list.iter().map(pb::Exercise::from).collect(),
-        }))
+        Ok(tonic::Response::new(
+            crate::api::grpc::pb::ListExercisesResponse {
+                exercises: list
+                    .iter()
+                    .map(crate::api::grpc::pb::Exercise::from)
+                    .collect(),
+            },
+        ))
     }
 
     /// 动作详情（含最近训练日期 + 历史最佳 1RM）
     async fn get_exercise(
         &self,
-        request: Request<pb::GetExerciseRequest>,
-    ) -> Result<Response<pb::Exercise>, Status>
+        request: tonic::Request<crate::api::grpc::pb::GetExerciseRequest>,
+    ) -> Result<tonic::Response<crate::api::grpc::pb::Exercise>, tonic::Status>
     {
-        let user = auth::require_user(&request, &self.state).await?;
+        let user = crate::api::grpc::auth::require_user(&request, &self.state).await?;
         let req = request.into_inner();
-        let pool = pool_of(&self.state).await;
+        let pool = crate::api::grpc::service::pool_of(&self.state).await;
 
-        let out = rest_exercises::exercise_detail(&pool, user.id, req.id).await?;
+        let out = crate::api::rest::exercises::exercise_detail(&pool, user.id, req.id).await?;
 
-        Ok(Response::new(pb::Exercise::from(&out)))
+        Ok(tonic::Response::new(crate::api::grpc::pb::Exercise::from(
+            &out,
+        )))
     }
 
     /// 创建动作
@@ -94,48 +90,53 @@ impl pb::exercise_service_server::ExerciseService for ExerciseServiceImpl
     /// 所以两个出口的默认值永远一致（不会"REST 建出来是 20kg，gRPC 建出来是 0kg"）。
     async fn create_exercise(
         &self,
-        request: Request<pb::CreateExerciseRequest>,
-    ) -> Result<Response<pb::Exercise>, Status>
+        request: tonic::Request<crate::api::grpc::pb::CreateExerciseRequest>,
+    ) -> Result<tonic::Response<crate::api::grpc::pb::Exercise>, tonic::Status>
     {
-        let user = auth::require_user(&request, &self.state).await?;
+        let user = crate::api::grpc::auth::require_user(&request, &self.state).await?;
         let req = request.into_inner();
-        let pool = pool_of(&self.state).await;
+        let pool = crate::api::grpc::service::pool_of(&self.state).await;
 
-        let create_req = rest_exercises::ExerciseCreateReq::from(&req);
-        let out = rest_exercises::exercise_create(&pool, user.id, &create_req).await?;
+        let create_req = crate::api::rest::exercises::ExerciseCreateReq::from(&req);
+        let out = crate::api::rest::exercises::exercise_create(&pool, user.id, &create_req).await?;
 
-        Ok(Response::new(pb::Exercise::from(&out)))
+        Ok(tonic::Response::new(crate::api::grpc::pb::Exercise::from(
+            &out,
+        )))
     }
 
     /// 更新动作（PATCH 语义）
     async fn update_exercise(
         &self,
-        request: Request<pb::UpdateExerciseRequest>,
-    ) -> Result<Response<pb::Exercise>, Status>
+        request: tonic::Request<crate::api::grpc::pb::UpdateExerciseRequest>,
+    ) -> Result<tonic::Response<crate::api::grpc::pb::Exercise>, tonic::Status>
     {
-        let user = auth::require_user(&request, &self.state).await?;
+        let user = crate::api::grpc::auth::require_user(&request, &self.state).await?;
         let req = request.into_inner();
-        let pool = pool_of(&self.state).await;
+        let pool = crate::api::grpc::service::pool_of(&self.state).await;
 
-        let update_req = rest_exercises::ExerciseUpdateReq::from(&req);
-        let out = rest_exercises::exercise_update(&pool, user.id, req.id, &update_req).await?;
+        let update_req = crate::api::rest::exercises::ExerciseUpdateReq::from(&req);
+        let out = crate::api::rest::exercises::exercise_update(&pool, user.id, req.id, &update_req)
+            .await?;
 
-        Ok(Response::new(pb::Exercise::from(&out)))
+        Ok(tonic::Response::new(crate::api::grpc::pb::Exercise::from(
+            &out,
+        )))
     }
 
     /// 删除动作
     async fn delete_exercise(
         &self,
-        request: Request<pb::DeleteExerciseRequest>,
-    ) -> Result<Response<pb::Ack>, Status>
+        request: tonic::Request<crate::api::grpc::pb::DeleteExerciseRequest>,
+    ) -> Result<tonic::Response<crate::api::grpc::pb::Ack>, tonic::Status>
     {
-        let user = auth::require_user(&request, &self.state).await?;
+        let user = crate::api::grpc::auth::require_user(&request, &self.state).await?;
         let req = request.into_inner();
-        let pool = pool_of(&self.state).await;
+        let pool = crate::api::grpc::service::pool_of(&self.state).await;
 
-        rest_exercises::exercise_delete(&pool, user.id, req.id).await?;
+        crate::api::rest::exercises::exercise_delete(&pool, user.id, req.id).await?;
 
-        Ok(Response::new(pb::Ack { ok: true }))
+        Ok(tonic::Response::new(crate::api::grpc::pb::Ack { ok: true }))
     }
 
     // ============================================================
@@ -152,17 +153,18 @@ impl pb::exercise_service_server::ExerciseService for ExerciseServiceImpl
     ///
     /// 【本项目的选择：tokio_stream::Iter】
     /// 先把数据算完放进 Vec，再用 `tokio_stream::iter()` 转成流。
-    ///   ✅ 最简单、无 channel、无并发，符合"先跑通再优化"
-    ///   ⚠️ 缺点：服务器端并没有"边查边发"（结果集很大时内存压力仍在服务器侧）
+    ///    最简单、无 channel、无并发，符合"先跑通再优化"
+    ///    缺点：服务器端并没有"边查边发"（结果集很大时内存压力仍在服务器侧）
     /// 真正的流式（分页游标 + channel，或用 sqlx 的 fetch Stream）见 todo.md
     /// 的"待办：真流式导出"。**注意：即使服务器是"先算完再发"，
     /// 客户端拿到的仍然是逐条消息的流**（协议层面已经流式），
     /// 所以客户端的写法与真流式完全一致——将来换实现不影响契约。
-    type StreamExerciseSeriesStream =
-        tokio_stream::Iter<std::vec::IntoIter<Result<pb::ExerciseSeriesPoint, Status>>>;
+    type StreamExerciseSeriesStream = tokio_stream::Iter<
+        std::vec::IntoIter<Result<crate::api::grpc::pb::ExerciseSeriesPoint, tonic::Status>>,
+    >;
 
     // ============================================================
-    // StreamExerciseSeries（服务器流式，★ 挖空练习）
+    // StreamExerciseSeries（服务器流式， 挖空练习）
     // ============================================================
     /// 某动作的训练序列（1RM 折线图数据源），支持区间过滤
     ///
@@ -184,13 +186,14 @@ impl pb::exercise_service_server::ExerciseService for ExerciseServiceImpl
     ///      Ok(Response::new(tokio_stream::iter(
     ///          points.into_iter().map(Ok).collect::<Vec<_>>(),
     ///      )))
-    ///    ⚠️ 注意流元素的类型必须是 `Result<Point, Status>`——
+    ///     注意流元素的类型必须是 `Result<Point, Status>`——
     ///       即使这里不可能出错，也要 `Ok(...)`（协议规定"每条消息都可能带状态"）。
+    // 挖空期间允许 unused（todo! 占位），实现完成后删掉下一行 allow
     #[allow(unused_variables)]
     async fn stream_exercise_series(
         &self,
-        request: Request<pb::ExerciseSeriesRequest>,
-    ) -> Result<Response<Self::StreamExerciseSeriesStream>, Status>
+        request: tonic::Request<crate::api::grpc::pb::ExerciseSeriesRequest>,
+    ) -> Result<tonic::Response<Self::StreamExerciseSeriesStream>, tonic::Status>
     {
         // 【实现步骤】见上方注释
         todo!("M9 练习：StreamExerciseSeries 实现") // 【待实现】

@@ -17,7 +17,7 @@
 //   1. 逻辑可以被测试（不用起服务器就能测哈希/session）
 //   2. 以后换 HTTP 框架，逻辑不用改
 //
-// 📌 阶段要求：M1 你来实现本文件剩余的函数。
+// 阶段要求：M1 你来实现本文件剩余的函数。
 //   完整实现已备份在 docs/learning_path/M1_ref/handlers_auth_ref.rs，
 //   实现完成后对照检查（不要提前看）。
 // ============================================================
@@ -25,23 +25,7 @@
 // 【教学：本文件用到的导入】
 // 下面每个导入都会在某个函数里用到，实现时自然会用上。
 // （骨架阶段有 unused 警告是正常的，实现完就消失了。）
-use axum::{
-    extract::{Form, FromRequestParts, State},
-    http::{
-        HeaderMap,
-        header::SET_COOKIE, // SET_COOKIE：设置响应头用（login/logout）
-        request::Parts, // Parts：请求的"非 body 部分"（headers/method/uri...），提取器从这里拿数据
-    },
-    response::{Html, Redirect}, // 重定向：登录成功跳首页、登出跳登录页
-};
-use serde::Deserialize;
 
-use crate::{
-    AppState,
-    auth::{self, get_user_by_session},
-    error::AppError,
-    models::User,
-};
 //   AppState   = 共享数据（连接池等），State(state) 提取器用它
 //   auth       = 上一节实现的认证逻辑（hash/verify/create_session/...）
 //   AppError   = 统一的错误类型，? 运算符自动转
@@ -72,7 +56,7 @@ use crate::{
 //
 // 在函数体里取用：let pool = &pool;  // 从工具箱里拿扳手
 //
-// 💡 思考题：require_user 是辅助函数，签名是 state: &AppState
+// 思考题：require_user 是辅助函数，签名是 state: &AppState
 //   而不是 State<AppState>，为什么？
 //   （答：因为它不是 handler，是我们自己调用的普通函数，
 //     不需要 axum 帮我们注入，直接传引用即可。）
@@ -88,7 +72,7 @@ use crate::{
 // 提交后，axum 的 Form<LoginForm> 提取器会按 name 字段名匹配，
 // 自动把 username/password 填进结构体。
 // ============================================================
-#[derive(Deserialize)]
+#[derive(serde::Deserialize)]
 pub struct LoginForm
 {
     username: String,
@@ -96,7 +80,7 @@ pub struct LoginForm
 }
 
 /// 创建用户的表单（管理员用）
-#[derive(Deserialize)]
+#[derive(serde::Deserialize)]
 pub struct CreateUserForm
 {
     username: String,
@@ -119,9 +103,9 @@ pub struct CreateUserForm
 /// 教训：本地开发用 curl 测试页面，curl 不渲染只显示 body，
 /// 看不到 text/plain 的问题；只有在浏览器里打开才发现。
 /// 这也是为什么教学注释说 M2 换 askama 模板（自动处理类型）。
-pub async fn login_page() -> Html<String>
+pub async fn login_page() -> axum::response::Html<String>
 {
-    Html(format!(
+    axum::response::Html(format!(
         r#"
         {head}
         <form method="post" action="/login">
@@ -141,8 +125,8 @@ pub async fn login_page() -> Html<String>
 ///
 /// 流程：
 ///   1. 用表单里的用户名查用户（sqlx 查询 + fetch_optional）
-///   2. 校验密码（auth::verify_password）
-///   3. 成功 → auth::create_session 创建 session → 把 token 放进 cookie → 重定向到 /
+///   2. 校验密码（crate::auth::verify_password）
+///   3. 成功 → crate::auth::create_session 创建 session → 把 token 放进 cookie → 重定向到 /
 ///   4. 失败 → 返回 Err(AppError::Validation("用户名或密码错误"))
 ///
 /// 【教学：防用户名探测】
@@ -190,7 +174,7 @@ pub async fn login_page() -> Html<String>
 ///   Err(...)  = 哈希解析失败（系统内部错误，如数据库存了损坏的哈希）
 ///
 /// 正确写法（本项目）：
-///   let is_correct_password = auth::verify_password(&form.password, &user.password_hash)?;
+///   let is_correct_password = crate::auth::verify_password(&form.password, &user.password_hash)?;
 ///   if !is_correct_password { return Err(Validation("用户名或密码错误")); }
 ///
 /// 为什么不能 map_err？
@@ -198,7 +182,7 @@ pub async fn login_page() -> Html<String>
 ///   而且 Err 里装的是"哈希解析失败"（系统问题），
 ///   把它伪装成"用户名或密码错误"（业务问题）会误导排查。
 ///
-/// 💡 经典模式：Result<bool, _> 里，bool 承载业务判断，Err 承载系统故障。
+/// 经典模式：Result<bool, _> 里，bool 承载业务判断，Err 承载系统故障。
 ///    返回"是/否"的函数，判断逻辑写在 Ok 分支外，别把 false 塞进 Err。
 ///
 /// 【教学：&str vs &[u8] —— 为什么不能传 as_bytes()】
@@ -225,9 +209,9 @@ pub async fn login_page() -> Html<String>
 /// 这是隐式转换，不是手动转。
 ///
 /// 签名写 &str 而不是 &String 的好处（Rust 惯例）：
-///   传 &String   → 自动 deref ✅
-///   传字符串字面量 "abc"（就是 &str）→ 直接用 ✅
-///   传 &str 变量  → 直接用 ✅
+///   传 &String   → 自动 deref
+///   传字符串字面量 "abc"（就是 &str）→ 直接用
+///   传 &str 变量  → 直接用
 /// 写 &String 的话，后两种全都不行。
 ///
 /// 【教学：sqlx 链式调用每一步的类型（rust-analyzer 不可用时看这里）】
@@ -290,12 +274,12 @@ pub async fn login_page() -> Html<String>
 ///   headers.insert(...);                        // 返回值丢弃（我们不 care）
 ///
 /// 同类坑：Vec::new().push(x) —— push 返回 ()，变量类型变成 ()。
-/// 💡 记住：创建和操作分开写，除非你确实想要返回值。
+/// 记住：创建和操作分开写，除非你确实想要返回值。
 ///
 /// 【教学：Ok 里装元组要整体加括号】
 /// 返回类型 Result<(HeaderMap, Redirect), AppError> 的 Ok 里是一个元组：
-///   Ok((headers, Redirect::to("/")))   ✅
-///   Ok(headers, Redirect::to("/"))     ❌ 这是把 Ok 当多参数函数用了
+///   Ok((headers, Redirect::to("/")))
+///   Ok(headers, Redirect::to("/"))      这是把 Ok 当多参数函数用了
 /// （多值返回 = 元组，元组 = 一个值，括号必须包住整体）
 ///
 /// 【教学：cookie.parse() 是干什么的？】
@@ -319,13 +303,13 @@ pub async fn login_page() -> Html<String>
 /// 【实现步骤】
 /// 1. 查用户：
 ///    sqlx::query_as::<_, User>("SELECT * FROM users WHERE username = ?")
-///        .bind(&form.username)
-///        .fetch_optional(&pool)
-///        .await
-///        .map_err(AppError::Database)?
+///   .bind(&form.username)
+///   .fetch_optional(&pool)
+///   .await
+///   .map_err(AppError::Database)?
 /// 2. 用户不存在 → .ok_or_else(|| AppError::Validation("用户名或密码错误".to_string()))?
 /// 3. 校验密码 → 失败返回同样的 Validation 错误
-/// 4. 创建 session：let token = auth::create_session(&pool, user.id).await?;
+/// 4. 创建 session：let token = crate::auth::create_session(&pool, user.id).await?;
 /// 5. 组装 cookie：
 ///    format!("session={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000")
 ///    （Max-Age=2592000 秒 = 30 天，与 session 过期一致）
@@ -336,29 +320,33 @@ pub async fn login_page() -> Html<String>
 /// 返回类型说明：登录成功返回「响应头 + 重定向」的元组
 /// （响应头里放 Set-Cookie，重定向到首页）
 pub async fn login(
-    State(state): State<AppState>,
-    Form(form): Form<LoginForm>,
-) -> Result<(HeaderMap, Redirect), AppError>
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    axum::extract::Form(form): axum::extract::Form<LoginForm>,
+) -> Result<(axum::http::HeaderMap, axum::response::Redirect), crate::error::AppError>
 {
     let pool = state.pool.read().await.clone();
 
-    let user_op = sqlx::query_as::<_, User>("SELECT * FROM users WHERE username = ?")
-        .bind(&form.username)
-        .fetch_optional(&pool)
-        .await
-        .map_err(|e| AppError::Database(e))?;
+    let user_op =
+        sqlx::query_as::<_, crate::models::User>("SELECT * FROM users WHERE username = ?")
+            .bind(&form.username)
+            .fetch_optional(&pool)
+            .await
+            .map_err(|e| crate::error::AppError::Database(e))?;
 
-    let user = user_op.ok_or_else(|| AppError::Validation("用户名不存在或密码错误".to_string()))?;
+    let user = user_op
+        .ok_or_else(|| crate::error::AppError::Validation("用户名不存在或密码错误".to_string()))?;
 
-    let is_correct_password = auth::verify_password(&form.password, &user.password_hash)?;
+    let is_correct_password = crate::auth::verify_password(&form.password, &user.password_hash)?;
 
     if !is_correct_password
     {
-        return Err(AppError::Validation("用户名不存在或密码错误".to_string()));
+        return Err(crate::error::AppError::Validation(
+            "用户名不存在或密码错误".to_string(),
+        ));
     }
 
-    // 4. 创建 session：let token = auth::create_session(&pool, user.id).await?;
-    let token = auth::create_session(&pool, user.id).await?;
+    // 4. 创建 session：let token = crate::auth::create_session(&pool, user.id).await?;
+    let token = crate::auth::create_session(&pool, user.id).await?;
 
     // 5. 组装 cookie：
     //    format!("session={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000")
@@ -371,18 +359,18 @@ pub async fn login(
     // 6. 放入响应头：
     //    let mut headers = HeaderMap::new();
     //    headers.insert(SET_COOKIE, cookie.parse().map_err(...)?);
-    let mut headers = HeaderMap::new();
+    let mut headers = axum::http::HeaderMap::new();
     headers.insert(
-        SET_COOKIE,
+        axum::http::header::SET_COOKIE,
         cookie
             .parse()
-            .map_err(|_e| AppError::Other("头文件生成失败".to_string()))?,
+            .map_err(|_e| crate::error::AppError::Other("头文件生成失败".to_string()))?,
     );
 
     // 7. 返回 (headers, Redirect::to("/"))
     // 返回类型说明：登录成功返回「响应头 + 重定向」的元组
     // （响应头里放 Set-Cookie，重定向到首页）
-    Ok((headers, Redirect::to("/")))
+    Ok((headers, axum::response::Redirect::to("/")))
 }
 
 // ============================================================
@@ -422,7 +410,7 @@ pub async fn login(
 ///   login 的逻辑："这请求不合格，我要拒绝它" → ? 强制
 ///   logout 的逻辑："没 token 就算了，照样把用户送回登录页" → if let 跳过
 ///
-/// 💡 判断口诀：问自己"没这个东西，用户算不算'非法访问'"。
+/// 判断口诀：问自己"没这个东西，用户算不算'非法访问'"。
 ///    算 → 用 ? 强制；不算 → 用 if let 跳过。
 ///
 /// 【教学：为什么新建 HeaderMap，而不是复用请求头？】
@@ -440,25 +428,25 @@ pub async fn login(
 /// 【实现步骤】
 /// 1. 从请求头里取 Cookie 头：headers.get(axum::http::header::COOKIE)
 /// 2. 解析出 session=xxx 的 token（可复用下面的 extract_token 辅助函数）
-/// 3. 有 token → auth::destroy_session(&pool, token).await?
+/// 3. 有 token → crate::auth::destroy_session(&pool, token).await?
 /// 4. 设置清除 cookie：let cookie = "session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0";
 ///    （Max-Age=0 = 立即过期，浏览器删除这个 cookie）
 /// 5. 返回 (headers, Redirect::to("/login"))
 /// 返回类型说明：登出返回「响应头 + 重定向」的元组
 /// （响应头里放清除 cookie，重定向到登录页）
 pub async fn logout(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> Result<(HeaderMap, Redirect), AppError>
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    headers: axum::http::HeaderMap,
+) -> Result<(axum::http::HeaderMap, axum::response::Redirect), crate::error::AppError>
 {
     let pool = state.pool.read().await.clone();
 
     // 1. 从请求头里取 Cookie 头：headers.get(axum::http::header::COOKIE)
     // 2. 解析出 session=xxx 的 token（可复用下面的 extract_token 辅助函数）
-    // 3. 有 token → auth::destroy_session(&pool, token).await?
+    // 3. 有 token → crate::auth::destroy_session(&pool, token).await?
     if let Some(token) = extract_token(&headers)
     {
-        auth::destroy_session(&pool, &token).await?;
+        crate::auth::destroy_session(&pool, &token).await?;
     }
     // 4. 设置清除 cookie：let cookie = "session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0";
     //    （Max-Age=0 = 立即过期，浏览器删除这个 cookie）
@@ -468,12 +456,12 @@ pub async fn logout(
     // （响应头里放清除 cookie，重定向到登录页）
     let mut new_header = axum::http::HeaderMap::new();
     new_header.insert(
-        SET_COOKIE,
+        axum::http::header::SET_COOKIE,
         new_cookie
             .parse()
-            .map_err(|_| AppError::Other("头文件生成失败".to_string()))?,
+            .map_err(|_| crate::error::AppError::Other("头文件生成失败".to_string()))?,
     );
-    Ok((new_header, Redirect::to("/login")))
+    Ok((new_header, axum::response::Redirect::to("/login")))
 }
 
 // ============================================================
@@ -519,7 +507,7 @@ pub async fn logout(
 /// 为什么 extract_token 用 and_then 而不是 map？
 ///   .and_then(|v| v.to_str().ok())   // to_str().ok() 返回的就是 Option<&str>
 ///   // 用 map 会得到 Option<Option<&str>>（两层套娃），and_then 压平成一层
-/// 💡 判断口诀：闭包返回普通值 → map；闭包返回 Option → and_then（否则套娃）。
+/// 判断口诀：闭包返回普通值 → map；闭包返回 Option → and_then（否则套娃）。
 ///    and_then 的别名就叫 flatMap（展平映射），功能相同。
 ///
 /// 【实现步骤】
@@ -532,7 +520,7 @@ pub async fn logout(
 ///             .and_then(|part| part.split('=').nth(1))
 ///             .map(|t| t.to_string())
 ///     })
-pub fn extract_token(headers: &HeaderMap) -> Option<String>
+pub fn extract_token(headers: &axum::http::HeaderMap) -> Option<String>
 {
     // TODO(M1): 学生实现（步骤见上方注释）
     // unimplemented!("M1 学生实现：解析 cookie token")
@@ -587,24 +575,27 @@ pub fn extract_token(headers: &HeaderMap) -> Option<String>
 ///    ? 没有工作要做，所以直接交付整个 Result。
 ///
 /// 3. 如果用 ? 会怎样？（对比）
-///    let user = auth::get_user_by_session(&pool, &token).await?;
+///    let user = crate::auth::get_user_by_session(&pool, &token).await?;
 ///    Ok(user)
 ///    ? 把 Result 解包成 User，最后还得 Ok(user) 再包回去——绕了一圈。
 ///
-/// 💡 判断口诀：看"错误类型需不需要转换"。
+/// 判断口诀：看"错误类型需不需要转换"。
 ///    函数体中间的行：错误要提前返回 → 用 ?（转换 + 提前 return）。
 ///    尾表达式：直接交付 → 不用 ?（返回值就是整个 Result）。
 ///
 /// 【实现步骤】
 /// 1. let token = extract_token(headers).ok_or(AppError::Unauthorized)?;
-/// 2. auth::get_user_by_session(&pool, &token).await
+/// 2. crate::auth::get_user_by_session(&pool, &token).await
 ///    （注意传 &token：get_user_by_session 收 &str，token 是 String，
 ///      必须传引用才能匹配参数类型）
-pub async fn require_user(state: &AppState, headers: &HeaderMap) -> Result<User, AppError>
+pub async fn require_user(
+    state: &crate::AppState,
+    headers: &axum::http::HeaderMap,
+) -> Result<crate::models::User, crate::error::AppError>
 {
     let pool = state.pool.read().await.clone();
-    let token = extract_token(headers).ok_or(AppError::Unauthorized)?;
-    auth::get_user_by_session(&pool, &token).await
+    let token = extract_token(headers).ok_or(crate::error::AppError::Unauthorized)?;
+    crate::auth::get_user_by_session(&pool, &token).await
 }
 
 // ============================================================
@@ -645,7 +636,7 @@ pub async fn require_user(state: &AppState, headers: &HeaderMap) -> Result<User,
 ///   format!("...{user_vec}...")     // 新写法：直接捕获同名变量（Rust 1.58+）
 /// 本项目用 {} + 参数列表，参考实现用 {rows} 捕获，效果一样。
 ///
-/// 💡 坑提醒：如果 HTML 里有 CSS 花括号（如 <style>.x{color:red}</style>），
+/// 坑提醒：如果 HTML 里有 CSS 花括号（如 <style>.x{color:red}</style>），
 ///    format! 会把 {color:red} 误认成占位符。需写成 {{ 和 }} 转义。
 ///    本项目 HTML 没有花括号，安全。
 ///
@@ -668,22 +659,24 @@ pub async fn require_user(state: &AppState, headers: &HeaderMap) -> Result<User,
 ///        .collect::<Vec<_>>().join("\n")
 /// 5. 用 format! 拼完整 HTML 页面返回
 pub async fn admin_users(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> Result<Html<String>, AppError>
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    headers: axum::http::HeaderMap,
+) -> Result<axum::response::Html<String>, crate::error::AppError>
 {
     let pool = state.pool.read().await.clone();
     let user = require_user(&state, &headers).await?;
 
     if !user.is_admin
     {
-        return Err(AppError::Forbidden("需要管理员权限".to_string()));
+        return Err(crate::error::AppError::Forbidden(
+            "需要管理员权限".to_string(),
+        ));
     }
 
-    let users = sqlx::query_as::<_, User>("SELECT * FROM users ORDER BY id ASC")
+    let users = sqlx::query_as::<_, crate::models::User>("SELECT * FROM users ORDER BY id ASC")
         .fetch_all(&pool)
         .await
-        .map_err(AppError::Database)?;
+        .map_err(crate::error::AppError::Database)?;
 
     let user_vec = users
         .iter()
@@ -705,7 +698,7 @@ pub async fn admin_users(
         .collect::<Vec<_>>()
         .join("\n");
 
-    Ok(Html(format!(
+    Ok(axum::response::Html(format!(
         r#"<!DOCTYPE html>
                 <html lang="zh">
                 <head>{head}</head>
@@ -717,11 +710,11 @@ pub async fn admin_users(
                 </table>
                 <h2>创建新用户（邀请制）</h2>
                 <form method="post" action="/admin/users">
-                    <label>用户名 <input name="username" required></label><br>
-                    <label>密码 <input name="password" type="password" required></label><br>
+          <label>用户名 <input name="username" required></label><br>
+          <label>密码 <input name="password" type="password" required></label><br>
                     <label><input type="checkbox" name="is_admin" value="1"> 设为管理员</label><br>
                     <button type="submit">创建用户</button>
-                </form>
+        </form>
                 <p><a href="/">返回首页</a></p>
             </body>
             </html>"#,
@@ -760,7 +753,7 @@ pub async fn admin_users(
 ///   String: Deref<Target = str> → Option<String>.as_deref() = Option<&str>
 /// 两边类型一致（Option<&str> == Option<&str>），才能直接 ==。
 ///
-/// 💡 学生踩过的坑：写成 Some(1) => true 会报 E0308——
+/// 学生踩过的坑：写成 Some(1) => true 会报 E0308——
 ///    form.is_admin 装的是 String 不是整数，Some 里必须匹配字符串。
 ///    match 匹配的是"盒子里装的类型"，不是"你想要的语义"。
 ///
@@ -777,18 +770,18 @@ pub async fn admin_users(
 /// 【教学：INSERT 语句 + 参数绑定】
 /// sqlx::query("INSERT INTO users (username, password_hash, is_admin) VALUES (?, ?, ?)")
 ///     .bind(&form.username).bind(&password_hash).bind(is_admin)
-///     .execute(&pool).await
+///   .execute(&pool).await
 /// ? 占位符依次对应 bind 的参数：username → password_hash → is_admin。
 /// bind 不检查 SQL 类型，只负责"按顺序塞参数"（防 SQL 注入靠占位符机制本身）。
 ///
 /// 【实现步骤】
 /// 1. 守卫：require_user + is_admin 检查（同 admin_users）
 /// 2. 校验：用户名非空、密码至少 6 位
-/// 3. 哈希密码：let password_hash = auth::hash_password(&form.password)?;
+/// 3. 哈希密码：let password_hash = crate::auth::hash_password(&form.password)?;
 /// 4. 是否管理员：let is_admin = form.is_admin.as_deref() == Some("1");
 /// 5. 插入：
-///    sqlx::query("INSERT INTO users (username, password_hash, is_admin) VALUES (?, ?, ?)")
-///        .bind(&form.username).bind(&password_hash).bind(is_admin)
+/// sqlx::query("INSERT INTO users (username, password_hash, is_admin) VALUES (?, ?, ?)")
+///     .bind(&form.username).bind(&password_hash).bind(is_admin)
 ///        .execute(&pool).await.map_err(AppError::Database)?
 /// 6. 重定向回管理页：Ok(Redirect::to("/admin/users"))
 /// 返回类型说明：创建成功返回重定向（回到用户管理页）
@@ -800,25 +793,29 @@ pub async fn admin_users(
 ///   旧代码用 Validation（422 参数不合法）是偷懒——权限问题和
 ///   表单校验混为一谈；正确语义是 Forbidden（403）。
 pub async fn admin_create_user(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Form(form): Form<CreateUserForm>,
-) -> Result<Redirect, AppError>
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    headers: axum::http::HeaderMap,
+    axum::extract::Form(form): axum::extract::Form<CreateUserForm>,
+) -> Result<axum::response::Redirect, crate::error::AppError>
 {
     let pool = state.pool.read().await.clone();
     let user = require_user(&state, &headers).await?;
 
     if !user.is_admin
     {
-        return Err(AppError::Forbidden("需要管理员权限".to_string()));
+        return Err(crate::error::AppError::Forbidden(
+            "需要管理员权限".to_string(),
+        ));
     }
 
     if form.username.trim().is_empty() || form.password.len() < 6
     {
-        return Err(AppError::Other("用户名为空或密码小于6位".to_string()));
+        return Err(crate::error::AppError::Other(
+            "用户名为空或密码小于6位".to_string(),
+        ));
     }
 
-    let password_hash = auth::hash_password(&form.password)?;
+    let password_hash = crate::auth::hash_password(&form.password)?;
 
     let is_admin = match form.is_admin
     {
@@ -832,15 +829,15 @@ pub async fn admin_create_user(
         .bind(is_admin)
         .execute(&pool)
         .await
-        .map_err(AppError::Database)?;
+        .map_err(crate::error::AppError::Database)?;
 
-    Ok(Redirect::to("/admin/users"))
+    Ok(axum::response::Redirect::to("/admin/users"))
 
     // unimplemented!("M1 学生实现：创建用户")
 }
 
 // ============================================================
-// 【M2 第 1 步】AuthUser 提取器（方案 A：声明式守卫）★ 本阶段核心
+// 【M2 第 1 步】AuthUser 提取器（方案 A：声明式守卫） 本阶段核心
 // ============================================================
 // 【教学：为什么 M2 要引入 AuthUser？】
 // M1 的守卫写法（方案 B）：
@@ -906,11 +903,11 @@ pub async fn admin_create_user(
 //      let token = extract_token(&parts.headers).ok_or(AppError::Unauthorized)?;
 //    （extract_token 收 &HeaderMap，parts.headers 就是 HeaderMap）
 // 2. 查用户：
-//      let user = auth::get_user_by_session(&pool, &token).await?;
+//      let user = crate::auth::get_user_by_session(&pool, &token).await?;
 // 3. 包一层返回：
 //      Ok(AuthUser(user))
 //
-// 📌 M1 学习目标验收：能说出"Rejection 为什么用 AppError"、
+// M1 学习目标验收：能说出"Rejection 为什么用 AppError"、
 //   "为什么是 FromRequestParts 而不是 FromRequest"。
 //
 // ============================================================
@@ -981,20 +978,21 @@ pub async fn admin_create_user(
 ///
 /// 用法：handler 签名里写 `AuthUser(user): AuthUser`，
 /// 未登录请求会在调用 handler 前被拦截（401 → 重定向登录页）。
-pub struct AuthUser(pub User);
+pub struct AuthUser(pub crate::models::User);
 
-impl FromRequestParts<AppState> for AuthUser
+impl axum::extract::FromRequestParts<crate::AppState> for AuthUser
 {
-    type Rejection = AppError;
+    type Rejection = crate::error::AppError;
 
     async fn from_request_parts(
-        parts: &mut Parts,
-        state: &AppState,
+        parts: &mut axum::http::request::Parts,
+        state: &crate::AppState,
     ) -> Result<Self, Self::Rejection>
     {
         let pool = state.pool.read().await.clone();
-        let token = extract_token(&parts.headers).ok_or_else(|| AppError::Unauthorized)?;
-        let user = get_user_by_session(&pool, &token).await?;
+        let token =
+            extract_token(&parts.headers).ok_or_else(|| crate::error::AppError::Unauthorized)?;
+        let user = crate::auth::get_user_by_session(&pool, &token).await?;
         Ok(AuthUser(user))
         // unimplemented!("M2 学生实现：AuthUser 提取器")
     }
@@ -1013,17 +1011,17 @@ impl FromRequestParts<AppState> for AuthUser
 /// 校验：非数字 → Validation 400；负数 → Validation 400；
 /// 超范围（> 500kg）→ Validation 400（防手滑）
 /// 数据隔离：UPDATE ... WHERE id = ?（只改自己的行）
-#[derive(Debug, Deserialize)]
+#[derive(Debug, serde::Deserialize)]
 pub struct BodyWeightForm
 {
     pub weight: String,
 }
 
 pub async fn update_body_weight(
-    State(state): State<AppState>,
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
     AuthUser(user): AuthUser,
-    Form(form): Form<BodyWeightForm>,
-) -> Result<Redirect, AppError>
+    axum::extract::Form(form): axum::extract::Form<BodyWeightForm>,
+) -> Result<axum::response::Redirect, crate::error::AppError>
 {
     let pool = state.pool.read().await.clone();
     // 空串 → 清除体重（None）；否则解析 + 校验
@@ -1037,10 +1035,12 @@ pub async fn update_body_weight(
             .weight
             .trim()
             .parse::<f64>()
-            .map_err(|_| AppError::Validation("体重必须是数字".to_string()))?;
+            .map_err(|_| crate::error::AppError::Validation("体重必须是数字".to_string()))?;
         if !(0.0..=500.0).contains(&w)
         {
-            return Err(AppError::Validation("体重必须在 0~500kg 之间".to_string()));
+            return Err(crate::error::AppError::Validation(
+                "体重必须在 0~500kg 之间".to_string(),
+            ));
         }
         Some(w)
     };
@@ -1050,7 +1050,7 @@ pub async fn update_body_weight(
         .bind(&user.id)
         .execute(&pool)
         .await
-        .map_err(AppError::Database)?;
+        .map_err(crate::error::AppError::Database)?;
 
-    Ok(Redirect::to("/"))
+    Ok(axum::response::Redirect::to("/"))
 }

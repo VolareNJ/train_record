@@ -16,27 +16,13 @@
 //   页面表单"留空提交 "" 导致 f64 400"的坑在 API 层不存在：
 //   客户端传 JSON 数字，serde 直接给 f64/i64，类型安全。
 //
-// 📌 阶段要求：M8 你来实现本文件所有函数。
+//  阶段要求：M8 你来实现本文件所有函数。
 //   完整实现已备份在 docs/learning_path/M8_ref/，实现完成后对照检查。
 // ============================================================
-use axum::{
-    Json,
-    extract::{Path, Query, State},
-};
-use serde::{Deserialize, Serialize};
-use sqlx::SqlitePool;
 
-use crate::{
-    AppState,
-    api::{ApiError, rest::auth::ApiAuthUser},
-    calc::epley_1rm,
-    models::{Exercise, Record},
-};
-
-// ⚠️ 注意：exercise_out 挖空后 Record / epley_1rm 的 import 已删，
-//    你实现时需要加回：
-//     use crate::calc::epley_1rm;
-//     models::{Exercise, Record}
+//  注意（M9 全路径约定）：实现 exercise_out 时直接用全路径，本文件不需要 import：
+//     crate::calc::epley_1rm(...)
+//     sqlx::query_as::<_, crate::models::Record>(...) / crate::models::Exercise
 
 // ============================================================
 // 【教学：ExerciseOut —— 动作 DTO】
@@ -45,7 +31,7 @@ use crate::{
 //   date：最近训练日期
 //   best_1rm：该动作历史最高 1RM（实时计算，不落库）
 // 为什么"最近记录"不在 models 里？它是派生数据，查询时算。
-#[derive(Serialize)]
+#[derive(serde::Serialize)]
 pub struct ExerciseOut
 {
     pub id: i64,
@@ -68,7 +54,7 @@ pub struct ExerciseOut
 // ============================================================
 // 与页面 ExerciseForm 对应，但数字字段直接用 f64/i64（JSON 类型安全）。
 // bar_weight 可空？页面默认 20.0。API 客户端不传 → 默认 20.0（杠铃）。
-#[derive(Deserialize)]
+#[derive(serde::Deserialize)]
 pub struct ExerciseCreateReq
 {
     pub name: String,
@@ -113,19 +99,22 @@ pub(crate) fn default_reps() -> i64
 // ============================================================
 // 派生数据（last_record_date / best_1rm）要查 records 表，
 // 所以是 async 函数（不能 From）。
-async fn exercise_out(pool: &SqlitePool, ex: &Exercise) -> Result<ExerciseOut, ApiError>
+async fn exercise_out(
+    pool: &sqlx::SqlitePool,
+    ex: &crate::models::Exercise,
+) -> Result<ExerciseOut, crate::api::rest::ApiError>
 {
     // 1. 查该动作全部记录（升序）：last() 即最近一次训练
-    let records = sqlx::query_as::<_, Record>(
+    let records = sqlx::query_as::<_, crate::models::Record>(
         "SELECT * FROM records WHERE exercise_id = ? ORDER BY record_date ASC, id ASC",
     )
     .bind(&ex.id)
     .fetch_all(pool)
     .await
-    .map_err(ApiError::Database)?;
+    .map_err(crate::api::rest::ApiError::Database)?;
 
     // 2. last_record_date：升序 → 最后一条 = 最近一次训练
-    //    ⚠️ 用 map 不用 unwrap：一条记录都没有 → None
+    //     用 map 不用 unwrap：一条记录都没有 → None
     //    （"从未练过"是合法状态，unwrap 空迭代器会 panic！）
     let last_record_date = records.last().map(|r| r.record_date.clone());
 
@@ -136,7 +125,7 @@ async fn exercise_out(pool: &SqlitePool, ex: &Exercise) -> Result<ExerciseOut, A
     //      pipe  → 把 "0.0"（无效输入/无记录）清理成 None（见下方注释）
     let best_1rm = records
         .iter()
-        .map(|r| epley_1rm(r.weight, r.reps))
+        .map(|r| crate::calc::epley_1rm(r.weight, r.reps))
         .fold(0.0_f64, f64::max)
         .pipe(|v| if v > 0.0 { Some(v) } else { None });
 
@@ -177,7 +166,7 @@ async fn exercise_out(pool: &SqlitePool, ex: &Exercise) -> Result<ExerciseOut, A
 //     if max > 0.0 { Some(max) } else { None }  // Option<f64>
 // 这就是管道思想（JavaScript 的 |>、Elixir 的 |>、F# 的 |> 同一概念）：
 // 数据从左到右流经一个个变换，不用起中间变量名。
-// ⚠️ 只在"变换链中途"需要时用；两步以上才值得，别为单步引 trait。
+//  只在"变换链中途"需要时用；两步以上才值得，别为单步引 trait。
 trait Pipe: Sized
 {
     fn pipe<R>(self, f: impl FnOnce(Self) -> R) -> R;
@@ -205,43 +194,43 @@ impl<T: Sized> Pipe for T
 /// 2. part_filter：query.body_part.as_deref().filter(|p| !p.is_empty())
 /// 3. match part_filter：Some → 带条件查；None → 查全部
 /// 4. 迭代器转 ExerciseOut（每个查派生数据）
-#[derive(Deserialize)]
+#[derive(serde::Deserialize)]
 pub struct ListQuery
 {
     pub body_part: Option<String>,
 }
 
 pub async fn list(
-    State(state): State<AppState>,
-    ApiAuthUser(user): ApiAuthUser,
-    Query(query): Query<ListQuery>,
-) -> Result<Json<Vec<ExerciseOut>>, ApiError>
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    crate::api::rest::auth::ApiAuthUser(user): crate::api::rest::auth::ApiAuthUser,
+    axum::extract::Query(query): axum::extract::Query<ListQuery>,
+) -> Result<axum::Json<Vec<ExerciseOut>>, crate::api::rest::ApiError>
 {
     let pool = state.pool.read().await.clone();
     // 【M9】协议无关逻辑抽到下方 exercise_list（gRPC 服务复用同一份 SQL）
-    Ok(Json(
+    Ok(axum::Json(
         exercise_list(&pool, user.id, query.body_part.as_deref()).await?,
     ))
 }
 
 /// 协议无关实现（REST handler 与 M9 gRPC 服务共用）
 pub(crate) async fn exercise_list(
-    pool: &SqlitePool,
+    pool: &sqlx::SqlitePool,
     user_id: i64,
     body_part: Option<&str>,
-) -> Result<Vec<ExerciseOut>, ApiError>
+) -> Result<Vec<ExerciseOut>, crate::api::rest::ApiError>
 {
     // 空串筛选 = 不筛选（页面层同款）
     let part_filter = body_part.filter(|p| !p.is_empty());
 
     let exercises = match part_filter
     {
-        None => sqlx::query_as::<_, Exercise>(
+        None => sqlx::query_as::<_, crate::models::Exercise>(
             "SELECT * FROM exercises WHERE user_id = ? ORDER BY body_part, sort_order, id",
         )
         .bind(&user_id)
         .fetch_all(pool),
-        Some(pt) => sqlx::query_as::<_, Exercise>(
+        Some(pt) => sqlx::query_as::<_, crate::models::Exercise>(
             "SELECT * FROM exercises WHERE user_id = ? AND body_part = ? ORDER BY sort_order, id",
         )
         .bind(&user_id)
@@ -249,7 +238,7 @@ pub(crate) async fn exercise_list(
         .fetch_all(pool),
     }
     .await
-    .map_err(ApiError::Database)?;
+    .map_err(crate::api::rest::ApiError::Database)?;
 
     let mut out = Vec::with_capacity(exercises.len());
     for ex in &exercises
@@ -275,26 +264,28 @@ pub(crate) async fn exercise_list(
 /// 3. INSERT INTO exercises (...) VALUES (?, ?, ...) RETURNING id
 /// 4. 查完整行 → exercise_out → Json
 pub async fn create(
-    State(state): State<AppState>,
-    ApiAuthUser(user): ApiAuthUser,
-    Json(req): Json<ExerciseCreateReq>,
-) -> Result<Json<ExerciseOut>, ApiError>
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    crate::api::rest::auth::ApiAuthUser(user): crate::api::rest::auth::ApiAuthUser,
+    axum::Json(req): axum::Json<ExerciseCreateReq>,
+) -> Result<axum::Json<ExerciseOut>, crate::api::rest::ApiError>
 {
     let pool = state.pool.read().await.clone();
     // 【M9】协议无关逻辑抽到下方 exercise_create（gRPC 服务复用同一份 SQL）
-    Ok(Json(exercise_create(&pool, user.id, &req).await?))
+    Ok(axum::Json(exercise_create(&pool, user.id, &req).await?))
 }
 
 /// 协议无关实现（REST handler 与 M9 gRPC 服务共用）
 pub(crate) async fn exercise_create(
-    pool: &SqlitePool,
+    pool: &sqlx::SqlitePool,
     user_id: i64,
     req: &ExerciseCreateReq,
-) -> Result<ExerciseOut, ApiError>
+) -> Result<ExerciseOut, crate::api::rest::ApiError>
 {
     if req.name.trim().is_empty() || req.body_part.trim().is_empty()
     {
-        return Err(ApiError::Validation("动作名和部位不能为空".to_string()));
+        return Err(crate::api::rest::ApiError::Validation(
+            "动作名和部位不能为空".to_string(),
+        ));
     }
 
     // 查重（数据隔离 + 防重名，和页面 create 同款）
@@ -303,10 +294,12 @@ pub(crate) async fn exercise_create(
         .bind(&req.name)
         .fetch_optional(pool)
         .await
-        .map_err(ApiError::Database)?
+        .map_err(crate::api::rest::ApiError::Database)?
         .is_some()
     {
-        return Err(ApiError::Validation("动作名已存在".to_string()));
+        return Err(crate::api::rest::ApiError::Validation(
+            "动作名已存在".to_string(),
+        ));
     }
 
     let new_id = sqlx::query_scalar::<_, i64>(
@@ -327,14 +320,16 @@ pub(crate) async fn exercise_create(
     .bind(&req.key_points)
     .fetch_one(pool)
     .await
-    .map_err(ApiError::Database)?;
+    .map_err(crate::api::rest::ApiError::Database)?;
 
-    let ex = sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE id = ? AND user_id = ?")
-        .bind(&new_id)
-        .bind(&user_id)
-        .fetch_one(pool)
-        .await
-        .map_err(ApiError::Database)?;
+    let ex = sqlx::query_as::<_, crate::models::Exercise>(
+        "SELECT * FROM exercises WHERE id = ? AND user_id = ?",
+    )
+    .bind(&new_id)
+    .bind(&user_id)
+    .fetch_one(pool)
+    .await
+    .map_err(crate::api::rest::ApiError::Database)?;
 
     Ok(exercise_out(pool, &ex).await?)
 }
@@ -343,7 +338,7 @@ pub(crate) async fn exercise_create(
 // 【教学：ExerciseUpdateReq —— PATCH 请求体】
 // ============================================================
 // 部分更新：缺字段 → 用旧值。数字字段 Option<f64>（null 视为不改）。
-#[derive(Deserialize)]
+#[derive(serde::Deserialize)]
 pub struct ExerciseUpdateReq
 {
     #[serde(default)]
@@ -369,30 +364,32 @@ pub struct ExerciseUpdateReq
 // ============================================================
 /// 动作详情（含最近训练 + 最高 1RM）
 pub async fn detail(
-    State(state): State<AppState>,
-    ApiAuthUser(user): ApiAuthUser,
-    Path(id): Path<i64>,
-) -> Result<Json<ExerciseOut>, ApiError>
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    crate::api::rest::auth::ApiAuthUser(user): crate::api::rest::auth::ApiAuthUser,
+    axum::extract::Path(id): axum::extract::Path<i64>,
+) -> Result<axum::Json<ExerciseOut>, crate::api::rest::ApiError>
 {
     let pool = state.pool.read().await.clone();
     // 【M9】协议无关逻辑抽到下方 exercise_detail（gRPC 服务复用同一份 SQL）
-    Ok(Json(exercise_detail(&pool, user.id, id).await?))
+    Ok(axum::Json(exercise_detail(&pool, user.id, id).await?))
 }
 
 /// 协议无关实现（REST handler 与 M9 gRPC 服务共用）
 pub(crate) async fn exercise_detail(
-    pool: &SqlitePool,
+    pool: &sqlx::SqlitePool,
     user_id: i64,
     exercise_id: i64,
-) -> Result<ExerciseOut, ApiError>
+) -> Result<ExerciseOut, crate::api::rest::ApiError>
 {
-    let ex = sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE id = ? AND user_id = ?")
-        .bind(&exercise_id)
-        .bind(&user_id)
-        .fetch_optional(pool)
-        .await
-        .map_err(ApiError::Database)?
-        .ok_or_else(|| ApiError::NotFound("动作不存在".to_string()))?;
+    let ex = sqlx::query_as::<_, crate::models::Exercise>(
+        "SELECT * FROM exercises WHERE id = ? AND user_id = ?",
+    )
+    .bind(&exercise_id)
+    .bind(&user_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(crate::api::rest::ApiError::Database)?
+    .ok_or_else(|| crate::api::rest::ApiError::NotFound("动作不存在".to_string()))?;
 
     Ok(exercise_out(pool, &ex).await?)
 }
@@ -402,32 +399,34 @@ pub(crate) async fn exercise_detail(
 // ============================================================
 /// 更新动作（部分更新，先查旧值合并）
 pub async fn update(
-    State(state): State<AppState>,
-    ApiAuthUser(user): ApiAuthUser,
-    Path(id): Path<i64>,
-    Json(req): Json<ExerciseUpdateReq>,
-) -> Result<Json<ExerciseOut>, ApiError>
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    crate::api::rest::auth::ApiAuthUser(user): crate::api::rest::auth::ApiAuthUser,
+    axum::extract::Path(id): axum::extract::Path<i64>,
+    axum::Json(req): axum::Json<ExerciseUpdateReq>,
+) -> Result<axum::Json<ExerciseOut>, crate::api::rest::ApiError>
 {
     let pool = state.pool.read().await.clone();
     // 【M9】协议无关逻辑抽到下方 exercise_update（gRPC 服务复用同一份 SQL）
-    Ok(Json(exercise_update(&pool, user.id, id, &req).await?))
+    Ok(axum::Json(exercise_update(&pool, user.id, id, &req).await?))
 }
 
 /// 协议无关实现（REST handler 与 M9 gRPC 服务共用）
 pub(crate) async fn exercise_update(
-    pool: &SqlitePool,
+    pool: &sqlx::SqlitePool,
     user_id: i64,
     exercise_id: i64,
     req: &ExerciseUpdateReq,
-) -> Result<ExerciseOut, ApiError>
+) -> Result<ExerciseOut, crate::api::rest::ApiError>
 {
-    let old = sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE id = ? AND user_id = ?")
-        .bind(&exercise_id)
-        .bind(&user_id)
-        .fetch_optional(pool)
-        .await
-        .map_err(ApiError::Database)?
-        .ok_or_else(|| ApiError::NotFound("动作不存在".to_string()))?;
+    let old = sqlx::query_as::<_, crate::models::Exercise>(
+        "SELECT * FROM exercises WHERE id = ? AND user_id = ?",
+    )
+    .bind(&exercise_id)
+    .bind(&user_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(crate::api::rest::ApiError::Database)?
+    .ok_or_else(|| crate::api::rest::ApiError::NotFound("动作不存在".to_string()))?;
 
     let name = req.name.clone().unwrap_or(old.name);
     let body_part = req.body_part.clone().unwrap_or(old.body_part);
@@ -440,7 +439,9 @@ pub(crate) async fn exercise_update(
 
     if name.trim().is_empty() || body_part.trim().is_empty()
     {
-        return Err(ApiError::Validation("动作名和部位不能为空".to_string()));
+        return Err(crate::api::rest::ApiError::Validation(
+            "动作名和部位不能为空".to_string(),
+        ));
     }
 
     let ret = sqlx::query(
@@ -460,19 +461,23 @@ pub(crate) async fn exercise_update(
     .bind(&user_id)
     .execute(pool)
     .await
-    .map_err(ApiError::Database)?;
+    .map_err(crate::api::rest::ApiError::Database)?;
 
     if ret.rows_affected() == 0
     {
-        return Err(ApiError::NotFound("动作不存在".to_string()));
+        return Err(crate::api::rest::ApiError::NotFound(
+            "动作不存在".to_string(),
+        ));
     }
 
-    let ex = sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE id = ? AND user_id = ?")
-        .bind(&exercise_id)
-        .bind(&user_id)
-        .fetch_one(pool)
-        .await
-        .map_err(ApiError::Database)?;
+    let ex = sqlx::query_as::<_, crate::models::Exercise>(
+        "SELECT * FROM exercises WHERE id = ? AND user_id = ?",
+    )
+    .bind(&exercise_id)
+    .bind(&user_id)
+    .fetch_one(pool)
+    .await
+    .map_err(crate::api::rest::ApiError::Database)?;
 
     Ok(exercise_out(pool, &ex).await?)
 }
@@ -495,34 +500,36 @@ pub(crate) async fn exercise_update(
 /// 3. rows_affected() == 0 → NotFound
 /// 4. 返回 {"ok": true}（或删除的对象——M8 简化返回 ok）
 pub async fn delete(
-    State(state): State<AppState>,
-    ApiAuthUser(user): ApiAuthUser,
-    Path(id): Path<i64>,
-) -> Result<Json<serde_json::Value>, ApiError>
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    crate::api::rest::auth::ApiAuthUser(user): crate::api::rest::auth::ApiAuthUser,
+    axum::extract::Path(id): axum::extract::Path<i64>,
+) -> Result<axum::Json<serde_json::Value>, crate::api::rest::ApiError>
 {
     let pool = state.pool.read().await.clone();
     // 【M9】协议无关逻辑抽到下方 exercise_delete（gRPC 服务复用同一份 SQL）
     exercise_delete(&pool, user.id, id).await?;
-    Ok(Json(serde_json::json!({ "ok": true })))
+    Ok(axum::Json(serde_json::json!({ "ok": true })))
 }
 
 /// 协议无关实现（REST handler 与 M9 gRPC 服务共用）
 pub(crate) async fn exercise_delete(
-    pool: &SqlitePool,
+    pool: &sqlx::SqlitePool,
     user_id: i64,
     exercise_id: i64,
-) -> Result<(), ApiError>
+) -> Result<(), crate::api::rest::ApiError>
 {
     let ret = sqlx::query("DELETE FROM exercises WHERE id = ? AND user_id = ?")
         .bind(&exercise_id)
         .bind(&user_id)
         .execute(pool)
         .await
-        .map_err(ApiError::Database)?;
+        .map_err(crate::api::rest::ApiError::Database)?;
 
     if ret.rows_affected() == 0
     {
-        return Err(ApiError::NotFound("动作不存在".to_string()));
+        return Err(crate::api::rest::ApiError::NotFound(
+            "动作不存在".to_string(),
+        ));
     }
 
     Ok(())

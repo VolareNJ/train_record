@@ -1,22 +1,26 @@
 // ============================================================
-// main.rs —— 程序入口
+// main.rs —— 程序入口（bin 目标）
 // ============================================================
-// 【教学说明】
-// 程序运行顺序（从下往上看更清晰）：
-//   1. main() 被操作系统调用
-//   2. 读取配置 AppConfig
-//   3. 初始化数据库连接池
-//   4. 创建 HTTP 路由器（Router），注册路由
-//   5. 监听端口，启动服务器
+// 【教学说明：lib + bin 的分工（M9 结构调整）】
+//   模块树与共享状态已移到 src/lib.rs（那是“应用本体”），
+//   本文件只剩“启动脚本”：
+//     1. main() 被操作系统调用
+//     2. 读取配置 AppConfig
+//     3. 初始化数据库连接池
+//     4. 创建 HTTP 路由器（Router），注册路由（并 spawn gRPC 服务器）
+//     5. 监听端口，启动服务器
+//   引用库内东西的写法：**包名开头**（train_record::config::AppConfig）。
+//   为什么？本文件属于 bin 目标，库是“另一个 crate”，
+//   不能再用 crate::xxx（那会指向 bin 自己）。
 //
-// 本文件是"组装车间"：config/db/error/models 都是零件，
+// 本文件是“组装车间”：config/db/error/models 都是零件，
 // main 把它们组装成一台能跑的服务器。
 //
-// 📌 本文件各知识点的阶段要求速查（详细见各处注释）：
+// 本文件各知识点的阶段要求速查（详细见各处注释）：
 //   知识            M0         M1          M2+
-//   mod 声明        会用        熟练         熟练
-//   use 导入        会用        熟练         熟练
-//   AppState       理解+会用   会加字段      熟练
+//   mod 声明        会用        熟练         熟练（M9 起在 lib.rs）
+//   use 导入        会用        熟练         熟练（M9 起只在 trait 需要时）
+//   AppState       理解+会用   会加字段      熟练（M9 起定义在 lib.rs）
 //   #[tokio::main] 记住写法    理解一半      熟练
 //   日志初始化      了解即可    会写 info!   会分级
 //   配置读取        会用        会加字段      熟练
@@ -27,104 +31,24 @@
 //   query_scalar    会用        会用          query_as
 // ============================================================
 
-// 【教学：模块声明】
-// Rust 里每个 .rs 文件是一个"模块"(module)。
-// 在 main.rs 里用 mod 关键字声明，编译器才知道有这个文件。
-// 注意：模块文件名不带 .rs 后缀。
-//
-// 📌 阶段要求：M0 会用即可（新写文件要在这里加一行 mod）。
-// 🎯 验收：能说出这 4 个 mod 各自对应 src/ 下的哪个文件。
-mod api;
-mod auth;
-mod calc;
-mod config;
-mod db;
-mod error;
-mod handlers;
-mod models;
-mod page;
+// 【教学：模块树在哪？】
+// 9 个 `mod xxx;` 已移到 src/lib.rs（库目标），本文件通过
+// `train_record::xxx::...` 引用它们。原因与好处见 lib.rs 顶部注释。
 
-// 【教学：use 导入】
-// use 把其他模块/库的路径引入作用域，避免每次写全路径。
-//
-// 📌 阶段要求：M0 会"照抄"；M1 起每加新依赖/新模块，能自己补 use。
-// 🎯 验收：能解释 use axum::{Router, ...} 里的花括号是"一次导多个"。
-use axum::{
-    Router,
-    extract::State,
-    http::{HeaderMap, HeaderValue, header},
-    response::{Html, IntoResponse, Redirect, Response},
-    routing::{get, get_service, post},
-};
-use config::AppConfig;
-use error::AppError;
-use sqlx::SqlitePool;
-use tokio::sync::RwLock;
-use tower::ServiceBuilder;
-use tower_http::{
-    services::{ServeDir, ServeFile},
-    set_header::SetResponseHeaderLayer,
-};
+// 【项目约定（M9 起）：全路径，不用 use 做便利导入】
+// 所有类型/函数都写全路径（如 axum::extract::State、crate::models::User），
+// 不写 `use xxx;` 把它引进作用域——好处：
+//   1. 读代码时不用回文件头查"这个名字是哪来的"
+//   2. 加文件/移动模块时不会牵出一堆 import 调整
+//   3. 不会出现"局部变量名与导入名撞车"的隐蔽错误
+// **唯一例外：trait 方法调用**必须把 trait 引入作用域，此时只导入"那一个 trait"。
+// 本文件用到 .into_response()（把 handler 返回值统一转成 Response），所以：
+use axum::response::IntoResponse;
 
-// ============================================================
-// 【教学：应用状态 (AppState)】★ 重点概念，多看几遍
-// ============================================================
-// AppState 是什么？
-//   一句话：它是一个"公共储物柜"，装着所有 handler 都要用的共享数据。
-//
-// 为什么要它？
-//   服务器有多个 handler（处理函数），比如首页、登录、记录页……
-//   它们几乎都要查数据库。如果每个 handler 都自己连一次数据库，
-//   又慢又乱。正确做法：启动时连一次，装进 AppState，
-//   所有 handler 共享同一个连接。
-//
-// 两个字段分别是什么？
-//   - pool: SqlitePool    数据库连接池（"蓄水池"）
-//                         所有查库操作都从这拿连接
-//   - config: AppConfig   配置（端口/数据库路径/会话密钥）
-//                         某些 handler 需要读配置
-//
-// 【教学：#[derive(Clone)] 是什么意思？】
-//   Clone = 让这个 struct 可以被"复制"。
-//   为什么要复制？因为 axum 要求 with_state 传入的状态必须能 Clone：
-//   每个请求到来时，Router 会 clone 一份 AppState 交给 handler。
-//   但别担心"复制很浪费"——
-//   SqlitePool 内部是 Arc 智能指针（引用计数），
-//   clone 只是把"指向同一个池子的指针"多复制一份，
-//   底层还是同一个池子，成本极低，非常安全。
-//
-// 完整数据流：
-//   main() 里创建 AppState { pool, config }
-//       → .with_state(state)   挂到 Router 上
-//       → 请求到来              axum 自动 clone 一份
-//       → handler 写 State(state) 提取器  自动取出
-//       → 用 state.pool / state.config 干活
-//
-// 【教学：AppState ≈ "看得见的全局变量"】
-// 说它像"全局变量"——方向对了！它确实是全局共享的：
-// 所有 handler 共享同一份数据，生命周期贯穿整个服务器。
-// 但它不是真正的全局变量（那种谁都能随手改的）：
-//   - 真全局变量  = 钥匙挂公司大门上，人人能拿（易失控、难排查）
-//   - AppState    = 前台亲手把钥匙递给你，接了才能用（显式、安全）
-// 这种"显式传参"叫【依赖注入】，好处：
-//   1. 数据流看得见：main 创建 → with_state → State(state) 接住
-//   2. 每个 handler 要什么、拿什么，写在签名里，一目了然
-//   3. 测试时能构造假 AppState 传进去，不用碰真的
-//
-// 📌 阶段要求：
-//   M0：理解概念 + 会照抄（知道字段要跟着需求加）
-//   M1：自己往 AppState 里加字段（如 session_store）
-//   M2+：熟练，能解释为什么 axum 要求 Clone
-// 🎯 验收：不看注释，能说出"为什么 AppState 要 #[derive(Clone)]"。
-// ============================================================
-#[derive(Clone)]
-pub struct AppState
-{
-    /// 数据库连接池：所有 handler 查库都用它
-    pub pool: std::sync::Arc<RwLock<SqlitePool>>,
-    /// 应用配置：端口/数据库路径/会话密钥
-    pub config: AppConfig,
-}
+// 【教学：AppState 已移到 src/lib.rs】
+// 它被 handlers/、api/、以及测试使用，都是“库”里的代码，
+// 所以共享状态必须定义在库里（bin 里定义的话库引用不到）。
+// 完整教学注释（什么是公共储物柜、为什么要 #[derive(Clone)]）见 lib.rs。
 
 // ============================================================
 // 【教学：#[tokio::main]】
@@ -133,11 +57,11 @@ pub struct AppState
 // 必须运行在 tokio 这个"异步运行时"上。
 // 初学只需记住：写 axum 项目，main 前加 #[tokio::main]。
 //
-// 📌 阶段要求：
+//  阶段要求：
 //   M0：记住"写 axum 项目就要加这一行"即可
 //   M1~M2：理解它是"异步运行时"，await 要在这里面才能用
 //   M3+：能解释宏展开后做了什么（没必要深究）
-// 🎯 验收：看到 async fn + .await，能说出"必须配 #[tokio::main]"。
+//  验收：看到 async fn + .await，能说出"必须配 #[tokio::main]"。
 // ============================================================
 #[tokio::main]
 async fn main()
@@ -153,11 +77,11 @@ async fn main()
     //   with_max_level(INFO) = 只打印 INFO 级及以上的日志（DEBUG 不打印，避免刷屏）
     //   init()              = 生效！从此 tracing 宏都能打印
     //
-    // 📌 阶段要求：
+    //  阶段要求：
     //   M0：了解即可，知道它是"日志开关"
     //   M1：会写 tracing::info! / error! 记录关键事件
     //   M2+：会用不同级别（debug/info/warn/error）区分重要性
-    // 🎯 验收：在 home 里加一行 tracing::info!("有人访问首页")，运行后能看到输出。
+    //  验收：在 home 里加一行 tracing::info!("有人访问首页")，运行后能看到输出。
     // --------------------------------------------------------
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::INFO)
@@ -166,10 +90,10 @@ async fn main()
     // --------------------------------------------------------
     // 1. 读取配置
     // 【教学】AppConfig::from_env() 从环境变量读配置，缺失用默认值。
-    // 📌 阶段要求：M0 会用；M1 起能自己往 AppConfig 加字段。
-    // 🎯 验收：能说出 PORT 和 DATABASE_PATH 两个环境变量分别控制什么。
+    //  阶段要求：M0 会用；M1 起能自己往 AppConfig 加字段。
+    //  验收：能说出 PORT 和 DATABASE_PATH 两个环境变量分别控制什么。
     // --------------------------------------------------------
-    let config = AppConfig::from_env();
+    let config = train_record::config::AppConfig::from_env();
     tracing::info!(
         "启动配置: 端口={}, 数据库={}",
         config.port,
@@ -185,13 +109,15 @@ async fn main()
     // 但注意：main 不能直接用 ?，因为它的返回类型是 ()。
     // 所以用 .expect("...")：出错就 panic 并打印消息。
     //
-    // 📌 阶段要求：
+    //  阶段要求：
     //   M0：会用（理解"连数据库才能查数据"）
     //   M1~M2：会用，知道它返回 SqlitePool（连接池）
     //   M3+：理解连接池内部（为什么比单连接好）
-    // 🎯 验收：能说出 .expect 和 ? 的区别（一个 panic，一个向上抛）。
-    let pool = db::init_pool(&config).await.expect("数据库初始化失败");
-    let pool = std::sync::Arc::new(RwLock::new(pool));
+    //  验收：能说出 .expect 和 ? 的区别（一个 panic，一个向上抛）。
+    let pool = train_record::db::init_pool(&config)
+        .await
+        .expect("数据库初始化失败");
+    let pool = std::sync::Arc::new(tokio::sync::RwLock::new(pool));
 
     // --------------------------------------------------------
     // 3. 组装 AppState
@@ -202,8 +128,8 @@ async fn main()
     // .parse() 转成 SocketAddr 类型。
     // 这里必须显式标注类型，编译器才能推断 .parse() 的目标类型。
     //
-    // 📌 阶段要求：M0~M2 了解即可（"监听地址"），M3+ 也只需知道"改 IP/端口在这改"。
-    // 🎯 验收：能说出 0.0.0.0 和 127.0.0.1 的区别（对外 vs 本机）。
+    //  阶段要求：M0~M2 了解即可（"监听地址"），M3+ 也只需知道"改 IP/端口在这改"。
+    //  验收：能说出 0.0.0.0 和 127.0.0.1 的区别（对外 vs 本机）。
     let addr: std::net::SocketAddr = format!("0.0.0.0:{}", config.port)
         .parse()
         .expect("地址解析失败");
@@ -219,9 +145,9 @@ async fn main()
 
     // 【教学：组装 AppState】
     // 把 pool 和 config 装进"公共储物柜"。之后所有 handler 共享。
-    // 📌 阶段要求：M0 会用；M1 加字段时改这里和 struct 定义。
-    // 🎯 验收：能说出 state 被 Router 拿去后，handler 怎么拿到它。
-    let state = AppState { pool, config };
+    //  阶段要求：M0 会用；M1 加字段时改这里和 struct 定义。
+    //  验收：能说出 state 被 Router 拿去后，handler 怎么拿到它。
+    let state = train_record::AppState { pool, config };
 
     // --------------------------------------------------------
     // 【M9 新增】启动 gRPC 服务器（与 HTTP 并行跑）
@@ -233,14 +159,14 @@ async fn main()
     //   AppState 内部是 Arc（连接池/配置），clone 只复制指针，两个服务器
     //   共享同一个数据库连接池 —— 这正是我们想要的（同一个数据库、同一套业务）。
     //
-    // ⚠️ 教学：gRPC 挂掉不影响网页版
+    //  教学：gRPC 挂掉不影响网页版
     // spawn 出去的任务 panic/报错时，**只会结束该任务**，不会带倒整个进程
     // （tokio 的隔离保证）。这对本项目的意义：主战力是手机浏览器用的网页版，
     // gRPC 是给桌面客户端（M10）的；即使 gRPC 端口被占，训练记录照样能记。
     // 所以这里只把错误写日志，不 panic。
     let grpc_state = state.clone();
     tokio::spawn(async move {
-        if let Err(e) = api::grpc::server::serve(grpc_state, grpc_addr).await
+        if let Err(e) = train_record::api::grpc::server::serve(grpc_state, grpc_addr).await
         {
             tracing::error!("gRPC 服务退出: {e}");
         }
@@ -255,8 +181,8 @@ async fn main()
     // 启动时若该用户名不存在则自动创建。
     // 若环境变量为空（默认），则跳过（已有用户的系统不会重复创建）。
     //
-    // 📌 阶段要求：M1 理解"为什么需要首个管理员"即可。
-    // 🎯 验收：能说出没有这段引导会怎样（无法登录 → 无法创建用户）。
+    //  阶段要求：M1 理解"为什么需要首个管理员"即可。
+    //  验收：能说出没有这段引导会怎样（无法登录 → 无法创建用户）。
     ensure_admin(&state).await;
 
     // --------------------------------------------------------
@@ -290,13 +216,13 @@ async fn main()
     // 关键：.with_state 和 handler 参数里的 State(state) 是成对出现的，
     //       缺一个都会编译报错。
     //
-    // 📌 阶段要求：
+    //  阶段要求：
     //   M0：会注册 1 个路由（GET / → home）
     //   M1：会注册多个路由（/login、/register、/logout）
     //   M2+：会 merge 子路由、带路径参数（/exercise/{id}）
-    // 🎯 验收：M1 结束时能自己加一个 /hello 路由并访问成功。
-    let app = Router::new()
-        .route("/", get(home))
+    //  验收：M1 结束时能自己加一个 /hello 路由并访问成功。
+    let app = axum::Router::new()
+        .route("/", axum::routing::get(home))
         // M1 新增：登录页 + 登录提交（GET 显示表单，POST 处理提交）
         // 【教学：同一路径两个方法 —— "并列 vs 链式"】
         // get() 和 post() 是两个并列的方法处理器，怎么用"链式"写？
@@ -326,45 +252,59 @@ async fn main()
         // 一句话：关系存成结构（并列字段），语法写成串行（逐个填充）。
         .route(
             "/login",
-            get(handlers::auth::login_page).post(handlers::auth::login),
+            axum::routing::get(train_record::handlers::auth::login_page)
+                .post(train_record::handlers::auth::login),
         )
         // 登出（POST /logout）
-        .route("/logout", post(handlers::auth::logout))
+        .route(
+            "/logout",
+            axum::routing::post(train_record::handlers::auth::logout),
+        )
         // 用户管理（仅管理员，守卫在 handler 内部检查）
         .route(
             "/admin/users",
-            get(handlers::auth::admin_users).post(handlers::auth::admin_create_user),
+            axum::routing::get(train_record::handlers::auth::admin_users)
+                .post(train_record::handlers::auth::admin_create_user),
         )
         // ----------------------------------------------------------
         // M6 新增：数据备份（下载 .db / 上传恢复 / CSV+JSON 导出）
         // 教学注释见 src/handlers/backup.rs 顶部
         // ----------------------------------------------------------
-        .route("/admin/backup", get(handlers::backup::backup_page))
+        .route(
+            "/admin/backup",
+            axum::routing::get(train_record::handlers::backup::backup_page),
+        )
         .route(
             "/admin/backup/download",
-            get(handlers::backup::backup_download),
+            axum::routing::get(train_record::handlers::backup::backup_download),
         )
         .route(
             "/admin/backup/upload",
-            post(handlers::backup::backup_upload),
+            axum::routing::post(train_record::handlers::backup::backup_upload),
         )
         .route(
             "/admin/backup/export",
-            get(handlers::backup::export_records),
+            axum::routing::get(train_record::handlers::backup::export_records),
         )
         // 【M5 修订：全局体重维护（首页账户区表单提交）】
         // 用户问题 0：体重是"一个地方维护的通用变量"，
         // record_form/plan_detail 的 support 模式自动获取。
-        .route("/profile/weight", post(handlers::auth::update_body_weight))
+        .route(
+            "/profile/weight",
+            axum::routing::post(train_record::handlers::auth::update_body_weight),
+        )
         // 【M6 PWA：Service Worker 必须放站点根目录 /sw.js】
-        // ⚠️ 实测踩坑：SW 放 /static/sw.js 时默认作用域是 /static/，
+        //  实测踩坑：SW 放 /static/sw.js 时默认作用域是 /static/，
         //    register 里写 { scope: '/' } 也不行——浏览器安全限制：
         //    "scope '/' 不在最大允许作用域 /static/ 内"，
         //    必须加 Service-Worker-Allowed 头才能越级。
         // 解法（PWA 官方最佳实践）：把 sw.js 放根目录 → 默认作用域就是 /，
         //    不用 scope 参数、不用特殊响应头，一行注册全站接管。
         // 生产部署时根目录的 sw.js 要和二进制一起拷。
-        .route("/sw.js", get_service(ServeFile::new("sw.js")))
+        .route(
+            "/sw.js",
+            axum::routing::get_service(tower_http::services::ServeFile::new("sw.js")),
+        )
         // 【M7 修订：静态资源加 Cache-Control: no-cache】
         // 之前 ServeDir 不带 Cache-Control 头 → 浏览器"启发式缓存"坑：
         //   无缓存头时浏览器按 (now - Last-Modified) * 10% 猜新鲜度，
@@ -374,40 +314,62 @@ async fn main()
         // 配合 sw.js 的 cacheFirst 只对 /static/ 生效（页面走 network-first）。
         .nest_service(
             "/static",
-            ServiceBuilder::new()
-                .layer(SetResponseHeaderLayer::overriding(
-                    header::CACHE_CONTROL,
-                    HeaderValue::from_static("no-cache"),
+            tower::ServiceBuilder::new()
+                .layer(tower_http::set_header::SetResponseHeaderLayer::overriding(
+                    axum::http::header::CACHE_CONTROL,
+                    axum::http::HeaderValue::from_static("no-cache"),
                 ))
-                .service(ServeDir::new("static")),
+                .service(tower_http::services::ServeDir::new("static")),
         )
         .route(
             "/phases",
-            get(handlers::phases::list).post(handlers::phases::create),
+            axum::routing::get(train_record::handlers::phases::list)
+                .post(train_record::handlers::phases::create),
         )
-        .route("/phases/new", get(handlers::phases::create_form))
+        .route(
+            "/phases/new",
+            axum::routing::get(train_record::handlers::phases::create_form),
+        )
         .route(
             "/phases/{id}/edit",
-            get(handlers::phases::edit_form).post(handlers::phases::update),
+            axum::routing::get(train_record::handlers::phases::edit_form)
+                .post(train_record::handlers::phases::update),
         )
-        .route("/phases/{id}/archive", post(handlers::phases::archive))
-        .route("/phases/{id}/unarchive", post(handlers::phases::unarchive))
+        .route(
+            "/phases/{id}/archive",
+            axum::routing::post(train_record::handlers::phases::archive),
+        )
+        .route(
+            "/phases/{id}/unarchive",
+            axum::routing::post(train_record::handlers::phases::unarchive),
+        )
         .route(
             "/exercises",
-            get(handlers::exercises::list).post(handlers::exercises::create),
+            axum::routing::get(train_record::handlers::exercises::list)
+                .post(train_record::handlers::exercises::create),
         )
-        .route("/exercises/new", get(handlers::exercises::create_form))
+        .route(
+            "/exercises/new",
+            axum::routing::get(train_record::handlers::exercises::create_form),
+        )
         // 【M7 清理：动作详情页挂路由（原 M5 占位从未接线，dead_code 警告）】
-        .route("/exercises/{id}", get(handlers::exercises::detail))
+        .route(
+            "/exercises/{id}",
+            axum::routing::get(train_record::handlers::exercises::detail),
+        )
         .route(
             "/exercises/{id}/edit",
-            get(handlers::exercises::edit_form).post(handlers::exercises::update),
+            axum::routing::get(train_record::handlers::exercises::edit_form)
+                .post(train_record::handlers::exercises::update),
         )
-        .route("/exercises/{id}/delete", post(handlers::exercises::delete))
+        .route(
+            "/exercises/{id}/delete",
+            axum::routing::post(train_record::handlers::exercises::delete),
+        )
         // 【M6 修订：计重配置即时同步（record_form 选择即保存）】
         .route(
             "/exercises/{id}/config",
-            post(handlers::exercises::update_config),
+            axum::routing::post(train_record::handlers::exercises::update_config),
         )
         // ----------------------------------------------------------
         // M3 新增：模板（Template）+ 当日计划（Plan）路由
@@ -416,85 +378,109 @@ async fn main()
         // 模板：挂在阶段下（/phases/{phase_id}/templates...）
         .route(
             "/phases/{phase_id}/templates",
-            get(handlers::plan::list_templates).post(handlers::plan::template_create),
+            axum::routing::get(train_record::handlers::plan::list_templates)
+                .post(train_record::handlers::plan::template_create),
         )
         .route(
             "/phases/{phase_id}/templates/new",
-            get(handlers::plan::template_create_form),
+            axum::routing::get(train_record::handlers::plan::template_create_form),
         )
         .route(
             "/templates/{id}/edit",
-            get(handlers::plan::template_edit_form).post(handlers::plan::template_update),
+            axum::routing::get(train_record::handlers::plan::template_edit_form)
+                .post(train_record::handlers::plan::template_update),
         )
         .route(
             "/templates/{id}/delete",
-            post(handlers::plan::template_delete),
+            axum::routing::post(train_record::handlers::plan::template_delete),
         )
         // 【M4 修订：模板排序】模板上移/下移（?dir=up|down）
-        .route("/templates/{id}/sort", post(handlers::plan::template_sort))
+        .route(
+            "/templates/{id}/sort",
+            axum::routing::post(train_record::handlers::plan::template_sort),
+        )
         // 【M4 修订：模板项排序】模板内动作上移/下移
         .route(
             "/templates/{id}/items/{item_id}/move",
-            post(handlers::plan::template_item_move),
+            axum::routing::post(train_record::handlers::plan::template_item_move),
         )
         // 计划：挂在阶段下
         .route(
             "/phases/{phase_id}/plans",
-            get(handlers::plan::list_plans).post(handlers::plan::plan_create),
+            axum::routing::get(train_record::handlers::plan::list_plans)
+                .post(train_record::handlers::plan::plan_create),
         )
         .route(
             "/phases/{phase_id}/plans/new",
-            get(handlers::plan::plan_create_form),
+            axum::routing::get(train_record::handlers::plan::plan_create_form),
         )
         // 【M4 修订：plan_detail 已并入编辑功能，GET /plans/{id} 直接可编辑；
         // 原 GET /plans/{id}/edit（plan_edit_form）已移除】
-        .route("/plans/{id}", get(handlers::plan::plan_detail))
-        .route("/plans/{id}/edit", post(handlers::plan::plan_update))
-        .route("/plans/{id}/delete", post(handlers::plan::plan_delete))
+        .route(
+            "/plans/{id}",
+            axum::routing::get(train_record::handlers::plan::plan_detail),
+        )
+        .route(
+            "/plans/{id}/edit",
+            axum::routing::post(train_record::handlers::plan::plan_update),
+        )
+        .route(
+            "/plans/{id}/delete",
+            axum::routing::post(train_record::handlers::plan::plan_delete),
+        )
         // 【M4 修订：计划项排序】计划内动作上移/下移
         .route(
             "/plans/{id}/items/{item_id}/move",
-            post(handlers::plan::plan_item_move),
+            axum::routing::post(train_record::handlers::plan::plan_item_move),
         )
         // ----------------------------------------------------------
         // M4 新增：训练记录（今日页 + 单动作记录/编辑 + 保存）
         // 教学注释见 src/handlers/record.rs 顶部
         // ----------------------------------------------------------
-        .route("/today", get(handlers::record::today))
+        .route(
+            "/today",
+            axum::routing::get(train_record::handlers::record::today),
+        )
         .route(
             "/plans/{id}/record/{item_id}",
-            get(handlers::record::record_form),
+            axum::routing::get(train_record::handlers::record::record_form),
         )
         .route(
             "/plans/{id}/record/{item_id}/save",
-            post(handlers::record::record_save),
+            axum::routing::post(train_record::handlers::record::record_save),
         )
         // ----------------------------------------------------------
         // M5 新增：历史回顾（日历 + 当天详情 + 动作详情图表）
         // 教学注释见 src/handlers/stats.rs 顶部
         // ----------------------------------------------------------
-        .route("/history", get(handlers::stats::history))
-        .route("/history/{date}", get(handlers::stats::history_day))
+        .route(
+            "/history",
+            axum::routing::get(train_record::handlers::stats::history),
+        )
+        .route(
+            "/history/{date}",
+            axum::routing::get(train_record::handlers::stats::history_day),
+        )
         .route(
             "/exercises/{id}/stats",
-            get(handlers::stats::exercise_stats),
+            axum::routing::get(train_record::handlers::stats::exercise_stats),
         )
         // ----------------------------------------------------------
         // M8 新增：REST API 层（/api/v1，为 M9 客户端铺路）
         // 教学注释见 src/api/rest/mod.rs 顶部
-        // ⚠️ 必须在 .with_state(state) 之前 merge：
+        //  必须在 .with_state(state) 之前 merge：
         //    merge 要求两边 Router 状态一致（都是 Router<AppState>）
         //    with_state 后是 Router<()>（serve 需要），无法 merge
         // ----------------------------------------------------------
-        .merge(api::rest::router())
+        .merge(train_record::api::rest::router())
         .with_state(state);
 
     // --------------------------------------------------------
     // 5. 监听端口并启动
     // --------------------------------------------------------
     // axum::serve 启动 HTTP 服务，直到被 Ctrl+C 中断
-    // 📌 阶段要求：M0 了解即可（"启动服务器"），M1+ 不用管它。
-    // 🎯 验收：能说出访问首页时，是哪个函数被调用（答 home）。
+    //  阶段要求：M0 了解即可（"启动服务器"），M1+ 不用管它。
+    //  验收：能说出访问首页时，是哪个函数被调用（答 home）。
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .expect("端口绑定失败");
@@ -509,10 +495,10 @@ async fn main()
 // 为什么幂等：先查是否存在，存在就跳过 → 重复启动不会重复创建。
 //
 // 与 handler 的区别：这个函数不处理 HTTP 请求，只做启动准备。
-// 📌 阶段要求：M1 理解"首次启动引导"思路即可，写法可照抄。
-// 🎯 验收：能说出如果跳过这步，全新部署会怎样（无人能登录）。
+//  阶段要求：M1 理解"首次启动引导"思路即可，写法可照抄。
+//  验收：能说出如果跳过这步，全新部署会怎样（无人能登录）。
 // ============================================================
-async fn ensure_admin(state: &AppState)
+async fn ensure_admin(state: &train_record::AppState)
 {
     let pool = state.pool.read().await.clone();
     // 环境变量没配 → 跳过（可能是已有用户的系统）
@@ -533,8 +519,8 @@ async fn ensure_admin(state: &AppState)
 
     // 已存在 → 直接返回（无感静默）
     // 【产品直觉】日志是给"值得关注的事件"用的：
-    //   - "创建了管理员"  → 首次部署的信号，值得打日志 ✅
-    //   - "已存在，跳过"  → 每次启动都会发生的常态，打日志是噪音 ❌
+    //   - "创建了管理员"  → 首次部署的信号，值得打日志
+    //   - "已存在，跳过"  → 每次启动都会发生的常态，打日志是噪音
     // 常态不报站，异常才报站——用户无感进入系统。
     if exists
     {
@@ -543,7 +529,7 @@ async fn ensure_admin(state: &AppState)
 
     // 不存在 → 创建：哈希密码后插入
     let password_hash =
-        crate::auth::hash_password(&state.config.admin_password).expect("密码哈希失败");
+        train_record::auth::hash_password(&state.config.admin_password).expect("密码哈希失败");
     sqlx::query("INSERT INTO users (username, password_hash, is_admin) VALUES (?, ?, ?)")
         .bind(&state.config.admin_username)
         .bind(&password_hash)
@@ -560,7 +546,7 @@ async fn ensure_admin(state: &AppState)
 }
 
 // ============================================================
-// 【教学：handler —— 一次请求的完整生命周期】★ 本文件最重要的总览
+// 【教学：handler —— 一次请求的完整生命周期】 本文件最重要的总览
 // ============================================================
 // 下面这些概念（Handler/FromRequestParts/State/call/from_request_parts）
 // 看起来又多又乱，其实它们是一条链上的不同环节。
@@ -604,7 +590,7 @@ async fn ensure_admin(state: &AppState)
 // ============================================================
 // get(home) 传的不是函数指针，是函数本身（函数项）。get 是泛型的：
 //   pub fn get<H, T, S>(handler: H) -> MethodRouter<S>
-//   where H: Handler<T, S>          // ★ 关键约束
+//   where H: Handler<T, S>          //  关键约束
 // 而 Handler trait 对"任意函数"自动生效（blanket impl）：
 //   impl<F, Fut, Args, Res, S> Handler<Args, S> for F
 //   where
@@ -839,38 +825,44 @@ async fn ensure_admin(state: &AppState)
 // 这个 home handler 展示 M0 的成果：
 // 首页显示一行欢迎语 + 数据库状态。
 //
-// 📌 阶段要求：
+//  阶段要求：
 //   M0：会写"返回 String"的简单 handler
 //   M1：学 Form/Query 提取器（登录表单）、返回重定向
 //   M2+：返回 askama 模板（Html）、处理 JSON
-// 🎯 验收：M0 结束能自己新写一个 handler 并注册路由。
+//  验收：M0 结束能自己新写一个 handler 并注册路由。
 // ============================================================
-async fn home(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, AppError>
+async fn home(
+    axum::extract::State(state): axum::extract::State<train_record::AppState>,
+    headers: axum::http::HeaderMap,
+) -> Result<axum::response::Response, train_record::error::AppError>
 {
     let pool = state.pool.read().await.clone();
 
     // 【教学：State(state) 提取器】
     // 参数里的 State(state) 会自动从请求里取出我们传入的 AppState。
     // 这就是"依赖注入"——handler 需要的共享资源自动拿。
-    // 📌 阶段要求：M0 会用（照抄）；M1 理解"每个 handler 都能拿 state"。
-    // 🎯 验收：能说出 state.pool 是什么（数据库连接池）。
+    //  阶段要求：M0 会用（照抄）；M1 理解"每个 handler 都能拿 state"。
+    //  验收：能说出 state.pool 是什么（数据库连接池）。
 
     // 查一下数据库里有多少个用户，验证连接池可用
     // 【教学：sqlx::query_scalar】
     // 查询返回单个值（一个数字）。fetch_one 取第一行。
     // .unwrap_or(-1)：查询失败返回 -1（不至于 panic）
     //
-    // 📌 阶段要求：
+    //  阶段要求：
     //   M0：会用 query_scalar 查单个数字
     //   M1：会用 query_as + FromRow 查整行转 struct
     //   M2+：会用 query! 宏（编译期检查 SQL）
-    // 🎯 验收：能说出 fetch_one 和 fetch_all 的区别（一行 vs 多行）。
+    //  验收：能说出 fetch_one 和 fetch_all 的区别（一行 vs 多行）。
 
     // 未登录 → 重定向到登录页；其他错误 → 原样返回
-    let user = match handlers::auth::require_user(&state, &headers).await
+    let user = match train_record::handlers::auth::require_user(&state, &headers).await
     {
         Ok(user) => user,
-        Err(AppError::Unauthorized) => return Ok(Redirect::to("/login").into_response()),
+        Err(train_record::error::AppError::Unauthorized) =>
+        {
+            return Ok(axum::response::Redirect::to("/login").into_response());
+        },
         Err(e) => return Err(e),
     };
 
@@ -887,13 +879,13 @@ async fn home(State(state): State<AppState>, headers: HeaderMap) -> Result<Respo
     .bind(&user.id)
     .fetch_one(&pool)
     .await
-    .map_err(AppError::Database)?;
+    .map_err(train_record::error::AppError::Database)?;
     let exercise_count =
         sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM exercises WHERE user_id = ?")
             .bind(&user.id)
             .fetch_one(&pool)
             .await
-            .map_err(AppError::Database)?;
+            .map_err(train_record::error::AppError::Database)?;
     let template_count = sqlx::query_scalar::<_, i64>(
         "SELECT COUNT(*) FROM templates
     WHERE phase_id IN (SELECT id FROM phases WHERE user_id = ?)",
@@ -901,7 +893,7 @@ async fn home(State(state): State<AppState>, headers: HeaderMap) -> Result<Respo
     .bind(&user.id)
     .fetch_one(&pool)
     .await
-    .map_err(AppError::Database)?;
+    .map_err(train_record::error::AppError::Database)?;
     let plan_count = sqlx::query_scalar::<_, i64>(
         "SELECT COUNT(*) FROM plans
     WHERE phase_id IN (SELECT id FROM phases WHERE user_id = ?)",
@@ -909,7 +901,7 @@ async fn home(State(state): State<AppState>, headers: HeaderMap) -> Result<Respo
     .bind(&user.id)
     .fetch_one(&pool)
     .await
-    .map_err(AppError::Database)?;
+    .map_err(train_record::error::AppError::Database)?;
 
     // 管理员专属入口（首页只对管理员显示"用户管理"链接）
     let admin_link = if user.is_admin
@@ -926,13 +918,13 @@ async fn home(State(state): State<AppState>, headers: HeaderMap) -> Result<Respo
     // 用户最常操作的阶段是"进行中"的那个（未归档、最新创建），
     // 首页直接把它找出来，给出模板/计划的直达链接，少点一层。
     // 没有进行中阶段 → 显示"先去创建阶段"的引导链接。
-    let current_phase = sqlx::query_as::<_, crate::models::Phase>(
+    let current_phase = sqlx::query_as::<_, train_record::models::Phase>(
         "SELECT * FROM phases WHERE user_id = ? AND archived = 0 ORDER BY created_at DESC LIMIT 1",
     )
     .bind(&user.id)
     .fetch_optional(&pool)
     .await
-    .map_err(AppError::Database)?;
+    .map_err(train_record::error::AppError::Database)?;
     let phase_links = match &current_phase
     {
         Some(phase) => format!(
@@ -950,7 +942,7 @@ async fn home(State(state): State<AppState>, headers: HeaderMap) -> Result<Respo
     // 排版上用 <section> 分区 + <li> 列表，比平铺的一排链接清晰。
     // 模板/计划同时保留在阶段列表每行里（见 phases.rs list 的注释）——
     // 首页只放"当前进行中阶段"的直达入口，其余阶段仍从阶段列表进入，避免首页堆满链接。
-    Ok(Html(format!(
+    Ok(axum::response::Html(format!(
         r#"{head}
         <h1>训练记录系统</h1>
         <p>欢迎回来，{username}！</p>
@@ -979,7 +971,7 @@ async fn home(State(state): State<AppState>, headers: HeaderMap) -> Result<Respo
         </form>
         <p style="color:#888;font-size:0.9em">用于支撑（自重）类动作的重量换算，记录页自动获取。</p>
         "#,
-        head = crate::page::page_head("训练记录系统"),
+        head = train_record::page::page_head("训练记录系统"),
         username = user.username,
         phase_count = phase_count,
         exercise_count = exercise_count,
@@ -991,34 +983,34 @@ async fn home(State(state): State<AppState>, headers: HeaderMap) -> Result<Respo
             .body_weight
             .map(|v| v.to_string())
             .unwrap_or_default(),
-    ))
+                ))
     .into_response())
 }
 
 // ============================================================
 // 【练习回顾：M0 三小练习（已验收，代码已回退，记录于此供复习）】
 // ============================================================
-// 1. 改首页欢迎文字 ✅
+// 1. 改首页欢迎文字
 //    做法：在 format! 里加了一段 <p>Hello World!</p>
 //    收获：Rust 字符串字面量可跨行，换行会保留为 \n，浏览器渲染为空格。
 //    回退原因：保持 M0 脚手架原样，避免影响正式页面。
 //
-// 2. 加 phases 计数 ✅
+// 2. 加 phases 计数
 //    做法：模仿 user_count 再加一个查询：
 //      let phase_num: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM phases")
 //          .fetch_one(&pool).await.unwrap_or(-1);
 //    收获：query_scalar 查单值 + fetch_one 取一行，与 user_count 完全同构。
 //    回退原因：同上，避免与 M0 定义代码混淆。
 //
-// 3. 端口 8080 → 3000 ✅
+// 3. 端口 8080 → 3000
 //    做法：config.rs 里 unwrap_or_else(|| "8080".to_string()) 改为 "3000"
 //    收获：理解了"配置 → 生效"链路：config.rs 的默认值 → AppConfig → main.rs 绑定端口。
 //    回退原因：README/文档均以 8080 为准，保持默认一致。
 //
 // 【理解验证 3 题：2 题通过，第 3 题方向对但缺关键机制】
-//   第 1 题 AppState：✅ 理解为"handler 共用的储物柜，提供数据库池访问"
-//   第 2 题 连接池：   ✅ 理解为"复用连接避免反复创建销毁的开销 + 排队机制"
-//   第 3 题 迁移幂等：⚠️ 答了"表已建过"，但关键机制是——
+//   第 1 题 AppState： 理解为"handler 共用的储物柜，提供数据库池访问"
+//   第 2 题 连接池：    理解为"复用连接避免反复创建销毁的开销 + 排队机制"
+//   第 3 题 迁移幂等： 答了"表已建过"，但关键机制是——
 //                     sqlx 把已执行记录写进数据库里的 _sqlx_migrations 表，
 //                     下次启动先查该表，已执行的跳过、没执行的才执行。
 //                     （类比：不是靠记忆，而是靠"已办事项清单"记账）

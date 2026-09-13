@@ -13,29 +13,20 @@
 //
 // 7 个函数，前 5 个是标准 CRUD，后 2 个是"状态切换"。
 //
-// 📌 阶段要求：M2 你来实现本文件所有函数。
+//  阶段要求：M2 你来实现本文件所有函数。
 //   完整实现已备份在 docs/learning_path/M2_ref/phases_ref.rs，
 //   实现完成后对照检查（不要提前看）。
 // ============================================================
 
-// 【教学：本文件用到的导入】
-// 和 M1 的 auth.rs 对比，多了一个 Path——这是"从 URL 拿参数"的提取器：
-//   /phases/{id}/edit  →  Path(id): Path<i64>  →  id 就是 URL 里的数字
-// 少了 HeaderMap + require_user：因为 M2 改用 AuthUser 提取器做守卫，
-// 签名里写 AuthUser(user) 就是"已登录用户"，axum 自动注入。
-use axum::{
-    extract::{Form, Path, State},
-    response::{Html, Redirect},
-};
-use serde::Deserialize;
-use sqlx::SqlitePool;
+// 【项目约定（M9 起）：全路径，不用 use 做便利导入】
+// 类型/函数一律写全路径（axum::extract::Path、crate::models::Phase……）；
+// 未登录拦截、响应类型转换这里都不用导入（路径直接限定）。
 
-use crate::{
-    AppState,
-    error::AppError,
-    handlers::auth::AuthUser, // M2 第 1 步的成果：声明式守卫提取器
-    models::Phase,
-};
+// 【教学：路由参数怎么拿】
+//   /phases/{id}/edit  →  axum::extract::Path(id): axum::extract::Path<i64>
+//                         →  id 就是 URL 里的数字
+// 守卫用 crate::handlers::auth::AuthUser 提取器：
+// 签名里写 AuthUser(user) 就是“已登录用户”，axum 自动注入。
 
 // ============================================================
 // 【教学：HTML 快速入门（零基础版）】
@@ -137,7 +128,7 @@ use crate::{
 // （模型层 Phase.start_date 是 Option<String>，表单层是 String，
 //   两层职责不同：模型层表达"可空列"，表单层表达"表单原样提交"。）
 // ============================================================
-#[derive(Deserialize)]
+#[derive(serde::Deserialize)]
 pub struct PhaseForm
 {
     name: String,
@@ -157,8 +148,8 @@ pub struct PhaseForm
 ///
 /// 【教学：数据隔离 —— WHERE user_id = ? 是安全底线】
 /// 所有阶段查询都必须带 user_id 条件，绝不能只 SELECT * FROM phases：
-///   SELECT * FROM phases                          ❌ 会查出所有用户的阶段！
-///   SELECT * FROM phases WHERE user_id = ?        ✅ 只查当前用户的
+///   SELECT * FROM phases                           会查出所有用户的阶段！
+///   SELECT * FROM phases WHERE user_id = ?         只查当前用户的
 /// user_id 从哪来？AuthUser(user).0.id —— user 是 User，user.id 是当前登录者。
 /// （AuthUser 是元组结构体，AuthUser(user) 解构后 user 就是 User。）
 ///
@@ -192,7 +183,7 @@ pub struct PhaseForm
 ///   create/update/archive/unarchive：成功分支只有 Redirect
 ///     → Result<Redirect, AppError>，同理，只有一种类型就不用 Response。
 ///
-/// 💡 口诀：数成功分支。
+///  口诀：数成功分支。
 ///    1 种 → 用那个具体类型（String / Redirect / Html）
 ///    2 种+ → 统一转 Response（.into_response()）
 /// 这也是 Rust 的"最少必要类型"思想：能用简单类型就不用复杂类型，
@@ -232,7 +223,7 @@ pub struct PhaseForm
 ///   ② map 是惰性的，不 collect 不执行（collect 兼当"引擎 + 容器"）。
 ///   ③ join 要"看全部元素"才能串起来；迭代器是"一个接一个吐"的流，
 ///      没有整体视野；数组是"全部在内存里"，才能做整体拼接。
-/// 💡 一句话：迭代器负责"逐个处理"，数组负责"整体操作"。
+///  一句话：迭代器负责"逐个处理"，数组负责"整体操作"。
 ///    想 join（整体拼接），先把流 collect 成数组。
 ///
 /// 常见错误：只写 map 不写 collect/join，然后问"为什么没变化"——
@@ -248,27 +239,27 @@ pub struct PhaseForm
 /// 4. 拼 HTML：两个分区各一个 <h2> + 表格，active/archived 各自迭代 map
 /// 5. 返回完整页面字符串
 pub async fn list(
-    State(state): State<AppState>,
-    AuthUser(user): AuthUser,
-) -> Result<Html<String>, AppError>
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    crate::handlers::auth::AuthUser(user): crate::handlers::auth::AuthUser,
+) -> Result<axum::response::Html<String>, crate::error::AppError>
 {
     let pool = state.pool.read().await.clone();
 
-    let active_phases = sqlx::query_as::<_, Phase>(
+    let active_phases = sqlx::query_as::<_, crate::models::Phase>(
         "SELECT * FROM phases WHERE user_id = ? AND archived  = 0 ORDER BY created_at DESC",
     )
     .bind(user.id)
     .fetch_all(&pool)
     .await
-    .map_err(AppError::Database)?;
+    .map_err(crate::error::AppError::Database)?;
 
-    let archived_phases = sqlx::query_as::<_, Phase>(
+    let archived_phases = sqlx::query_as::<_, crate::models::Phase>(
         "SELECT * FROM phases WHERE user_id = ? AND archived  = 1 ORDER BY created_at DESC",
     )
     .bind(user.id)
     .fetch_all(&pool)
     .await
-    .map_err(AppError::Database)?;
+    .map_err(crate::error::AppError::Database)?;
 
     // Vec<Phase> → 表格行 HTML（map → collect → join，三步接力）
     // 【教学：功能入口的"归属"设计 —— 为什么模板/计划链接不放在首页？】
@@ -328,7 +319,7 @@ pub async fn list(
             .join("\n")
     };
 
-    Ok(Html(format!(
+    Ok(axum::response::Html(format!(
         r#"{head}
         <h2>进行中</h2>
             <table border="1"><tr><th>ID</th><th>名称</th><th>备注</th><th>操作</th></tr>
@@ -428,11 +419,11 @@ pub async fn list(
 ///    （表单字段：name 文本、note 文本域、start_date 日期、提交按钮）
 /// 3. 页面里可显示"欢迎，{user.username}"（user 已解构出来）
 pub async fn create_form(
-    State(_state): State<AppState>,
-    AuthUser(_user): AuthUser,
-) -> Result<Html<String>, AppError>
+    axum::extract::State(_state): axum::extract::State<crate::AppState>,
+    crate::handlers::auth::AuthUser(_user): crate::handlers::auth::AuthUser,
+) -> Result<axum::response::Html<String>, crate::error::AppError>
 {
-    Ok(Html(format!(
+    Ok(axum::response::Html(format!(
         r#"
         {head}
         <h1>开启新征程</h1>
@@ -500,8 +491,8 @@ pub async fn create_form(
 ///    time::OffsetDateTime::now_utc().date().to_string() → "2026-08-06"）
 ///
 /// 【学生代码的语法错误：方法调用必须带 ()】
-///   .is_empty { ... }   ❌ 缺括号！
-///   .is_empty() { ... } ✅
+///   .is_empty { ... }    缺括号！
+///   .is_empty() { ... }
 /// .is_empty 是方法（函数），调用要写 ()。不写 = 把函数本身当值用，
 /// 类型是 fn(&str) -> bool，放进 if 条件报类型错误。
 /// （C++ 里你传成员函数指针才这么写，Rust 里方法调用一律带括号。）
@@ -554,17 +545,19 @@ pub async fn create_form(
 ///    .bind(user.id).bind(&form.name).bind(&form.note).bind(&start_date)
 /// 6. Ok(Redirect::to("/phases")) —— 回到列表页
 pub async fn create(
-    State(state): State<AppState>,
-    AuthUser(user): AuthUser,
-    Form(form): Form<PhaseForm>,
-) -> Result<Redirect, AppError>
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    crate::handlers::auth::AuthUser(user): crate::handlers::auth::AuthUser,
+    axum::extract::Form(form): axum::extract::Form<PhaseForm>,
+) -> Result<axum::response::Redirect, crate::error::AppError>
 {
     let pool = state.pool.read().await.clone();
 
     // 校验：name 非空（空则立刻返回 422）
     if form.name.trim().is_empty()
     {
-        return Err(AppError::Validation("阶段名称不能为空".to_string()));
+        return Err(crate::error::AppError::Validation(
+            "阶段名称不能为空".to_string(),
+        ));
     }
     // 查重：查到重名 → 422（is_some() 压成 bool，链不打断）
     if sqlx::query_scalar::<_, i64>("SELECT id FROM phases WHERE user_id = ? AND name = ?")
@@ -572,10 +565,12 @@ pub async fn create(
         .bind(&form.name)
         .fetch_optional(&pool)
         .await
-        .map_err(AppError::Database)?
+        .map_err(crate::error::AppError::Database)?
         .is_some()
     {
-        return Err(AppError::Validation("阶段名已存在".to_string()));
+        return Err(crate::error::AppError::Validation(
+            "阶段名已存在".to_string(),
+        ));
     }
     // 转换 start_date：空串 → None（"未设置"是真实业务状态）
     let start_date = if form.start_date.trim().is_empty()
@@ -593,8 +588,8 @@ pub async fn create(
         .bind(&start_date)
         .execute(&pool)
         .await
-        .map_err(AppError::Database)?;
-    Ok(Redirect::to("/phases"))
+        .map_err(crate::error::AppError::Database)?;
+    Ok(axum::response::Redirect::to("/phases"))
 }
 
 // ============================================================
@@ -655,25 +650,27 @@ pub async fn create(
 ///    → fetch_optional → None 则 Err(NotFound)
 /// 3. 拼表单：value="{phase.name}" 等预填旧值，action="/phases/{phase_id}/edit"
 pub async fn edit_form(
-    State(state): State<AppState>,
-    AuthUser(user): AuthUser,
-    Path(phase_id): Path<i64>,
-) -> Result<Html<String>, AppError>
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    crate::handlers::auth::AuthUser(user): crate::handlers::auth::AuthUser,
+    axum::extract::Path(phase_id): axum::extract::Path<i64>,
+) -> Result<axum::response::Html<String>, crate::error::AppError>
 {
     let pool = state.pool.read().await.clone();
 
-    let phase = sqlx::query_as::<_, Phase>("SELECT * FROM phases WHERE id = ? AND user_id = ?")
-        .bind(&phase_id)
-        .bind(&user.id)
-        .fetch_optional(&pool)
-        .await
-        .map_err(AppError::Database)?
-        .ok_or_else(|| AppError::NotFound("No such phase".to_string()))?;
+    let phase = sqlx::query_as::<_, crate::models::Phase>(
+        "SELECT * FROM phases WHERE id = ? AND user_id = ?",
+    )
+    .bind(&phase_id)
+    .bind(&user.id)
+    .fetch_optional(&pool)
+    .await
+    .map_err(crate::error::AppError::Database)?
+    .ok_or_else(|| crate::error::AppError::NotFound("No such phase".to_string()))?;
 
     // Option<String> 解包：Some → 日期字符串，None → ""（日期框留空）
     let start_date = phase.start_date.as_deref().unwrap_or("");
 
-    Ok(Html(format!(
+    Ok(axum::response::Html(format!(
         r#"
         {head}
         <h1>编辑训练阶段</h1>
@@ -724,18 +721,20 @@ pub async fn edit_form(
 /// 5. UPDATE phases SET name = ?, note = ?, start_date = ? WHERE id = ? AND user_id = ?
 /// 6. rows_affected() == 0 → Err(NotFound)；否则 Ok(Redirect::to("/phases"))
 pub async fn update(
-    State(state): State<AppState>,
-    AuthUser(user): AuthUser,
-    Path(phase_id): Path<i64>,
-    Form(form): Form<PhaseForm>,
-) -> Result<Redirect, AppError>
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    crate::handlers::auth::AuthUser(user): crate::handlers::auth::AuthUser,
+    axum::extract::Path(phase_id): axum::extract::Path<i64>,
+    axum::extract::Form(form): axum::extract::Form<PhaseForm>,
+) -> Result<axum::response::Redirect, crate::error::AppError>
 {
     let pool = state.pool.read().await.clone();
 
     // 校验 name 非空（空则立刻返回 422）
     if form.name.trim().is_empty()
     {
-        return Err(AppError::Validation("阶段名称不能为空".to_string()));
+        return Err(crate::error::AppError::Validation(
+            "阶段名称不能为空".to_string(),
+        ));
     }
     // 查归档状态：查不到 → 404，已归档 → 403
     // 【教学：await/map_err/ok_or_else 顺序 —— 学生踩坑实录】
@@ -757,12 +756,14 @@ pub async fn update(
         .bind(user.id)
         .fetch_optional(&pool)
         .await
-        .map_err(AppError::Database)?
-        .ok_or_else(|| AppError::NotFound("阶段不存在".to_string()))?
+        .map_err(crate::error::AppError::Database)?
+        .ok_or_else(|| crate::error::AppError::NotFound("阶段不存在".to_string()))?
     {
         // 又见"盒子 vs 货物"：return AppError 少了 Err() 包装 → E0308。
         // 且语义错：归档禁编辑是"权限不足" = Forbidden(403)，不是 Other(500)。
-        return Err(AppError::Forbidden("阶段已归档，不可编辑".to_string()));
+        return Err(crate::error::AppError::Forbidden(
+            "阶段已归档，不可编辑".to_string(),
+        ));
     }
 
     let start_dt = if form.start_date.trim().is_empty()
@@ -801,15 +802,15 @@ pub async fn update(
     .bind(user.id)
     .execute(&pool)
     .await
-    .map_err(AppError::Database)?;
+    .map_err(crate::error::AppError::Database)?;
 
     // rows_affected() == 0 → id 不存在或不是自己的 → 404
     if ext_ret.rows_affected() == 0
     {
-        return Err(AppError::NotFound("阶段不存在".to_string()));
+        return Err(crate::error::AppError::NotFound("阶段不存在".to_string()));
     }
     // 更新成功 → 回列表页（PRG 模式）
-    Ok(Redirect::to("/phases"))
+    Ok(axum::response::Redirect::to("/phases"))
 }
 
 // ============================================================
@@ -845,11 +846,11 @@ enum ActionType
 /// 参数最小化：只需要 pool/user_id/id/action，不给多余的东西
 /// （不需要整个 AppState，只需要数据库连接）。
 async fn set_archived(
-    pool: &SqlitePool,
+    pool: &sqlx::SqlitePool,
     user_id: i64,
     phase_id: i64,
     action: ActionType,
-) -> Result<(), AppError>
+) -> Result<(), crate::error::AppError>
 {
     let archived: bool = match action
     {
@@ -862,10 +863,10 @@ async fn set_archived(
         .bind(user_id)
         .execute(pool)
         .await
-        .map_err(AppError::Database)?;
+        .map_err(crate::error::AppError::Database)?;
     if result.rows_affected() == 0
     {
-        return Err(AppError::NotFound("阶段不存在".to_string()));
+        return Err(crate::error::AppError::NotFound("阶段不存在".to_string()));
     }
     Ok(())
 }
@@ -898,15 +899,15 @@ async fn set_archived(
 /// 2. 调 set_archived(..., ActionType::Archive)
 /// 3. Ok(Redirect::to("/phases"))
 pub async fn archive(
-    State(state): State<AppState>,
-    AuthUser(user): AuthUser,
-    Path(phase_id): Path<i64>,
-) -> Result<Redirect, AppError>
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    crate::handlers::auth::AuthUser(user): crate::handlers::auth::AuthUser,
+    axum::extract::Path(phase_id): axum::extract::Path<i64>,
+) -> Result<axum::response::Redirect, crate::error::AppError>
 {
     let pool = state.pool.read().await.clone();
 
     set_archived(&pool, user.id, phase_id, ActionType::Archive).await?;
-    Ok(Redirect::to("/phases"))
+    Ok(axum::response::Redirect::to("/phases"))
 }
 
 /// 重新启用阶段（archived 1 → 0）
@@ -916,13 +917,13 @@ pub async fn archive(
 /// 1. 同 archive，动作改成 Unarchive
 /// 2. Ok(Redirect::to("/phases"))
 pub async fn unarchive(
-    State(state): State<AppState>,
-    AuthUser(user): AuthUser,
-    Path(phase_id): Path<i64>,
-) -> Result<Redirect, AppError>
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    crate::handlers::auth::AuthUser(user): crate::handlers::auth::AuthUser,
+    axum::extract::Path(phase_id): axum::extract::Path<i64>,
+) -> Result<axum::response::Redirect, crate::error::AppError>
 {
     let pool = state.pool.read().await.clone();
 
     set_archived(&pool, user.id, phase_id, ActionType::Unarchive).await?;
-    Ok(Redirect::to("/phases"))
+    Ok(axum::response::Redirect::to("/phases"))
 }

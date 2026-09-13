@@ -11,28 +11,20 @@
 //
 // 全部是【管理员专属】（users 管理同款：handler 内部检查 user.is_admin）。
 //
-// 📌 阶段要求：M6 你来实现本文件所有函数。
+//  阶段要求：M6 你来实现本文件所有函数。
 //   实现完成后对照检查（完整实现备份在 docs/learning_path/M6_ref/）。
 //
-// ⚠️ 接线提醒（本文件写完后）：
+//  接线提醒（本文件写完后）：
 //   1. src/handlers/mod.rs 加一行：pub mod backup;
 //   2. Cargo.toml：axum features 加 "multipart"（上传文件用）
 //   3. src/main.rs 注册 4 条路由 + home 账户区加备份入口
 //   4. static/manifest.json + static/sw.js（PWA，老师已写好骨架）
 // ============================================================
 
-// 【教学：本文件用到的导入 —— 比之前多了这些】
-//   - Multipart：文件上传提取器（axum feature "multipart"）
-//   - HeaderMap：构造响应头（Content-Disposition 下载文件）
-//   - tokio::fs：异步文件读写（读 .db 文件字节 / 写临时文件）
-use axum::{
-    extract::{Multipart, Query, State},
-    http::{HeaderMap, header},
-    response::{Html, IntoResponse, Response},
-};
-use serde::Deserialize;
-
-use crate::{AppState, error::AppError, handlers::auth::AuthUser, models};
+// 【项目约定（M9 起）：全路径 + 最小 trait 引用】
+// 类型/函数一律写全路径（axum::extract::Multipart、axum::http::HeaderMap…）；
+// 唯一例外是 trait 方法调用：本文件多处用 .into_response()，故只导入这一个 trait：
+use axum::response::IntoResponse;
 
 // ============================================================
 // 【教学：M6 核心认知 —— SQLite 单文件 = 备份就是复制】
@@ -65,24 +57,26 @@ use crate::{AppState, error::AppError, handlers::auth::AuthUser, models};
 ///    - 下载备份：<a href="/admin/backup/download">（GET 链接即可，
 ///      下载是只读操作，不需要 POST 表单）
 ///    - 上传恢复：<form method="post" enctype="multipart/form-data">
-///      ⚠️ 上传文件必须 enctype="multipart/form-data"！
+///       上传文件必须 enctype="multipart/form-data"！
 ///      默认表单编码（urlencoded）只传键值对，传不了文件字节。
 ///      <input type="file" name="db_file" accept=".db">
 ///    - 导出记录：两个链接（?format=csv / ?format=json）
 /// 4. 返回首页链接
 pub async fn backup_page(
-    State(_state): State<AppState>,
-    AuthUser(user): AuthUser,
-) -> Result<Html<String>, AppError>
+    axum::extract::State(_state): axum::extract::State<crate::AppState>,
+    crate::handlers::auth::AuthUser(user): crate::handlers::auth::AuthUser,
+) -> Result<axum::response::Html<String>, crate::error::AppError>
 {
     if !user.is_admin
     {
-        return Err(AppError::Forbidden("此界面要求管理员".to_string()));
+        return Err(crate::error::AppError::Forbidden(
+            "此界面要求管理员".to_string(),
+        ));
     }
     // 【HTML 约定（AGENTS.md）】
     //   - 移动端 viewport head（手机浏览器备份场景）
     //   - 乘号用 ASCII *、不带空格（本页无乘号，但约定通用）
-    Ok(Html(format!(
+    Ok(axum::response::Html(format!(
         r#"<!DOCTYPE html>
         <html lang="zh">
         {head}
@@ -132,28 +126,30 @@ pub async fn backup_page(
 /// 4. 读数据库文件字节
 /// 5. 组装 Content-Disposition 头 + 返回 (HeaderMap, bytes)
 pub async fn backup_download(
-    State(state): State<AppState>,
-    AuthUser(user): AuthUser,
-) -> Result<Response, AppError>
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    crate::handlers::auth::AuthUser(user): crate::handlers::auth::AuthUser,
+) -> Result<axum::response::Response, crate::error::AppError>
 {
     let pool = state.pool.read().await.clone();
 
     if !user.is_admin
     {
-        return Err(AppError::Forbidden("此界面要求管理员".to_string()));
+        return Err(crate::error::AppError::Forbidden(
+            "此界面要求管理员".to_string(),
+        ));
     }
 
     let today_dt = sqlx::query_scalar::<_, String>("SELECT date('now', 'localtime')")
         .fetch_one(&pool)
         .await
-        .map_err(AppError::Database)?;
+        .map_err(crate::error::AppError::Database)?;
 
     let db_filehead = tokio::fs::read(&state.config.database_path)
         .await
-        .map_err(|_| AppError::NotFound("No database file".to_string()))?;
+        .map_err(|_| crate::error::AppError::NotFound("No database file".to_string()))?;
     if !db_filehead.starts_with(b"SQLite format 3\0")
     {
-        return Err(AppError::Validation(
+        return Err(crate::error::AppError::Validation(
             "Not a valid database file".to_string(),
         ));
     }
@@ -166,18 +162,20 @@ pub async fn backup_download(
     //   2. 文件字节（db_filehead，整个 .db 的二进制）
     // (HeaderMap, Vec<u8>) 元组实现了 IntoResponse，axum 自动转成 HTTP 响应
     let filename = format!("train_record_{today_dt}.db");
-    let mut headers = HeaderMap::new();
+    let mut headers = axum::http::HeaderMap::new();
     headers.insert(
-        header::CONTENT_DISPOSITION,
+        axum::http::header::CONTENT_DISPOSITION,
         format!("attachment; filename=\"{filename}\"")
             .parse()
-            .map_err(|_| AppError::Other("Content-Disposition 头构造失败".to_string()))?,
+            .map_err(|_| {
+                crate::error::AppError::Other("Content-Disposition 头构造失败".to_string())
+            })?,
     );
     headers.insert(
-        header::CONTENT_TYPE,
+        axum::http::header::CONTENT_TYPE,
         "application/octet-stream"
             .parse()
-            .map_err(|_| AppError::Other("Content-Type 头构造失败".to_string()))?,
+            .map_err(|_| crate::error::AppError::Other("Content-Type 头构造失败".to_string()))?,
     );
     Ok((headers, db_filehead).into_response())
 }
@@ -208,20 +206,22 @@ pub async fn backup_download(
 ///    （时间戳：SQLite strftime('%Y%m%d-%H%M%S','now','localtime')）
 /// 7. 写上传字节到 database_path（tokio::fs::write）
 /// 8. 返回提示页："恢复成功，请重启服务生效"
-///    ⚠️ 为什么重启？连接池还握着旧文件句柄，
+///     为什么重启？连接池还握着旧文件句柄，
 ///    直接覆盖会损坏库；重启 = 干净地重新打开新文件。
 ///    （热替换连接池需要 Arc/RwLock 包 AppState——M7 打磨项）
 pub async fn backup_upload(
-    State(state): State<AppState>,
-    AuthUser(user): AuthUser,
-    mut multipart: Multipart,
-) -> Result<Html<String>, AppError>
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    crate::handlers::auth::AuthUser(user): crate::handlers::auth::AuthUser,
+    mut multipart: axum::extract::Multipart,
+) -> Result<axum::response::Html<String>, crate::error::AppError>
 {
     let pool = state.pool.read().await.clone();
 
     if !user.is_admin
     {
-        return Err(AppError::Forbidden("此界面要求管理员".to_string()));
+        return Err(crate::error::AppError::Forbidden(
+            "此界面要求管理员".to_string(),
+        ));
     }
 
     let db_file = loop
@@ -229,7 +229,7 @@ pub async fn backup_upload(
         match multipart
             .next_field()
             .await
-            .map_err(|e| AppError::Other(e.to_string()))?
+            .map_err(|e| crate::error::AppError::Other(e.to_string()))?
         {
             Some(field) if field.name() == Some("db_file") => break Some(field),
             Some(_) => continue,
@@ -240,7 +240,9 @@ pub async fn backup_upload(
     let Some(db_file) = db_file
     else
     {
-        return Err(AppError::Validation("没有收到文件".to_string()));
+        return Err(crate::error::AppError::Validation(
+            "没有收到文件".to_string(),
+        ));
     };
 
     // 【教学：魔数校验 —— Field::bytes() 是异步的】
@@ -252,10 +254,10 @@ pub async fn backup_upload(
     let upload_bytes = db_file
         .bytes()
         .await
-        .map_err(|e| AppError::Other(e.to_string()))?;
+        .map_err(|e| crate::error::AppError::Other(e.to_string()))?;
     if !upload_bytes.starts_with(b"SQLite format 3\0")
     {
-        return Err(AppError::Validation(
+        return Err(crate::error::AppError::Validation(
             "Not a valid database file".to_string(),
         ));
     }
@@ -268,16 +270,16 @@ pub async fn backup_upload(
     //   b) 重命名 = 移动（同文件系统内 rename 就是移动）：
     //      tokio::fs::rename(&state.config.database_path, &backup_path).await
     //      backup_path = format!("{}.bak-{}", state.config.database_path, ts)
-    //      ⚠️ 若想放进独立备份文件夹：先 create_dir_all(&备份目录)，
+    //       若想放进独立备份文件夹：先 create_dir_all(&备份目录)，
     //         再把备份目录拼进 backup_path（跨目录 rename 也 OK）
-    //      ⚠️ rename 失败（源不存在/权限）→ AppError::Database（原样转）
+    //       rename 失败（源不存在/权限）→ AppError::Database（原样转）
     //      注：与部署纪律一致——同目录 .bak-时间戳，出错能回退
 
     let now =
         sqlx::query_scalar::<_, String>("SELECT strftime('%Y%m%d-%H%M%S', 'now', 'localtime')")
             .fetch_one(&pool)
             .await
-            .map_err(AppError::Database)?;
+            .map_err(crate::error::AppError::Database)?;
 
     // 【M8 调整：备份放进"数据库同目录下的 backup/ 子目录"】
     // 演进：
@@ -296,7 +298,7 @@ pub async fn backup_upload(
     let backup_dir = format!("{db_parent}/backup");
     tokio::fs::create_dir_all(&backup_dir)
         .await
-        .map_err(|e| AppError::Other(e.to_string()))?;
+        .map_err(|e| crate::error::AppError::Other(e.to_string()))?;
 
     let db_file = std::path::Path::new(&state.config.database_path)
         .file_name()
@@ -305,21 +307,21 @@ pub async fn backup_upload(
     let backup_path = format!("{backup_dir}/{db_file}.bak-{now}");
     tokio::fs::rename(&state.config.database_path, &backup_path)
         .await
-        .map_err(|e| AppError::Other(e.to_string()))?;
+        .map_err(|e| crate::error::AppError::Other(e.to_string()))?;
 
     let mut pool = state.pool.write().await;
     pool.close().await;
 
     tokio::fs::write(&state.config.database_path, upload_bytes)
         .await
-        .map_err(|e| AppError::Other(e.to_string()))?;
+        .map_err(|e| crate::error::AppError::Other(e.to_string()))?;
 
     *pool = sqlx::SqlitePool::connect(&state.config.database_path).await?;
 
     // 【教学：最后一步 —— 返回 HTML 提示页（不是 Redirect）】
     // M7 热替换后不再需要重启：写锁内 close 旧池 → 覆盖 → 重连新池，
     // 一次请求内完成。函数签名是 Result<Html<String>, AppError>，所以拼提示页。
-    Ok(Html(format!(
+    Ok(axum::response::Html(format!(
         r#"<!DOCTYPE html>
         <html lang="zh">
         {head}
@@ -370,23 +372,25 @@ pub async fn backup_upload(
 /// 5. 下载头：attachment; filename="records_{日期}.csv/.json"
 /// 6. 返回 (HeaderMap, String)
 pub async fn export_records(
-    State(state): State<AppState>,
-    AuthUser(user): AuthUser,
-    Query(query): Query<ExportQuery>,
-) -> Result<Response, AppError>
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    crate::handlers::auth::AuthUser(user): crate::handlers::auth::AuthUser,
+    axum::extract::Query(query): axum::extract::Query<ExportQuery>,
+) -> Result<axum::response::Response, crate::error::AppError>
 {
     let pool = state.pool.read().await.clone();
 
     if !user.is_admin
     {
-        return Err(AppError::Forbidden("此界面要求管理员".to_string()));
+        return Err(crate::error::AppError::Forbidden(
+            "此界面要求管理员".to_string(),
+        ));
     }
 
     // 【教学：records 没有 user_id 列 —— 通过 exercises 关联过滤】
     // records 表只有 phase_id/exercise_id，用户隔离要走 JOIN：
     //   INNER JOIN exercises e ON r.exercise_id = e.id
     //   WHERE e.user_id = ?
-    let all_records = sqlx::query_as::<_, models::Record>(
+    let all_records = sqlx::query_as::<_, crate::models::Record>(
         "SELECT r.* FROM records r
          INNER JOIN exercises e ON r.exercise_id = e.id
          WHERE e.user_id = ?
@@ -395,14 +399,14 @@ pub async fn export_records(
     .bind(&user.id)
     .fetch_all(&pool)
     .await
-    .map_err(AppError::Database)?;
+    .map_err(crate::error::AppError::Database)?;
 
     let exercise_names =
-        sqlx::query_as::<_, models::Exercise>("SELECT * FROM exercises WHERE user_id = ?")
+        sqlx::query_as::<_, crate::models::Exercise>("SELECT * FROM exercises WHERE user_id = ?")
             .bind(&user.id)
             .fetch_all(&pool)
             .await
-            .map_err(AppError::Database)?
+            .map_err(crate::error::AppError::Database)?
             .iter()
             .map(|e| (e.id, e.name.clone()))
             .collect::<std::collections::HashMap<i64, String>>();
@@ -411,7 +415,7 @@ pub async fn export_records(
     let today_dt = sqlx::query_scalar::<_, String>("SELECT date('now', 'localtime')")
         .fetch_one(&pool)
         .await
-        .map_err(AppError::Database)?;
+        .map_err(crate::error::AppError::Database)?;
 
     // format 参数：不传默认 csv
     let format = query.format.as_deref().unwrap_or("csv");
@@ -459,7 +463,7 @@ pub async fn export_records(
             // 每行记录 → 一个 json!({...}) 对象，collect 成 Vec，
             // serde_json::to_string 自动转义、自动合法，不用手工拼。
             let rows = all_records
-                .iter()
+            .iter()
                 .map(|r| {
                     serde_json::json!({
                         "exercise_id": r.exercise_id,
@@ -473,15 +477,16 @@ pub async fn export_records(
                         "feeling": r.feeling,
                         "strategy": r.strategy,
                         "key_points": r.key_points,
-                    })
+                })
                 })
                 .collect::<Vec<_>>();
-            let body = serde_json::to_string(&rows).map_err(|e| AppError::Other(e.to_string()))?;
+            let body = serde_json::to_string(&rows)
+                .map_err(|e| crate::error::AppError::Other(e.to_string()))?;
             ("application/json", body)
         },
         other =>
         {
-            return Err(AppError::Validation(format!(
+            return Err(crate::error::AppError::Validation(format!(
                 "format 只支持 csv/json，收到: {other}"
             )));
         },
@@ -490,17 +495,19 @@ pub async fn export_records(
     // 【教学：下载头 —— 和 backup_download 同款】
     // Content-Disposition 决定浏览器"保存对话框"，文件名带日期
     let filename = format!("records_{today_dt}.{format}");
-    let mut headers = HeaderMap::new();
+    let mut headers = axum::http::HeaderMap::new();
     headers.insert(
-        header::CONTENT_DISPOSITION,
+        axum::http::header::CONTENT_DISPOSITION,
         format!("attachment; filename=\"{filename}\"")
             .parse()
-            .map_err(|_| AppError::Other("Content-Disposition 头构造失败".to_string()))?,
+            .map_err(|_| {
+                crate::error::AppError::Other("Content-Disposition 头构造失败".to_string())
+            })?,
     );
     headers.insert(
-        header::CONTENT_TYPE,
+        axum::http::header::CONTENT_TYPE,
         mime.parse()
-            .map_err(|_| AppError::Other("Content-Type 头构造失败".to_string()))?,
+            .map_err(|_| crate::error::AppError::Other("Content-Type 头构造失败".to_string()))?,
     );
     Ok((headers, body).into_response())
 }
@@ -509,7 +516,7 @@ pub async fn export_records(
 // 【教学：查询参数结构体 + CSV 转义辅助函数】
 // ============================================================
 /// 导出格式查询参数：?format=csv | ?format=json
-#[derive(Deserialize)]
+#[derive(serde::Deserialize)]
 pub struct ExportQuery
 {
     pub format: Option<String>,

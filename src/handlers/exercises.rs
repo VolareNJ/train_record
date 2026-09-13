@@ -13,7 +13,7 @@
 //
 // 8 个函数，比 phases 多了 delete（动作库允许删除）。
 //
-// 📌 阶段要求：M2 你来实现本文件所有函数（detail 除外）。
+//  阶段要求：M2 你来实现本文件所有函数（detail 除外）。
 //   完整实现已备份在 docs/learning_path/M2_ref/exercises_ref.rs，
 //   实现完成后对照检查（不要提前看）。
 // ============================================================
@@ -33,15 +33,6 @@
 //   Form    → 请求体：表单字段              → PhaseForm/ExerciseForm
 // 三者的共同点：都是"axum 帮我们从请求里拆出数据装进结构体"。
 // 区别只是**数据在请求的哪个位置**。
-use std::collections::HashMap;
-
-use axum::{
-    extract::{Form, Path, Query, State},
-    response::{Html, Redirect},
-};
-use serde::Deserialize;
-
-use crate::{AppState, error::AppError, handlers::auth::AuthUser, models::Exercise};
 
 // ============================================================
 // 【教学：列表筛选 —— Query 提取器 + Option 字段】
@@ -59,7 +50,7 @@ use crate::{AppState, error::AppError, handlers::auth::AuthUser, models::Exercis
 //      注意和表单层的区别：Form 里的字段是必填的（String），
 //      Query 里的字段天然可选（不传就是 None），所以用 Option。
 // ============================================================
-#[derive(Deserialize)]
+#[derive(serde::Deserialize)]
 pub struct ListQuery
 {
     body_part: Option<String>,
@@ -110,7 +101,7 @@ pub struct ListQuery
 //   靠 name 属性对接 Rust 结构体字段。
 //   好处：用户不会填错（不用猜"胸"还是"胸部"），后端也少一层校验。
 // ============================================================
-#[derive(Deserialize)]
+#[derive(serde::Deserialize)]
 pub struct ExerciseForm
 {
     name: String,
@@ -167,10 +158,10 @@ pub struct ExerciseForm
 /// 3. Vec<Exercise> → 表格行 HTML（map → collect → join）
 /// 4. 返回页面（含"创建动作"链接）
 pub async fn list(
-    State(state): State<AppState>,
-    AuthUser(user): AuthUser,
-    Query(query): Query<ListQuery>,
-) -> Result<Html<String>, AppError>
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    crate::handlers::auth::AuthUser(user): crate::handlers::auth::AuthUser,
+    axum::extract::Query(query): axum::extract::Query<ListQuery>,
+) -> Result<axum::response::Html<String>, crate::error::AppError>
 {
     let pool = state.pool.read().await.clone();
     // TODO(M2 第 3 步): 学生实现（步骤见上方注释）
@@ -181,7 +172,7 @@ pub async fn list(
     .bind(&user.id)
     .fetch_all(&pool)
     .await
-    .map_err(AppError::Database)?
+    .map_err(crate::error::AppError::Database)?
     .iter()
     .map(|p| {
         // 当前筛选的部位 → 加 selected（刷新后下拉框保持选中）
@@ -208,31 +199,32 @@ pub async fn list(
     // 每个动作查最近一条记录日期（一次 GROUP BY 查询，避免逐动作 N+1）：
     //   last_date：MAX(record_date)（最近训练日）
     //   days_ago：julianday 差（今天 - 最近训练日）
-    let last_train_map: HashMap<i64, (String, i64)> = sqlx::query_as::<_, (i64, String, i64)>(
-        "SELECT exercise_id,
+    let last_train_map: std::collections::HashMap<i64, (String, i64)> =
+        sqlx::query_as::<_, (i64, String, i64)>(
+            "SELECT exercise_id,
          MAX(record_date) AS last_date,
          CAST(julianday('now','localtime') - julianday(MAX(record_date)) AS INTEGER) AS days_ago
          FROM records
          GROUP BY exercise_id",
-    )
-    .fetch_all(&pool)
-    .await
-    .map_err(AppError::Database)?
-    .into_iter()
-    .map(|(ex_id, last_date, days_ago)| (ex_id, (last_date, days_ago)))
-    .collect();
+        )
+        .fetch_all(&pool)
+        .await
+        .map_err(crate::error::AppError::Database)?
+        .into_iter()
+        .map(|(ex_id, last_date, days_ago)| (ex_id, (last_date, days_ago)))
+        .collect();
 
     // 查动作列表（筛选可选）→ 空 → 空态行（M7 第 4 步）
     let exercises = match part_filter
     {
-        None => sqlx::query_as::<_, Exercise>(
+        None => sqlx::query_as::<_, crate::models::Exercise>(
             // 【M4 修订：动作库排序】同一 body_part 内按 sort_order 排
             // （id 兜底：老数据或 sort_order 并列时保持稳定顺序）
             "SELECT * FROM exercises WHERE user_id = ? ORDER BY body_part, sort_order, id",
         )
         .bind(&user.id)
         .fetch_all(&pool),
-        Some(pt) => sqlx::query_as::<_, Exercise>(
+        Some(pt) => sqlx::query_as::<_, crate::models::Exercise>(
             "SELECT * FROM exercises WHERE user_id = ? AND body_part = ? ORDER BY sort_order, id",
         )
         .bind(&user.id)
@@ -240,7 +232,7 @@ pub async fn list(
         .fetch_all(&pool),
     }
     .await
-    .map_err(AppError::Database)?;
+    .map_err(crate::error::AppError::Database)?;
 
     let query_ret_rows = if exercises.is_empty()
     {
@@ -249,7 +241,7 @@ pub async fn list(
     else
     {
         exercises
-            .iter()
+    .iter()
             .map(|e| {
                 // 【M6 修订：最后训练两列】无记录 → "-"
                 let (last_date, days_ago) = last_train_map
@@ -257,17 +249,17 @@ pub async fn list(
                     .cloned()
                     .unwrap_or_else(|| ("-".to_string(), -1));
                 let days_text = if days_ago < 0
-                {
+{
                     "-".to_string()
-                }
+}
                 else if days_ago == 0
-                {
+{
                     "今天".to_string()
-                }
-                else
-                {
+}
+        else
+{
                     format!("{days_ago}")
-                };
+};
                 format!(
                     "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td>\
                      <td>{}</td><td>{}</td>\
@@ -279,7 +271,7 @@ pub async fn list(
                     e.body_part,
                     // 显示中文（M6 清理：lb2kg 历史值已迁移归正，不再需要兜底）
                     match e.default_mode.as_str()
-                    {
+{
                         "bar" => "杠铃",
                         "support" => "支撑",
                         "std" => "标准",
@@ -292,13 +284,13 @@ pub async fn list(
                     e.id,
                     e.id,
                     e.id
-                )
-            })
-            .collect::<Vec<String>>()
+    )
+    })
+    .collect::<Vec<String>>()
             .join("\n")
     };
 
-    Ok(Html(format!(
+    Ok(axum::response::Html(format!(
         r#"
         {head}
         <h1>动作库</h1>
@@ -402,11 +394,11 @@ pub async fn list(
 ///    页面底部放 <script> 切换显隐
 /// 4. 返回链接 /exercises
 pub async fn create_form(
-    State(_state): State<AppState>,
-    AuthUser(_user): AuthUser,
-) -> Result<Html<String>, AppError>
+    axum::extract::State(_state): axum::extract::State<crate::AppState>,
+    crate::handlers::auth::AuthUser(_user): crate::handlers::auth::AuthUser,
+) -> Result<axum::response::Html<String>, crate::error::AppError>
 {
-    Ok(Html(format!(
+    Ok(axum::response::Html(format!(
         r#"
         {head}
         <h1>创建训练动作</h1>
@@ -422,20 +414,20 @@ pub async fn create_form(
                     <option value="肩">肩</option>
                     <option value="手臂">手臂</option>
                     <option value="核心">核心</option>
-                </select>
+            </select>
             </label><br>
             <label>计重方式
                 <select name="default_mode" id="default_mode" onchange="toggleBarWeight()">
                     <option value="bar" selected>杠铃</option>
                     <option value="support">支撑</option>
                     <option value="std">标准</option>
-                </select>
+            </select>
             </label><br>
             <label>默认计重单位
                 <select name="default_unit">
                     <option value="kg" selected>kg</option>
                     <option value="lb">lb</option>
-                </select>
+            </select>
             </label><br>
             <div id="bar_weight_row">
                 <label>杠铃重量
@@ -444,7 +436,7 @@ pub async fn create_form(
                         <option value="11.3">Smith(11.3kg)</option>
                         <option value="10">短杠(10kg)</option>
                         <option value="0">双边(0kg)</option>
-                    </select>
+            </select>
                 </label>
             </div><br>
             <label>默认组数
@@ -514,10 +506,10 @@ pub async fn create_form(
 ///    bar_weight, default_sets, default_reps, key_points) VALUES (?,?,?,?,?,?,?,?)
 /// 6. Ok(Redirect::to("/exercises"))
 pub async fn create(
-    State(state): State<AppState>,
-    AuthUser(user): AuthUser,
-    Form(form): Form<ExerciseForm>,
-) -> Result<Redirect, AppError>
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    crate::handlers::auth::AuthUser(user): crate::handlers::auth::AuthUser,
+    axum::extract::Form(form): axum::extract::Form<ExerciseForm>,
+) -> Result<axum::response::Redirect, crate::error::AppError>
 {
     let pool = state.pool.read().await.clone();
 
@@ -525,7 +517,9 @@ pub async fn create(
     let name = form.name.trim();
     if name.is_empty()
     {
-        return Err(AppError::Validation("动作名称不能为空".to_string()));
+        return Err(crate::error::AppError::Validation(
+            "动作名称不能为空".to_string(),
+        ));
     }
     // 查重：查到重名 → 422（is_some() 压成 bool，链不打断）
     if sqlx::query_scalar::<_, i64>("SELECT id FROM exercises WHERE user_id = ? AND name = ?")
@@ -533,24 +527,26 @@ pub async fn create(
         .bind(name)
         .fetch_optional(&pool)
         .await
-        .map_err(AppError::Database)?
+        .map_err(crate::error::AppError::Database)?
         .is_some()
     {
-        return Err(AppError::Validation("动作名已存在".to_string()));
+        return Err(crate::error::AppError::Validation(
+            "动作名已存在".to_string(),
+        ));
     }
     // 转换数字字段：前端已预填默认值，后端只 parse（失败 → 422）
     let bar_weight: f64 = form
         .bar_weight
         .parse::<f64>()
-        .map_err(|_| AppError::Validation("杠铃重必须是数字".to_string()))?;
+        .map_err(|_| crate::error::AppError::Validation("杠铃重必须是数字".to_string()))?;
     let default_sets: i64 = form
         .default_sets
         .parse::<i64>()
-        .map_err(|_| AppError::Validation("默认组数必须是整数".to_string()))?;
+        .map_err(|_| crate::error::AppError::Validation("默认组数必须是整数".to_string()))?;
     let default_reps: i64 = form
         .default_reps
         .parse::<i64>()
-        .map_err(|_| AppError::Validation("默认次数必须是整数".to_string()))?;
+        .map_err(|_| crate::error::AppError::Validation("默认次数必须是整数".to_string()))?;
     // 【M4 修订：部位内排序号】
     // 同一 body_part 内新动作排末尾：MAX(sort_order) + 1。
     // COALESCE：空部位 MAX 是 NULL → 取 0 → +1 = 1（从 1 开始）。
@@ -560,18 +556,18 @@ pub async fn create(
     let next_sort_order = sqlx::query_scalar::<_, i64>(
         "SELECT COALESCE(MAX(sort_order), 0) + 1 FROM exercises WHERE user_id = ? AND body_part = ?",
     )
-    .bind(user.id)
+        .bind(user.id)
     .bind(&form.body_part)
     .fetch_one(&pool)
     .await
-    .map_err(AppError::Database)?;
+    .map_err(crate::error::AppError::Database)?;
     // INSERT（10 列）。create 不需要 rows_affected：
     // INSERT 成功必然影响 1 行，execute() 的结果直接丢弃。
     sqlx::query(
         "INSERT INTO exercises (user_id, name, body_part, default_mode, default_unit, bar_weight, default_sets, default_reps, key_points, sort_order) VALUES (?,?,?,?,?,?,?,?,?,?)",
     )
-    .bind(user.id)
-    .bind(name)
+        .bind(user.id)
+        .bind(name)
     .bind(&form.body_part)
     .bind(&form.default_mode)
     .bind(&form.default_unit)
@@ -582,8 +578,8 @@ pub async fn create(
     .bind(next_sort_order)
     .execute(&pool)
     .await
-    .map_err(AppError::Database)?;
-    Ok(Redirect::to("/exercises"))
+    .map_err(crate::error::AppError::Database)?;
+    Ok(axum::response::Redirect::to("/exercises"))
 }
 
 // ============================================================
@@ -670,21 +666,22 @@ pub async fn create(
 ///    textarea 旧值放标签间，action 带 {exercise_id}
 /// 4. JS 用命名参数（javascript = "..."）传给 format!，避开 {} 冲突
 pub async fn edit_form(
-    State(state): State<AppState>,
-    AuthUser(user): AuthUser,
-    Path(exercise_id): Path<i64>,
-) -> Result<Html<String>, AppError>
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    crate::handlers::auth::AuthUser(user): crate::handlers::auth::AuthUser,
+    axum::extract::Path(exercise_id): axum::extract::Path<i64>,
+) -> Result<axum::response::Html<String>, crate::error::AppError>
 {
     let pool = state.pool.read().await.clone();
 
-    let record_to_edit =
-        sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE id = ? AND user_id = ?")
-            .bind(&exercise_id)
-            .bind(&user.id)
-            .fetch_optional(&pool)
-            .await
-            .map_err(AppError::Database)?
-            .ok_or_else(|| AppError::NotFound("Record not found".to_string()))?;
+    let record_to_edit = sqlx::query_as::<_, crate::models::Exercise>(
+        "SELECT * FROM exercises WHERE id = ? AND user_id = ?",
+    )
+    .bind(&exercise_id)
+    .bind(&user.id)
+    .fetch_optional(&pool)
+    .await
+    .map_err(crate::error::AppError::Database)?
+    .ok_or_else(|| crate::error::AppError::NotFound("Record not found".to_string()))?;
 
     // 【M5 修订：编辑页嵌入最近 180 天趋势图（stats.rs 公共函数复用）】
     //     位置：编辑训练动作标题下面、动作名称上面。
@@ -696,7 +693,7 @@ pub async fn edit_form(
         None => String::new(),
     };
 
-    Ok(Html(format!(
+    Ok(axum::response::Html(format!(
         r#"
         {head}
         <h1>编辑训练动作</h1>
@@ -708,23 +705,23 @@ pub async fn edit_form(
             <label>部位
                 <select name="body_part" required>
                     {body_part_options}
-                </select>
+            </select>
             </label><br>
             <label>计重方式
                 <select name="default_mode" id="default_mode" onchange="toggleBarWeight()">
                     {mode_options}
-                </select>
+            </select>
             </label><br>
             <label>默认计重单位
                 <select name="default_unit">
                     {unit_options}
-                </select>
+            </select>
             </label><br>
             <div id="bar_weight_row">
                 <label>杠铃重量
                     <select name="bar_weight">
                         {bar_weight_options}
-                    </select>
+            </select>
                 </label>
             </div><br>
             <label>默认组数
@@ -838,7 +835,7 @@ pub async fn edit_form(
                 var mode = document.getElementById('default_mode').value;
                 document.getElementById('bar_weight_row').style.display =
                     (mode === 'bar') ? '' : 'none';
-                }
+}
                 toggleBarWeight();"
     )))
 }
@@ -870,17 +867,19 @@ pub async fn edit_form(
 ///    WHERE id = ? AND user_id = ?
 /// 5. rows_affected() == 0 → Err(NotFound)；否则 Ok(Redirect::to("/exercises"))
 pub async fn update(
-    State(state): State<AppState>,
-    AuthUser(user): AuthUser,
-    Path(exercise_id): Path<i64>,
-    Form(form): Form<ExerciseForm>,
-) -> Result<Redirect, AppError>
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    crate::handlers::auth::AuthUser(user): crate::handlers::auth::AuthUser,
+    axum::extract::Path(exercise_id): axum::extract::Path<i64>,
+    axum::extract::Form(form): axum::extract::Form<ExerciseForm>,
+) -> Result<axum::response::Redirect, crate::error::AppError>
 {
     let pool = state.pool.read().await.clone();
 
     if form.name.trim().is_empty()
     {
-        return Err(AppError::Validation("动作名称不能为空".to_string()));
+        return Err(crate::error::AppError::Validation(
+            "动作名称不能为空".to_string(),
+        ));
     }
 
     // 【教学：分步写法 —— 为什么拆成 let + if，而不是链式嵌进 if】
@@ -912,30 +911,30 @@ pub async fn update(
     .bind(
         form.bar_weight
             .parse::<f64>()
-            .map_err(|_| AppError::Validation("杠铃重量必须输入数字".to_string()))?,
+            .map_err(|_| crate::error::AppError::Validation("杠铃重量必须输入数字".to_string()))?,
     )
     .bind(
         form.default_sets
             .parse::<i64>()
-            .map_err(|_| AppError::Validation("组数必须输入整数".to_string()))?,
+            .map_err(|_| crate::error::AppError::Validation("组数必须输入整数".to_string()))?,
     )
     .bind(
         form.default_reps
             .parse::<i64>()
-            .map_err(|_| AppError::Validation("次数必须输入整数".to_string()))?,
+            .map_err(|_| crate::error::AppError::Validation("次数必须输入整数".to_string()))?,
     )
     .bind(form.key_points)
     .bind(exercise_id)
     .bind(user.id)
     .execute(&pool)
     .await
-    .map_err(AppError::Database)?;
+    .map_err(crate::error::AppError::Database)?;
 
     if ext_ret.rows_affected() == 0
     {
-        return Err(AppError::NotFound("查无此动作".to_string()));
+        return Err(crate::error::AppError::NotFound("查无此动作".to_string()));
     }
-    Ok(Redirect::to("/exercises"))
+    Ok(axum::response::Redirect::to("/exercises"))
 }
 
 // ============================================================
@@ -953,7 +952,7 @@ pub async fn update(
 /// 前端 fetch 不关心响应内容（fire-and-forget），
 /// 返回空 200（axum 的 () 转空响应）即可；
 /// 失败（归属验证不过）→ 404/403 照常走 AppError。
-#[derive(Deserialize)]
+#[derive(serde::Deserialize)]
 pub struct ConfigForm
 {
     pub mode: String,
@@ -963,35 +962,35 @@ pub struct ConfigForm
 
 /// 计重配置即时同步（record_form 的 mode/bar/unit 选择即保存）
 pub async fn update_config(
-    State(state): State<AppState>,
-    AuthUser(user): AuthUser,
-    Path(exercise_id): Path<i64>,
-    Form(form): Form<ConfigForm>,
-) -> Result<(), AppError>
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    crate::handlers::auth::AuthUser(user): crate::handlers::auth::AuthUser,
+    axum::extract::Path(exercise_id): axum::extract::Path<i64>,
+    axum::extract::Form(form): axum::extract::Form<ConfigForm>,
+) -> Result<(), crate::error::AppError>
 {
     let pool = state.pool.read().await.clone();
 
     // 归属验证 + 更新三列（数据隔离纪律：id + user_id 双条件）
     let ret = sqlx::query(
         "UPDATE exercises SET default_mode = ?, bar_weight = ?, default_unit = ?
-        WHERE id = ? AND user_id = ?",
+          WHERE id = ? AND user_id = ?",
     )
     .bind(&form.mode)
     .bind(
         form.bar_weight
             .parse::<f64>()
-            .map_err(|_| AppError::Validation("杆重必须是数字".to_string()))?,
+            .map_err(|_| crate::error::AppError::Validation("杆重必须是数字".to_string()))?,
     )
     .bind(&form.unit)
     .bind(exercise_id)
     .bind(user.id)
     .execute(&pool)
     .await
-    .map_err(AppError::Database)?;
+    .map_err(crate::error::AppError::Database)?;
 
     if ret.rows_affected() == 0
     {
-        return Err(AppError::NotFound("查无此动作".to_string()));
+        return Err(crate::error::AppError::NotFound("查无此动作".to_string()));
     }
     Ok(())
 }
@@ -1027,10 +1026,10 @@ pub async fn update_config(
 /// 2. DELETE FROM exercises WHERE id = ? AND user_id = ?
 /// 3. rows_affected() == 0 → Err(NotFound)；否则 Ok(Redirect::to("/exercises"))
 pub async fn delete(
-    State(state): State<AppState>,
-    AuthUser(user): AuthUser,
-    Path(exercise_id): Path<i64>,
-) -> Result<Redirect, AppError>
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    crate::handlers::auth::AuthUser(user): crate::handlers::auth::AuthUser,
+    axum::extract::Path(exercise_id): axum::extract::Path<i64>,
+) -> Result<axum::response::Redirect, crate::error::AppError>
 {
     let pool = state.pool.read().await.clone();
 
@@ -1039,13 +1038,15 @@ pub async fn delete(
         .bind(user.id)
         .execute(&pool)
         .await
-        .map_err(AppError::Database)?;
+        .map_err(crate::error::AppError::Database)?;
 
     if ext_ret.rows_affected() == 0
     {
-        return Err(AppError::NotFound("未找到这个动作模板".to_string()));
+        return Err(crate::error::AppError::NotFound(
+            "未找到这个动作模板".to_string(),
+        ));
     }
-    Ok(Redirect::to("/exercises"))
+    Ok(axum::response::Redirect::to("/exercises"))
 }
 
 // ============================================================
@@ -1066,23 +1067,24 @@ pub async fn delete(
 ///    → fetch_optional → None 则 Err(NotFound)
 /// 3. 返回信息页：动作名 + 全部字段
 pub async fn detail(
-    State(state): State<AppState>,
-    AuthUser(user): AuthUser,
-    Path(exercise_id): Path<i64>,
-) -> Result<Html<String>, AppError>
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    crate::handlers::auth::AuthUser(user): crate::handlers::auth::AuthUser,
+    axum::extract::Path(exercise_id): axum::extract::Path<i64>,
+) -> Result<axum::response::Html<String>, crate::error::AppError>
 {
     let pool = state.pool.read().await.clone();
 
-    let exercise =
-        sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE id = ? AND user_id = ?")
-            .bind(exercise_id)
-            .bind(user.id)
-            .fetch_optional(&pool)
-            .await
-            .map_err(AppError::Database)?
-            .ok_or_else(|| AppError::NotFound("动作不存在".to_string()))?;
+    let exercise = sqlx::query_as::<_, crate::models::Exercise>(
+        "SELECT * FROM exercises WHERE id = ? AND user_id = ?",
+    )
+    .bind(exercise_id)
+    .bind(user.id)
+    .fetch_optional(&pool)
+    .await
+    .map_err(crate::error::AppError::Database)?
+    .ok_or_else(|| crate::error::AppError::NotFound("动作不存在".to_string()))?;
 
-    Ok(Html(format!(
+    Ok(axum::response::Html(format!(
         r#"
         {head}
         <h1>动作详情</h1>

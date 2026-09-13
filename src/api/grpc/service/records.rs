@@ -21,38 +21,25 @@
 //   ③ 客户端提前断开 → tx.send 返回 Err → 我们的任务结束（不会泄漏）
 // ============================================================
 
-use tokio_stream::wrappers::ReceiverStream;
-use tonic::{Request, Response, Status, Streaming};
-
-use super::pool_of;
-use crate::{
-    AppState,
-    api::{
-        grpc::{auth, convert, pb},
-        rest::{records as rest_records, stats as rest_stats},
-    },
-    calc::epley_1rm,
-};
-
 #[derive(Clone)]
 pub struct RecordServiceImpl
 {
-    pub(crate) state: AppState,
+    pub(crate) state: crate::AppState,
 }
 
 impl RecordServiceImpl
 {
-    pub fn new(state: AppState) -> Self
+    pub fn new(state: crate::AppState) -> Self
     {
         Self { state }
     }
 }
 
 #[tonic::async_trait]
-impl pb::record_service_server::RecordService for RecordServiceImpl
+impl crate::api::grpc::pb::record_service_server::RecordService for RecordServiceImpl
 {
     // ============================================================
-    // GetToday（一元 RPC，★ 挖空练习）
+    // GetToday（一元 RPC， 挖空练习）
     // ============================================================
     /// 今日卡片：进行中阶段 + 今日计划 + 每个动作的最近记录
     ///
@@ -69,18 +56,19 @@ impl pb::record_service_server::RecordService for RecordServiceImpl
     /// 4. Ok(Response::new(pb::TodayView::from(&view)))
     ///    （转换的实现在 convert.rs，那里还有一处对应的挖空：
     ///      三层嵌套 + Option 的处理）
+    // 挖空期间允许 unused（todo! 占位），实现完成后删掉下一行 allow
     #[allow(unused_variables)]
     async fn get_today(
         &self,
-        request: Request<pb::GetTodayRequest>,
-    ) -> Result<Response<pb::TodayView>, Status>
+        request: tonic::Request<crate::api::grpc::pb::GetTodayRequest>,
+    ) -> Result<tonic::Response<crate::api::grpc::pb::TodayView>, tonic::Status>
     {
         // 【实现步骤】见上方注释
         todo!("M9 练习：GetToday 实现") // 【待实现】
     }
 
     // ============================================================
-    // UpsertRecord（一元 RPC，★ 挖空练习）
+    // UpsertRecord（一元 RPC， 挖空练习）
     // ============================================================
     /// 记录 upsert：同一计划项当天已有记录 → 更新；否则新建
     ///
@@ -106,11 +94,12 @@ impl pb::record_service_server::RecordService for RecordServiceImpl
     /// 【提示：注意 protobuf 的“编号与字段名”】
     ///   请求里的 plan_id / plan_item_id 在 proto 里编号是 1 和 2，
     ///   生成 Rust 后就是普通字段名 `req.plan_id`——编号只在线上传输时存在。
+    // 挖空期间允许 unused（todo! 占位），实现完成后删掉下一行 allow
     #[allow(unused_variables)]
     async fn upsert_record(
         &self,
-        request: Request<pb::UpsertRecordRequest>,
-    ) -> Result<Response<pb::Record>, Status>
+        request: tonic::Request<crate::api::grpc::pb::UpsertRecordRequest>,
+    ) -> Result<tonic::Response<crate::api::grpc::pb::Record>, tonic::Status>
     {
         // 【实现步骤】见上方注释
         todo!("M9 练习：UpsertRecord 实现") // 【待实现】
@@ -127,57 +116,70 @@ impl pb::record_service_server::RecordService for RecordServiceImpl
     /// （REST 的 /history/{date} 仍用 day_records，网页不多传字段，各取所需。）
     async fn get_day_records(
         &self,
-        request: Request<pb::GetDayRecordsRequest>,
-    ) -> Result<Response<pb::GetDayRecordsResponse>, Status>
+        request: tonic::Request<crate::api::grpc::pb::GetDayRecordsRequest>,
+    ) -> Result<tonic::Response<crate::api::grpc::pb::GetDayRecordsResponse>, tonic::Status>
     {
-        let user = auth::require_user(&request, &self.state).await?;
+        let user = crate::api::grpc::auth::require_user(&request, &self.state).await?;
         let req = request.into_inner();
-        let pool = pool_of(&self.state).await;
+        let pool = crate::api::grpc::service::pool_of(&self.state).await;
 
         // from/to 都传同一天 = 精确匹配某天（区间上下界相等的退化用法）
-        let rows =
-            rest_records::records_range(&pool, user.id, Some(&req.date), Some(&req.date), None)
-                .await?;
+        let rows = crate::api::rest::records::records_range(
+            &pool,
+            user.id,
+            Some(&req.date),
+            Some(&req.date),
+            None,
+        )
+        .await?;
 
-        Ok(Response::new(pb::GetDayRecordsResponse {
-            // RecordRow → pb::Record（转换函数：字段最全，含 body_part）
-            records: rows.iter().map(convert::record_from_row).collect(),
-        }))
+        Ok(tonic::Response::new(
+            crate::api::grpc::pb::GetDayRecordsResponse {
+                // RecordRow → pb::Record（转换函数：字段最全，含 body_part）
+                records: rows
+                    .iter()
+                    .map(crate::api::grpc::convert::record_from_row)
+                    .collect(),
+            },
+        ))
     }
 
     /// 更新单条记录（PATCH 语义：只改传了的字段）
     async fn update_record(
         &self,
-        request: Request<pb::UpdateRecordRequest>,
-    ) -> Result<Response<pb::Record>, Status>
+        request: tonic::Request<crate::api::grpc::pb::UpdateRecordRequest>,
+    ) -> Result<tonic::Response<crate::api::grpc::pb::Record>, tonic::Status>
     {
-        let user = auth::require_user(&request, &self.state).await?;
+        let user = crate::api::grpc::auth::require_user(&request, &self.state).await?;
         let req = request.into_inner();
-        let pool = pool_of(&self.state).await;
+        let pool = crate::api::grpc::service::pool_of(&self.state).await;
 
-        let update_req = rest_records::RecordUpdateReq::from(&req);
-        let out = rest_records::record_update(&pool, user.id, req.id, &update_req).await?;
+        let update_req = crate::api::rest::records::RecordUpdateReq::from(&req);
+        let out =
+            crate::api::rest::records::record_update(&pool, user.id, req.id, &update_req).await?;
 
-        Ok(Response::new(pb::Record::from(&out)))
+        Ok(tonic::Response::new(crate::api::grpc::pb::Record::from(
+            &out,
+        )))
     }
 
     /// 删除单条记录
     async fn delete_record(
         &self,
-        request: Request<pb::DeleteRecordRequest>,
-    ) -> Result<Response<pb::Ack>, Status>
+        request: tonic::Request<crate::api::grpc::pb::DeleteRecordRequest>,
+    ) -> Result<tonic::Response<crate::api::grpc::pb::Ack>, tonic::Status>
     {
-        let user = auth::require_user(&request, &self.state).await?;
+        let user = crate::api::grpc::auth::require_user(&request, &self.state).await?;
         let req = request.into_inner();
-        let pool = pool_of(&self.state).await;
+        let pool = crate::api::grpc::service::pool_of(&self.state).await;
 
-        rest_records::record_delete(&pool, user.id, req.id).await?;
+        crate::api::rest::records::record_delete(&pool, user.id, req.id).await?;
 
-        Ok(Response::new(pb::Ack { ok: true }))
+        Ok(tonic::Response::new(crate::api::grpc::pb::Ack { ok: true }))
     }
 
     // ============================================================
-    // SubmitWorkout（客户端流式，★ 挖空练习）
+    // SubmitWorkout（客户端流式， 挖空练习）
     // ============================================================
     /// 训练结束后批量提交一组记录，返回汇总（条数/总容量/最佳 1RM）
     ///
@@ -220,7 +222,7 @@ impl pb::record_service_server::RecordService for RecordServiceImpl
     ///          best_1rm = best_1rm.max(epley_1rm(out.weight, out.reps));
     ///          records.push(pb::Record::from(&out));
     ///      }
-    /// 6. 组装汇总返回（⚠️ 注意 best_1rm 是 proto 的 optional：
+    /// 6. 组装汇总返回（ 注意 best_1rm 是 proto 的 optional：
     ///        "没有任何有效记录"应该是**不传**，而不是传 0.0：
     ///        let best = (best_1rm > 0.0).then_some(best_1rm);
     ///        Ok(Response::new(pb::SubmitWorkoutSummary {
@@ -229,11 +231,12 @@ impl pb::record_service_server::RecordService for RecordServiceImpl
     ///            best_1rm: best,
     ///            records,
     ///        })))
+    // 挖空期间允许 unused（todo! 占位），实现完成后删掉下一行 allow
     #[allow(unused_variables)]
     async fn submit_workout(
         &self,
-        request: Request<Streaming<pb::UpsertRecordRequest>>,
-    ) -> Result<Response<pb::SubmitWorkoutSummary>, Status>
+        request: tonic::Request<tonic::Streaming<crate::api::grpc::pb::UpsertRecordRequest>>,
+    ) -> Result<tonic::Response<crate::api::grpc::pb::SubmitWorkoutSummary>, tonic::Status>
     {
         // 【实现步骤】见上方注释
         todo!("M9 练习：SubmitWorkout（客户端流）实现") // 【待实现】
@@ -243,7 +246,9 @@ impl pb::record_service_server::RecordService for RecordServiceImpl
     // 双向流的响应类型（同服务器流：要给关联类型指定具体类型）
     // ============================================================
     /// 用 mpsc 通道把"处理器任务"和"响应流"接起来（详见下方 live_session）
-    type LiveSessionStream = ReceiverStream<Result<pb::LiveSetFeedback, Status>>;
+    type LiveSessionStream = tokio_stream::wrappers::ReceiverStream<
+        Result<crate::api::grpc::pb::LiveSetFeedback, tonic::Status>,
+    >;
 
     // ============================================================
     // LiveSession（双向流，已实现，读作参考）
@@ -273,11 +278,11 @@ impl pb::record_service_server::RecordService for RecordServiceImpl
     /// 忘记处理这一条，服务器会留下一个永远等待的任务（任务泄漏）。
     async fn live_session(
         &self,
-        request: Request<Streaming<pb::UpsertRecordRequest>>,
-    ) -> Result<Response<Self::LiveSessionStream>, Status>
+        request: tonic::Request<tonic::Streaming<crate::api::grpc::pb::UpsertRecordRequest>>,
+    ) -> Result<tonic::Response<Self::LiveSessionStream>, tonic::Status>
     {
         // ① 身份校验：流建立时一次（之后每条消息都视为同一用户）
-        let user = auth::require_user(&request, &self.state).await?;
+        let user = crate::api::grpc::auth::require_user(&request, &self.state).await?;
         let user_id = user.id;
 
         // ② 拿出"请求读取器"，状态 clone 一份交给后台任务
@@ -289,7 +294,7 @@ impl pb::record_service_server::RecordService for RecordServiceImpl
 
         // ④ 后台任务：边收边查边发
         tokio::spawn(async move {
-            let pool = pool_of(&state).await;
+            let pool = crate::api::grpc::service::pool_of(&state).await;
             let mut completed_count = 0i32;
 
             loop
@@ -306,8 +311,8 @@ impl pb::record_service_server::RecordService for RecordServiceImpl
                     },
                     Ok(Some(item)) =>
                     {
-                        let create_req = rest_records::RecordCreateReq::from(&item);
-                        let result = rest_records::record_upsert(
+                        let create_req = crate::api::rest::records::RecordCreateReq::from(&item);
+                        let result = crate::api::rest::records::record_upsert(
                             &pool,
                             user_id,
                             item.plan_id,
@@ -323,35 +328,38 @@ impl pb::record_service_server::RecordService for RecordServiceImpl
                             Ok(out) => out,
                             Err(e) =>
                             {
-                                let _ = tx.send(Err(Status::from(e))).await;
+                                let _ = tx.send(Err(tonic::Status::from(e))).await;
                                 break;
                             },
                         };
 
                         // 本组 1RM（实时算）
-                        let one_rm = epley_1rm(out.weight, out.reps);
+                        let one_rm = crate::calc::epley_1rm(out.weight, out.reps);
 
                         // 该动作历史最佳（含刚存的这组；查询失败就退回本组值）
-                        // ⚠️ 教学实现：每组重查一次全量记录（个人数据量下没问题）；
+                        //  教学实现：每组重查一次全量记录（个人数据量下没问题）；
                         //    量大了应改成增量维护 PR 或加缓存（todo.md 已记录）。
-                        let best_1rm =
-                            match rest_stats::exercise_stats_view(&pool, user_id, out.exercise_id)
-                                .await
-                            {
-                                Ok(stats) => stats.best_1rm,
-                                Err(_) => one_rm,
-                            };
+                        let best_1rm = match crate::api::rest::stats::exercise_stats_view(
+                            &pool,
+                            user_id,
+                            out.exercise_id,
+                        )
+                        .await
+                        {
+                            Ok(stats) => stats.best_1rm,
+                            Err(_) => one_rm,
+                        };
 
                         if out.completed
                         {
                             completed_count += 1;
                         }
 
-                        let feedback = pb::LiveSetFeedback {
+                        let feedback = crate::api::grpc::pb::LiveSetFeedback {
                             // 【教学：消息字段是 Option】proto 里 `Record saved = 1;`
                             // 生成 Rust 后是 `Option<pb::Record>`（消息类型默认"可不传"），
                             // 所以要 Some(...) 包一层。
-                            saved: Some(pb::Record::from(&out)),
+                            saved: Some(crate::api::grpc::pb::Record::from(&out)),
                             best_1rm,
                             // 本组就是历史最佳（"破纪录"提示）
                             new_pr: one_rm > 0.0 && one_rm >= best_1rm,
@@ -369,6 +377,8 @@ impl pb::record_service_server::RecordService for RecordServiceImpl
         });
 
         // 响应流：tonic 从这里取消息发给客户端
-        Ok(Response::new(ReceiverStream::new(rx)))
+        Ok(tonic::Response::new(
+            tokio_stream::wrappers::ReceiverStream::new(rx),
+        ))
     }
 }

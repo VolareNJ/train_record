@@ -15,21 +15,9 @@
 // 有 → UPDATE（改同一行），无 → INSERT 新行。
 // （页面 record_save 同款逻辑，但 API 简化：不做要领回写动作库）
 //
-// 📌 阶段要求：M8 你来实现本文件所有函数。
+//  阶段要求：M8 你来实现本文件所有函数。
 //   完整实现已备份在 docs/learning_path/M8_ref/，实现完成后对照检查。
 // ============================================================
-use axum::{
-    Json,
-    extract::{Path, Query, State},
-};
-use serde::{Deserialize, Serialize};
-use sqlx::SqlitePool;
-
-use crate::{
-    AppState,
-    api::{ApiError, rest::auth::ApiAuthUser},
-    models::{Exercise, Phase, Plan, PlanItem, Record},
-};
 
 // ============================================================
 // 【教学：DTO —— 今日卡片】
@@ -41,7 +29,7 @@ use crate::{
 //   "plan": {"id": 3, "note": "推日", "items": [...]}
 // }
 // 无进行中阶段 / 无今日计划 → phase / plan 为 null（iced 友好空态）
-#[derive(Serialize)]
+#[derive(serde::Serialize)]
 pub struct TodayItemOut
 {
     pub id: i64,
@@ -57,7 +45,7 @@ pub struct TodayItemOut
     pub last_record: Option<LastRecordOut>,
 }
 
-#[derive(Serialize)]
+#[derive(serde::Serialize)]
 pub struct LastRecordOut
 {
     pub id: i64,
@@ -69,7 +57,7 @@ pub struct LastRecordOut
     pub strategy: String,
 }
 
-#[derive(Serialize)]
+#[derive(serde::Serialize)]
 pub struct TodayPlanOut
 {
     pub id: i64,
@@ -77,7 +65,7 @@ pub struct TodayPlanOut
     pub items: Vec<TodayItemOut>,
 }
 
-#[derive(Serialize)]
+#[derive(serde::Serialize)]
 pub struct TodayPhaseOut
 {
     pub id: i64,
@@ -85,7 +73,7 @@ pub struct TodayPhaseOut
     pub days: i64,
 }
 
-#[derive(Serialize)]
+#[derive(serde::Serialize)]
 pub struct TodayOut
 {
     pub phase: Option<TodayPhaseOut>,
@@ -113,45 +101,47 @@ pub struct TodayOut
 /// 5. 每个计划项查最近记录（ORDER BY record_date DESC, id DESC LIMIT 1）
 /// 6. 组装 TodayOut
 pub async fn today(
-    State(state): State<AppState>,
-    ApiAuthUser(user): ApiAuthUser,
-) -> Result<Json<TodayOut>, ApiError>
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    crate::api::rest::auth::ApiAuthUser(user): crate::api::rest::auth::ApiAuthUser,
+) -> Result<axum::Json<TodayOut>, crate::api::rest::ApiError>
 {
     let pool = state.pool.read().await.clone();
     // 【M9】协议无关逻辑抽到下方 today_view（gRPC 服务复用同一份 SQL）
-    Ok(Json(today_view(&pool, user.id).await?))
+    Ok(axum::Json(today_view(&pool, user.id).await?))
 }
 
 /// 协议无关实现（REST handler 与 M9 gRPC 服务共用）
-pub(crate) async fn today_view(pool: &SqlitePool, user_id: i64) -> Result<TodayOut, ApiError>
+pub(crate) async fn today_view(
+    pool: &sqlx::SqlitePool,
+    user_id: i64,
+) -> Result<TodayOut, crate::api::rest::ApiError>
 {
     // 1. 进行中阶段
-    let current_phase = sqlx::query_as::<_, Phase>(
+    let current_phase = sqlx::query_as::<_, crate::models::Phase>(
         "SELECT * FROM phases WHERE user_id = ? AND archived = 0 ORDER BY created_at DESC LIMIT 1",
     )
     .bind(&user_id)
     .fetch_optional(pool)
     .await
-    .map_err(ApiError::Database)?;
+    .map_err(crate::api::rest::ApiError::Database)?;
 
     // 2. 今天
     let today_dt = sqlx::query_scalar::<_, String>("SELECT date('now', 'localtime')")
         .fetch_one(pool)
         .await
-        .map_err(ApiError::Database)?;
+        .map_err(crate::api::rest::ApiError::Database)?;
 
     // 3. 今日计划
     let today_plan = match &current_phase
     {
-        Some(phase) =>
-        {
-            sqlx::query_as::<_, Plan>("SELECT * FROM plans WHERE phase_id = ? AND date = ?")
-                .bind(&phase.id)
-                .bind(&today_dt)
-                .fetch_optional(pool)
-                .await
-                .map_err(ApiError::Database)?
-        },
+        Some(phase) => sqlx::query_as::<_, crate::models::Plan>(
+            "SELECT * FROM plans WHERE phase_id = ? AND date = ?",
+        )
+        .bind(&phase.id)
+        .bind(&today_dt)
+        .fetch_optional(pool)
+        .await
+        .map_err(crate::api::rest::ApiError::Database)?,
         None => None,
     };
 
@@ -170,7 +160,7 @@ pub(crate) async fn today_view(pool: &SqlitePool, user_id: i64) -> Result<TodayO
                 .bind(start_date)
                 .fetch_one(pool)
                 .await
-                .map_err(ApiError::Database)?,
+                .map_err(crate::api::rest::ApiError::Database)?,
                 None => 0,
             };
             Some(TodayPhaseOut {
@@ -187,37 +177,39 @@ pub(crate) async fn today_view(pool: &SqlitePool, user_id: i64) -> Result<TodayO
         Some(plan) =>
         {
             // 计划项
-            let plan_items = sqlx::query_as::<_, PlanItem>(
+            let plan_items = sqlx::query_as::<_, crate::models::PlanItem>(
                 "SELECT * FROM plan_items WHERE plan_id = ? ORDER BY sort_order ASC",
             )
             .bind(&plan.id)
             .fetch_all(pool)
             .await
-            .map_err(ApiError::Database)?;
+            .map_err(crate::api::rest::ApiError::Database)?;
 
             // 动作索引（id → (name, body_part)）
             let ex_index: std::collections::HashMap<i64, (String, String)> =
-                sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE user_id = ?")
-                    .bind(&user_id)
-                    .fetch_all(pool)
-                    .await
-                    .map_err(ApiError::Database)?
-                    .into_iter()
-                    .map(|e| (e.id, (e.name, e.body_part)))
-                    .collect();
+                sqlx::query_as::<_, crate::models::Exercise>(
+                    "SELECT * FROM exercises WHERE user_id = ?",
+                )
+                .bind(&user_id)
+                .fetch_all(pool)
+                .await
+                .map_err(crate::api::rest::ApiError::Database)?
+                .into_iter()
+                .map(|e| (e.id, (e.name, e.body_part)))
+                .collect();
 
             // 每个计划项的最近记录
             let mut items = Vec::with_capacity(plan_items.len());
             for item in &plan_items
             {
-                let last = sqlx::query_as::<_, Record>(
+                let last = sqlx::query_as::<_, crate::models::Record>(
                     "SELECT * FROM records WHERE plan_item_id = ?
                  ORDER BY record_date DESC, id DESC LIMIT 1",
                 )
                 .bind(&item.id)
                 .fetch_optional(pool)
                 .await
-                .map_err(ApiError::Database)?;
+                .map_err(crate::api::rest::ApiError::Database)?;
 
                 let (ex_name, body_part) = ex_index
                     .get(&item.exercise_id)
@@ -266,7 +258,7 @@ pub(crate) async fn today_view(pool: &SqlitePool, user_id: i64) -> Result<TodayO
 // ============================================================
 // 数字字段直接 f64/i64（JSON 类型安全，无页面层 String parse 的坑）。
 // completed 默认 false（不传就是未完成）。
-#[derive(Deserialize)]
+#[derive(serde::Deserialize)]
 pub struct RecordCreateReq
 {
     pub weight: f64,
@@ -288,7 +280,7 @@ pub struct RecordCreateReq
 // 【教学：RecordOut —— 记录 DTO】
 // ============================================================
 // 附动作名（JOIN exercises 或查动作索引）
-#[derive(Serialize)]
+#[derive(serde::Serialize)]
 pub struct RecordOut
 {
     pub id: i64,
@@ -326,30 +318,30 @@ pub struct RecordOut
 /// 4. 查最近记录 → match：Some → UPDATE；None → INSERT（record_date = 今天）
 /// 5. 返回保存后的记录 JSON（RecordOut）
 pub async fn upsert_record(
-    State(state): State<AppState>,
-    ApiAuthUser(user): ApiAuthUser,
-    Path((plan_id, item_id)): Path<(i64, i64)>,
-    Json(req): Json<RecordCreateReq>,
-) -> Result<Json<RecordOut>, ApiError>
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    crate::api::rest::auth::ApiAuthUser(user): crate::api::rest::auth::ApiAuthUser,
+    axum::extract::Path((plan_id, item_id)): axum::extract::Path<(i64, i64)>,
+    axum::Json(req): axum::Json<RecordCreateReq>,
+) -> Result<axum::Json<RecordOut>, crate::api::rest::ApiError>
 {
     let pool = state.pool.read().await.clone();
     // 【M9】协议无关逻辑抽到下方 record_upsert（gRPC 服务复用同一份 SQL）
-    Ok(Json(
+    Ok(axum::Json(
         record_upsert(&pool, user.id, plan_id, item_id, &req).await?,
     ))
 }
 
 /// 协议无关实现（REST handler 与 M9 gRPC 服务共用）
 pub(crate) async fn record_upsert(
-    pool: &SqlitePool,
+    pool: &sqlx::SqlitePool,
     user_id: i64,
     plan_id: i64,
     item_id: i64,
     req: &RecordCreateReq,
-) -> Result<RecordOut, ApiError>
+) -> Result<RecordOut, crate::api::rest::ApiError>
 {
     // 1. 计划归属：plans 无 user_id → JOIN phases 拿 user_id
-    let plan = sqlx::query_as::<_, Plan>(
+    let plan = sqlx::query_as::<_, crate::models::Plan>(
         "SELECT p.* FROM plans p
         INNER JOIN phases ph ON p.phase_id = ph.id
         WHERE p.id = ? AND ph.user_id = ?",
@@ -358,49 +350,54 @@ pub(crate) async fn record_upsert(
     .bind(&user_id)
     .fetch_optional(pool)
     .await
-    .map_err(ApiError::Database)?
-    .ok_or_else(|| ApiError::NotFound("计划不存在".to_string()))?;
+    .map_err(crate::api::rest::ApiError::Database)?
+    .ok_or_else(|| crate::api::rest::ApiError::NotFound("计划不存在".to_string()))?;
 
     // 2. 阶段未归档（归档阶段不可编辑）
-    let phase = sqlx::query_as::<_, Phase>("SELECT * FROM phases WHERE id = ? AND user_id = ?")
-        .bind(&plan.phase_id)
-        .bind(&user_id)
-        .fetch_optional(pool)
-        .await
-        .map_err(ApiError::Database)?
-        .ok_or_else(|| ApiError::NotFound("阶段不存在".to_string()))?;
+    let phase = sqlx::query_as::<_, crate::models::Phase>(
+        "SELECT * FROM phases WHERE id = ? AND user_id = ?",
+    )
+    .bind(&plan.phase_id)
+    .bind(&user_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(crate::api::rest::ApiError::Database)?
+    .ok_or_else(|| crate::api::rest::ApiError::NotFound("阶段不存在".to_string()))?;
     if phase.archived
     {
-        return Err(ApiError::Forbidden("归档阶段不可编辑".to_string()));
+        return Err(crate::api::rest::ApiError::Forbidden(
+            "归档阶段不可编辑".to_string(),
+        ));
     }
 
     // 3. 计划项属于该计划（双条件防越权）+ 拿 exercise_id
-    let plan_item =
-        sqlx::query_as::<_, PlanItem>("SELECT * FROM plan_items WHERE id = ? AND plan_id = ?")
-            .bind(&item_id)
-            .bind(&plan_id)
-            .fetch_optional(pool)
-            .await
-            .map_err(ApiError::Database)?
-            .ok_or_else(|| ApiError::NotFound("计划项不存在".to_string()))?;
+    let plan_item = sqlx::query_as::<_, crate::models::PlanItem>(
+        "SELECT * FROM plan_items WHERE id = ? AND plan_id = ?",
+    )
+    .bind(&item_id)
+    .bind(&plan_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(crate::api::rest::ApiError::Database)?
+    .ok_or_else(|| crate::api::rest::ApiError::NotFound("计划项不存在".to_string()))?;
 
     // 4. 负数校验（训练数据不可能是负数）
     if req.weight < 0.0 || req.sets < 0 || req.reps < 0 || req.rest < 0
     {
-        return Err(ApiError::Validation(
+        return Err(crate::api::rest::ApiError::Validation(
             "重量/组数/次数/休息不能为负数".to_string(),
         ));
     }
 
     // 5. 查该计划项最近记录：有 → UPDATE，无 → INSERT
-    let most_recent = sqlx::query_as::<_, Record>(
+    let most_recent = sqlx::query_as::<_, crate::models::Record>(
         "SELECT * FROM records WHERE plan_item_id = ?
-        ORDER BY record_date DESC, id DESC LIMIT 1",
+                 ORDER BY record_date DESC, id DESC LIMIT 1",
     )
     .bind(&item_id)
     .fetch_optional(pool)
     .await
-    .map_err(ApiError::Database)?;
+    .map_err(crate::api::rest::ApiError::Database)?;
 
     // 6. 计重方式（mode）：API 简化 —— 用动作库默认值，不落库回写
     let mode = sqlx::query_scalar::<_, String>(
@@ -410,13 +407,13 @@ pub(crate) async fn record_upsert(
     .bind(&user_id)
     .fetch_optional(pool)
     .await
-    .map_err(ApiError::Database)?
+    .map_err(crate::api::rest::ApiError::Database)?
     .unwrap_or_else(|| "bar".to_string());
 
     // 7. INSERT 或 UPDATE（当天已有记录 → 更新同一行）
-    let saved: Record = match most_recent
+    let saved: crate::models::Record = match most_recent
     {
-        Some(record) => sqlx::query_as::<_, Record>(
+        Some(record) => sqlx::query_as::<_, crate::models::Record>(
             "UPDATE records SET completed = ?, weight = ?, sets = ?, reps = ?, rest = ?,
                 feeling = ?, strategy = ?, key_points = ?
                 WHERE id = ?
@@ -433,14 +430,14 @@ pub(crate) async fn record_upsert(
         .bind(&record.id)
         .fetch_one(pool)
         .await
-        .map_err(ApiError::Database)?,
+        .map_err(crate::api::rest::ApiError::Database)?,
         None =>
         {
             let today_dt = sqlx::query_scalar::<_, String>("SELECT date('now', 'localtime')")
                 .fetch_one(pool)
                 .await
-                .map_err(ApiError::Database)?;
-            sqlx::query_as::<_, Record>(
+                .map_err(crate::api::rest::ApiError::Database)?;
+            sqlx::query_as::<_, crate::models::Record>(
                 "INSERT INTO records
                 (plan_item_id, phase_id, exercise_id, record_date, completed,
                 weight, sets, reps, rest, feeling, strategy, key_points, mode)
@@ -462,7 +459,7 @@ pub(crate) async fn record_upsert(
             .bind(&mode)
             .fetch_one(pool)
             .await
-            .map_err(ApiError::Database)?
+            .map_err(crate::api::rest::ApiError::Database)?
         },
     };
 
@@ -473,7 +470,11 @@ pub(crate) async fn record_upsert(
 // ============================================================
 // 【教学：Record → RecordOut（补动作名）】
 // ============================================================
-async fn record_out(pool: &SqlitePool, r: &Record, user_id: i64) -> Result<RecordOut, ApiError>
+async fn record_out(
+    pool: &sqlx::SqlitePool,
+    r: &crate::models::Record,
+    user_id: i64,
+) -> Result<RecordOut, crate::api::rest::ApiError>
 {
     let ex_name =
         sqlx::query_scalar::<_, String>("SELECT name FROM exercises WHERE id = ? AND user_id = ?")
@@ -481,7 +482,7 @@ async fn record_out(pool: &SqlitePool, r: &Record, user_id: i64) -> Result<Recor
             .bind(&user_id)
             .fetch_optional(pool)
             .await
-            .map_err(ApiError::Database)?
+            .map_err(crate::api::rest::ApiError::Database)?
             .unwrap_or_else(|| "未知动作".to_string());
 
     Ok(RecordOut {
@@ -508,27 +509,27 @@ async fn record_out(pool: &SqlitePool, r: &Record, user_id: i64) -> Result<Recor
 ///
 /// 【教学：日期格式校验】
 /// date 必填，必须 YYYY-MM-DD（校验同 stats::history_day）。
-#[derive(Deserialize)]
+#[derive(serde::Deserialize)]
 pub struct RecordListQuery
 {
     pub date: String,
 }
 
 pub async fn list_by_date(
-    State(state): State<AppState>,
-    ApiAuthUser(user): ApiAuthUser,
-    Query(query): Query<RecordListQuery>,
-) -> Result<Json<Vec<RecordOut>>, ApiError>
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    crate::api::rest::auth::ApiAuthUser(user): crate::api::rest::auth::ApiAuthUser,
+    axum::extract::Query(query): axum::extract::Query<RecordListQuery>,
+) -> Result<axum::Json<Vec<RecordOut>>, crate::api::rest::ApiError>
 {
     let pool = state.pool.read().await.clone();
 
     validate_date(&query.date)?;
 
-    // ⚠️ records 表没有 user_id 列！数据隔离走 JOIN exercises（M5 纪律）：
+    //  records 表没有 user_id 列！数据隔离走 JOIN exercises（M5 纪律）：
     //   SELECT r.* FROM records r
     //   INNER JOIN exercises e ON r.exercise_id = e.id
     //   WHERE e.user_id = ? AND r.record_date = ?
-    let records = sqlx::query_as::<_, Record>(
+    let records = sqlx::query_as::<_, crate::models::Record>(
         "SELECT r.* FROM records r
         INNER JOIN exercises e ON r.exercise_id = e.id
         WHERE e.user_id = ? AND r.record_date = ?
@@ -538,7 +539,7 @@ pub async fn list_by_date(
     .bind(&query.date)
     .fetch_all(&pool)
     .await
-    .map_err(ApiError::Database)?;
+    .map_err(crate::api::rest::ApiError::Database)?;
 
     let mut out = Vec::with_capacity(records.len());
     for r in &records
@@ -546,7 +547,7 @@ pub async fn list_by_date(
         out.push(record_out(&pool, r, user.id).await?);
     }
 
-    Ok(Json(out))
+    Ok(axum::Json(out))
 }
 
 // ============================================================
@@ -559,7 +560,7 @@ pub async fn list_by_date(
 /// 2. 合并新旧值（Option unwrap_or 旧值）
 /// 3. 负数校验
 /// 4. UPDATE ... RETURNING * → record_out
-#[derive(Deserialize)]
+#[derive(serde::Deserialize)]
 pub struct RecordUpdateReq
 {
     #[serde(default)]
@@ -581,35 +582,35 @@ pub struct RecordUpdateReq
 }
 
 pub async fn update_record(
-    State(state): State<AppState>,
-    ApiAuthUser(user): ApiAuthUser,
-    Path(id): Path<i64>,
-    Json(req): Json<RecordUpdateReq>,
-) -> Result<Json<RecordOut>, ApiError>
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    crate::api::rest::auth::ApiAuthUser(user): crate::api::rest::auth::ApiAuthUser,
+    axum::extract::Path(id): axum::extract::Path<i64>,
+    axum::Json(req): axum::Json<RecordUpdateReq>,
+) -> Result<axum::Json<RecordOut>, crate::api::rest::ApiError>
 {
     let pool = state.pool.read().await.clone();
     // 【M9】协议无关逻辑抽到下方 record_update（gRPC 服务复用同一份 SQL）
-    Ok(Json(record_update(&pool, user.id, id, &req).await?))
+    Ok(axum::Json(record_update(&pool, user.id, id, &req).await?))
 }
 
 /// 协议无关实现（REST handler 与 M9 gRPC 服务共用）
 pub(crate) async fn record_update(
-    pool: &SqlitePool,
+    pool: &sqlx::SqlitePool,
     user_id: i64,
     record_id: i64,
     req: &RecordUpdateReq,
-) -> Result<RecordOut, ApiError>
+) -> Result<RecordOut, crate::api::rest::ApiError>
 {
     // 归属 + 取旧值（records 无 user_id 列 → JOIN exercises 验证归属）
-    let old = sqlx::query_as::<_, Record>(
+    let old = sqlx::query_as::<_, crate::models::Record>(
         "SELECT r.* FROM records r\n        INNER JOIN exercises e ON r.exercise_id = e.id\n        WHERE r.id = ? AND e.user_id = ?",
     )
     .bind(&record_id)
     .bind(&user_id)
     .fetch_optional(pool)
     .await
-    .map_err(ApiError::Database)?
-    .ok_or_else(|| ApiError::NotFound("记录不存在".to_string()))?;
+    .map_err(crate::api::rest::ApiError::Database)?
+    .ok_or_else(|| crate::api::rest::ApiError::NotFound("记录不存在".to_string()))?;
 
     let weight = req.weight.unwrap_or(old.weight);
     let sets = req.sets.unwrap_or(old.sets);
@@ -622,16 +623,16 @@ pub(crate) async fn record_update(
 
     if weight < 0.0 || sets < 0 || reps < 0 || rest < 0
     {
-        return Err(ApiError::Validation(
+        return Err(crate::api::rest::ApiError::Validation(
             "重量/组数/次数/休息不能为负数".to_string(),
         ));
     }
 
-    let saved = sqlx::query_as::<_, Record>(
+    let saved = sqlx::query_as::<_, crate::models::Record>(
         "UPDATE records SET weight = ?, sets = ?, reps = ?, rest = ?,
         feeling = ?, strategy = ?, key_points = ?, completed = ?
-        WHERE id = ?
-        RETURNING *",
+                WHERE id = ?
+                RETURNING *",
     )
     .bind(&weight)
     .bind(&sets)
@@ -644,7 +645,7 @@ pub(crate) async fn record_update(
     .bind(&record_id)
     .fetch_one(pool)
     .await
-    .map_err(ApiError::Database)?;
+    .map_err(crate::api::rest::ApiError::Database)?;
 
     record_out(pool, &saved, user_id).await
 }
@@ -659,23 +660,23 @@ pub(crate) async fn record_update(
 /// 2. rows_affected() == 0 → NotFound
 /// 3. 返回 {"ok": true}
 pub async fn delete_record(
-    State(state): State<AppState>,
-    ApiAuthUser(user): ApiAuthUser,
-    Path(id): Path<i64>,
-) -> Result<Json<serde_json::Value>, ApiError>
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    crate::api::rest::auth::ApiAuthUser(user): crate::api::rest::auth::ApiAuthUser,
+    axum::extract::Path(id): axum::extract::Path<i64>,
+) -> Result<axum::Json<serde_json::Value>, crate::api::rest::ApiError>
 {
     let pool = state.pool.read().await.clone();
     // 【M9】协议无关逻辑抽到下方 record_delete（gRPC 服务复用同一份 SQL）
     record_delete(&pool, user.id, id).await?;
-    Ok(Json(serde_json::json!({ "ok": true })))
+    Ok(axum::Json(serde_json::json!({ "ok": true })))
 }
 
 /// 协议无关实现（REST handler 与 M9 gRPC 服务共用）
 pub(crate) async fn record_delete(
-    pool: &SqlitePool,
+    pool: &sqlx::SqlitePool,
     user_id: i64,
     record_id: i64,
-) -> Result<(), ApiError>
+) -> Result<(), crate::api::rest::ApiError>
 {
     // 数据隔离：先 JOIN exercises 验证归属，再删（records 无 user_id 列）
     let owned = sqlx::query_scalar::<_, i64>(
@@ -685,22 +686,26 @@ pub(crate) async fn record_delete(
     .bind(&user_id)
     .fetch_optional(pool)
     .await
-    .map_err(ApiError::Database)?;
+    .map_err(crate::api::rest::ApiError::Database)?;
 
     if owned.is_none()
     {
-        return Err(ApiError::NotFound("记录不存在".to_string()));
+        return Err(crate::api::rest::ApiError::NotFound(
+            "记录不存在".to_string(),
+        ));
     }
 
     let ret = sqlx::query("DELETE FROM records WHERE id = ?")
         .bind(&record_id)
         .execute(pool)
         .await
-        .map_err(ApiError::Database)?;
+        .map_err(crate::api::rest::ApiError::Database)?;
 
     if ret.rows_affected() == 0
     {
-        return Err(ApiError::NotFound("记录不存在".to_string()));
+        return Err(crate::api::rest::ApiError::NotFound(
+            "记录不存在".to_string(),
+        ));
     }
 
     Ok(())
@@ -711,21 +716,23 @@ pub(crate) async fn record_delete(
 // ============================================================
 // 同 plans.rs 的 validate_date：拆三段，每段 parse 数字。
 // 失败 → Validation（400）。
-fn validate_date(date: &str) -> Result<(), ApiError>
+fn validate_date(date: &str) -> Result<(), crate::api::rest::ApiError>
 {
     match date.split('-').collect::<Vec<&str>>().as_slice()
     {
         [yyyy, mm, dd] =>
         {
-            yyyy.parse::<i64>()
-                .map_err(|_| ApiError::Validation("年份必须是数字".to_string()))?;
-            mm.parse::<i64>()
-                .map_err(|_| ApiError::Validation("月份必须是数字".to_string()))?;
+            yyyy.parse::<i64>().map_err(|_| {
+                crate::api::rest::ApiError::Validation("年份必须是数字".to_string())
+            })?;
+            mm.parse::<i64>().map_err(|_| {
+                crate::api::rest::ApiError::Validation("月份必须是数字".to_string())
+            })?;
             dd.parse::<i64>()
-                .map_err(|_| ApiError::Validation("日必须是数字".to_string()))?;
+                .map_err(|_| crate::api::rest::ApiError::Validation("日必须是数字".to_string()))?;
             Ok(())
         },
-        _ => Err(ApiError::Validation(
+        _ => Err(crate::api::rest::ApiError::Validation(
             "日期格式必须是 YYYY-MM-DD".to_string(),
         )),
     }
@@ -740,19 +747,19 @@ pub struct RecordRow
 {
     /// records 表的整行（flatten：按列名解码到 Record）
     #[sqlx(flatten)]
-    pub record: Record,
+    pub record: crate::models::Record,
     pub exercise_name: String,
     pub body_part: String,
 }
 
 /// 协议无关实现（REST handler 与 M9 gRPC 服务共用）
 pub(crate) async fn records_range(
-    pool: &SqlitePool,
+    pool: &sqlx::SqlitePool,
     user_id: i64,
     from: Option<&str>,
     to: Option<&str>,
     exercise_id: Option<i64>,
-) -> Result<Vec<RecordRow>, ApiError>
+) -> Result<Vec<RecordRow>, crate::api::rest::ApiError>
 {
     // from/to 传了就必须是 YYYY-MM-DD（不传 = 该端不限）
     if let Some(d) = from
@@ -764,7 +771,7 @@ pub(crate) async fn records_range(
         validate_date(d)?;
     }
 
-    // ⚠️ records 表没有 user_id 列！数据隔离走 JOIN exercises（M5 纪律）。
+    //  records 表没有 user_id 列！数据隔离走 JOIN exercises（M5 纪律）。
     // 三个筛选条件都可选：用 "(? IS NULL OR 条件)" 一条静态 SQL 覆盖全部组合。
     let rows = sqlx::query_as::<_, RecordRow>(
         "SELECT r.*, e.name AS exercise_name, e.body_part AS body_part
@@ -785,7 +792,7 @@ pub(crate) async fn records_range(
     .bind(exercise_id)
     .fetch_all(pool)
     .await
-    .map_err(ApiError::Database)?;
+    .map_err(crate::api::rest::ApiError::Database)?;
 
     Ok(rows)
 }

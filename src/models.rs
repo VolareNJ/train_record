@@ -16,14 +16,13 @@
 // 这个 derive 让结构体可以直接从数据库查询结果转换：
 //   let user: User = sqlx::query_as("SELECT ...").fetch_one(&pool).await?;
 // sqlx 会自动按字段名匹配列。
-use sqlx::FromRow;
 
 // ============================================================
 // 用户表：对应 users
 // ============================================================
 /// 用户
 /// 【教学】每个字段注释对应数据库列的含义
-#[derive(Debug, Clone, FromRow)]
+#[derive(Debug, Clone, sqlx::FromRow)]
 pub struct User
 {
     pub id: i64,
@@ -42,7 +41,7 @@ pub struct User
 // 这是项目的核心概念！阶段 = 一段连续的训练时期。
 // ============================================================
 /// 训练阶段
-#[derive(Debug, Clone, FromRow)]
+#[derive(Debug, Clone, sqlx::FromRow)]
 pub struct Phase
 {
     pub id: i64,
@@ -60,7 +59,7 @@ pub struct Phase
 // 动作库：对应 exercises
 // ============================================================
 /// 动作（动作库中的一项）
-#[derive(Debug, Clone, FromRow)]
+#[derive(Debug, Clone, sqlx::FromRow)]
 pub struct Exercise
 {
     pub id: i64,
@@ -88,7 +87,7 @@ pub struct Exercise
 // 模板 = 一组有序动作，如"推日模板"包含卧推、推举、臂屈伸
 // ============================================================
 /// 训练模板（绑定阶段）
-#[derive(Debug, Clone, FromRow)]
+#[derive(Debug, Clone, sqlx::FromRow)]
 pub struct Template
 {
     pub id: i64,
@@ -98,7 +97,7 @@ pub struct Template
 }
 
 /// 模板项（模板里的一个动作）
-#[derive(Debug, Clone, FromRow)]
+#[derive(Debug, Clone, sqlx::FromRow)]
 pub struct TemplateItem
 {
     pub id: i64,
@@ -113,7 +112,7 @@ pub struct TemplateItem
 // 当日计划：对应 plans
 // ============================================================
 /// 当日计划（一次训练日）
-#[derive(Debug, Clone, FromRow)]
+#[derive(Debug, Clone, sqlx::FromRow)]
 pub struct Plan
 {
     pub id: i64,
@@ -124,7 +123,7 @@ pub struct Plan
 }
 
 /// 计划项（计划里的一个动作）
-#[derive(Debug, Clone, FromRow)]
+#[derive(Debug, Clone, sqlx::FromRow)]
 pub struct PlanItem
 {
     pub id: i64,
@@ -135,7 +134,7 @@ pub struct PlanItem
     pub plan_reps: Option<i64>,
     /// 计划重量（总重 kg，可空）
     pub plan_weight: Option<f64>,
-    // ⚠️【M6 修订：plan_mode/plan_bar_weight 已废弃】
+    // 【M6 修订：plan_mode/plan_bar_weight 已废弃】
     // 计重方式/杆重不再由计划项维护——统一引用 exercises 的
     // default_mode/bar_weight（单一事实来源）。
     // 数据库列仍在（迁移不回滚），但代码不再读写：
@@ -156,7 +155,7 @@ pub struct PlanItem
 // 分组显示，且组间顺序要一致。
 //
 // 方案评估（用户问题 4 + 后续"加一个修改静态排序的地方"）：
-//   ① 后端顺序注入（✅ 本方案）—— 顺序来自 AppConfig.body_part_order
+//   ① 后端顺序注入（ 本方案）—— 顺序来自 AppConfig.body_part_order
 //      （环境变量 BODY_PART_ORDER 逗号分隔，默认三分化：
 //      腿→背→胸→核心→手臂→肩），不迁移、三处共用同一函数、
 //      改部署环境变量即可调序（无需改代码）。
@@ -210,7 +209,7 @@ pub fn group_by_body_part(
 // 训练记录：对应 records
 // ============================================================
 /// 训练记录（动作级，一条 = 一次完成记录）
-#[derive(Debug, Clone, FromRow)]
+#[derive(Debug, Clone, sqlx::FromRow)]
 pub struct Record
 {
     pub id: i64,
@@ -232,6 +231,6 @@ pub struct Record
     /// 录入时模式
     pub mode: String,
     /// 是否已完成（0=未完成 1=已完成；M4 修订新增）
-    /// 今日页只有 completed = 1 才标"✅已完成"
+    /// 今日页只有 completed = 1 才标"已完成"
     pub completed: bool,
 }

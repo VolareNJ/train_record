@@ -17,7 +17,7 @@
 //   POST /api/v1/logout  登出 → 销毁 session
 //   GET  /api/v1/me      当前用户（API 认证自检）
 //
-// 📌 阶段要求：M8 你来实现本文件所有函数。
+//  阶段要求：M8 你来实现本文件所有函数。
 //   完整实现已备份在 docs/learning_path/M8_ref/，实现完成后对照检查。
 // ============================================================
 
@@ -29,14 +29,6 @@
 // 所以 API 输出用专门的 DTO 结构体 UserOut，只挑安全的字段。
 // 用 From<&User> 实现转换，serde 只序列化 UserOut（安全字段）。
 // ============================================================
-use axum::{
-    Json,
-    extract::State,
-    http::{HeaderMap, header::SET_COOKIE, request::Parts},
-};
-use serde::{Deserialize, Serialize};
-
-use crate::{AppState, api::ApiError, auth, handlers::auth::extract_token, models::User};
 
 // ============================================================
 // 【教学：ApiAuthUser —— API 版登录守卫】
@@ -53,25 +45,24 @@ use crate::{AppState, api::ApiError, auth, handlers::auth::extract_token, models
 //   ③ M8 文档明确"先复制，后抽取"，M9 iced 开始前再统一
 //
 // 【教学：extract_token 为什么从 handlers::auth 导入？】
-// extract_token 是"从 Cookie 头解析 session token"的纯函数，
-// 页面层和 API 层都要用。它原本是 handlers/auth.rs 的私有函数，
-// M8 把它改成 pub（只改可见性，逻辑不动）——单一事实来源。
-// ⚠️ 注意：extract_token / auth 不仅守卫用，logout 也用，
-//    所以 import 保持原样，不要删。
+// extract_token 是“从 Cookie 头解析 session token”的纯函数，
+// 页面层和 API 层都要用（全路径调用：crate::handlers::auth::extract_token）。
+// 它原本是 handlers/auth.rs 的私有函数，M8 把它改成 pub（只改可见性，逻辑不动）
+// —— 单一事实来源。
 // ============================================================
 /// API 已登录用户（M8 守卫提取器，Rejection = ApiError）
 ///
 /// 用法：handler 签名里写 `ApiAuthUser(user): ApiAuthUser`，
 /// 未登录请求会在调用 handler 前被拦截（401 JSON）。
-pub struct ApiAuthUser(pub User);
+pub struct ApiAuthUser(pub crate::models::User);
 
-impl axum::extract::FromRequestParts<AppState> for ApiAuthUser
+impl axum::extract::FromRequestParts<crate::AppState> for ApiAuthUser
 {
-    type Rejection = ApiError;
+    type Rejection = crate::api::rest::ApiError;
 
     async fn from_request_parts(
-        parts: &mut Parts,
-        state: &AppState,
+        parts: &mut axum::http::request::Parts,
+        state: &crate::AppState,
     ) -> Result<Self, Self::Rejection>
     {
         // 【实现步骤】
@@ -87,10 +78,11 @@ impl axum::extract::FromRequestParts<AppState> for ApiAuthUser
         //   AppError 不能直接 ? 转成 ApiError（没有 From 实现），
         //   需要 map_err 转成 ApiError::Unauthorized。
         let pool = state.pool.read().await.clone();
-        let token = extract_token(&parts.headers).ok_or(ApiError::Unauthorized)?;
-        let user = auth::get_user_by_session(&pool, &token)
+        let token = crate::handlers::auth::extract_token(&parts.headers)
+            .ok_or(crate::api::rest::ApiError::Unauthorized)?;
+        let user = crate::auth::get_user_by_session(&pool, &token)
             .await
-            .map_err(|_| ApiError::Unauthorized)?;
+            .map_err(|_| crate::api::rest::ApiError::Unauthorized)?;
 
         Ok(ApiAuthUser(user))
     }
@@ -103,7 +95,7 @@ impl axum::extract::FromRequestParts<AppState> for ApiAuthUser
 // API 层用 Json<LoginReq>（application/json）——程序客户端传 JSON。
 // serde 的 Deserialize 让结构体可以从 JSON body 自动填充：
 //   {"username": "admin", "password": "admin123"}
-#[derive(Deserialize)]
+#[derive(serde::Deserialize)]
 pub struct LoginReq
 {
     pub username: String,
@@ -115,7 +107,7 @@ pub struct LoginReq
 // ============================================================
 // 只暴露 id/username/is_admin/body_weight，绝不暴露 password_hash。
 // From<&User> 实现转换：let out = UserOut::from(&user);
-#[derive(Serialize)]
+#[derive(serde::Serialize)]
 pub struct UserOut
 {
     pub id: i64,
@@ -124,9 +116,9 @@ pub struct UserOut
     pub body_weight: Option<f64>,
 }
 
-impl From<&User> for UserOut
+impl From<&crate::models::User> for UserOut
 {
-    fn from(u: &User) -> Self
+    fn from(u: &crate::models::User) -> Self
     {
         Self {
             id: u.id,
@@ -178,51 +170,56 @@ impl From<&User> for UserOut
 ///   b. 实现 From<AppError> for ApiError（全局一次转换）
 /// M8 先用法 a（教学直观），出现多次重复后再抽 From 实现。
 pub async fn login(
-    State(state): State<AppState>,
-    Json(req): Json<LoginReq>,
-) -> Result<(HeaderMap, Json<serde_json::Value>), ApiError>
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    axum::Json(req): axum::Json<LoginReq>,
+) -> Result<(axum::http::HeaderMap, axum::Json<serde_json::Value>), crate::api::rest::ApiError>
 {
     let pool = state.pool.read().await.clone();
 
     // 1. 查用户（按用户名，用户表没有 user_id 概念）
-    let user_op = sqlx::query_as::<_, User>("SELECT * FROM users WHERE username = ?")
-        .bind(&req.username)
-        .fetch_optional(&pool)
-        .await
-        .map_err(ApiError::Database)?;
+    let user_op =
+        sqlx::query_as::<_, crate::models::User>("SELECT * FROM users WHERE username = ?")
+            .bind(&req.username)
+            .fetch_optional(&pool)
+            .await
+            .map_err(crate::api::rest::ApiError::Database)?;
 
-    let user = user_op.ok_or_else(|| ApiError::Validation("用户名不存在或密码错误".to_string()))?;
+    let user = user_op.ok_or_else(|| {
+        crate::api::rest::ApiError::Validation("用户名不存在或密码错误".to_string())
+    })?;
 
     // 2. 验证密码（逻辑层复用）
-    let is_correct = auth::verify_password(&req.password, &user.password_hash)
-        .map_err(|_| ApiError::Other("密码验证失败".to_string()))?;
+    let is_correct = crate::auth::verify_password(&req.password, &user.password_hash)
+        .map_err(|_| crate::api::rest::ApiError::Other("密码验证失败".to_string()))?;
     if !is_correct
     {
-        return Err(ApiError::Validation("用户名不存在或密码错误".to_string()));
+        return Err(crate::api::rest::ApiError::Validation(
+            "用户名不存在或密码错误".to_string(),
+        ));
     }
 
     // 3. 创建 session（逻辑层复用）
-    let token = auth::create_session(&pool, user.id)
+    let token = crate::auth::create_session(&pool, user.id)
         .await
-        .map_err(|_| ApiError::Other("创建会话失败".to_string()))?;
+        .map_err(|_| crate::api::rest::ApiError::Other("创建会话失败".to_string()))?;
 
     // 4. 拼 cookie + 响应头
     let cookie = format!(
         "session={}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000",
         token
     );
-    let mut headers = HeaderMap::new();
+    let mut headers = axum::http::HeaderMap::new();
     headers.insert(
-        SET_COOKIE,
+        axum::http::header::SET_COOKIE,
         cookie
             .parse()
-            .map_err(|_| ApiError::Other("头文件生成失败".to_string()))?,
+            .map_err(|_| crate::api::rest::ApiError::Other("头文件生成失败".to_string()))?,
     );
 
     // 5. 返回用户信息 + token（M8.md §2.4：token 给非浏览器客户端）
     Ok((
         headers,
-        Json(serde_json::json!({
+        axum::Json(serde_json::json!({
             "user": UserOut::from(&user),
             "token": token,
         })),
@@ -250,30 +247,30 @@ pub async fn login(
 /// 3. 清除 cookie：Set-Cookie: session=; Max-Age=0（同页面逻辑）
 /// 4. 返回 Json(json!({"ok": true}))
 pub async fn logout(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> Result<(HeaderMap, Json<serde_json::Value>), ApiError>
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    headers: axum::http::HeaderMap,
+) -> Result<(axum::http::HeaderMap, axum::Json<serde_json::Value>), crate::api::rest::ApiError>
 {
     let pool = state.pool.read().await.clone();
 
     // 有 token 才销毁（温柔跳过，见上方教学）
-    if let Some(token) = extract_token(&headers)
+    if let Some(token) = crate::handlers::auth::extract_token(&headers)
     {
-        auth::destroy_session(&pool, &token)
+        crate::auth::destroy_session(&pool, &token)
             .await
-            .map_err(|_| ApiError::Other("销毁会话失败".to_string()))?;
+            .map_err(|_| crate::api::rest::ApiError::Other("销毁会话失败".to_string()))?;
     }
 
     // 清除浏览器 cookie（Max-Age=0 立即过期）
-    let mut resp_headers = HeaderMap::new();
+    let mut resp_headers = axum::http::HeaderMap::new();
     resp_headers.insert(
-        SET_COOKIE,
+        axum::http::header::SET_COOKIE,
         "session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"
             .parse()
-            .map_err(|_| ApiError::Other("头文件生成失败".to_string()))?,
+            .map_err(|_| crate::api::rest::ApiError::Other("头文件生成失败".to_string()))?,
     );
 
-    Ok((resp_headers, Json(serde_json::json!({ "ok": true }))))
+    Ok((resp_headers, axum::Json(serde_json::json!({ "ok": true }))))
 }
 
 // ============================================================
@@ -291,9 +288,9 @@ pub async fn logout(
 /// 1. 签名：State + ApiAuthUser(user)
 /// 2. 返回 Json(UserOut::from(&user))
 pub async fn me(
-    State(_state): State<AppState>,
+    axum::extract::State(_state): axum::extract::State<crate::AppState>,
     ApiAuthUser(user): ApiAuthUser,
-) -> Result<Json<UserOut>, ApiError>
+) -> Result<axum::Json<UserOut>, crate::api::rest::ApiError>
 {
-    Ok(Json(UserOut::from(&user)))
+    Ok(axum::Json(UserOut::from(&user)))
 }

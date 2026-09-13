@@ -18,12 +18,9 @@
 // 用 Rust 的 enum + #[from] 自动转换实现。
 // ============================================================
 
-use axum::{
-    Json,
-    http::StatusCode,
-    response::{IntoResponse, Redirect, Response},
-};
-use serde_json::json;
+// 【项目约定（M9 起）：全路径，不用 use 做便利导入】（详见 AGENTS.md）
+// 类型/函数一律写全路径；trait 实现也直接限定（impl axum::response::IntoResponse
+// for AppError），所以本文件连一个 use 都不需要。
 
 /// 应用统一错误类型
 ///
@@ -58,10 +55,10 @@ pub enum AppError
 //   - handler 里 return Err(AppError::NotFound(...))
 //   - axum 就知道把错误转成 HTTP 响应返回给浏览器
 // ============================================================
-impl IntoResponse for AppError
+impl axum::response::IntoResponse for AppError
 {
     /// 把 AppError 转成 HTTP 响应
-    fn into_response(self) -> Response
+    fn into_response(self) -> axum::response::Response
     {
         // 根据错误类型决定 HTTP 状态码
         let (status, message) = match self
@@ -71,45 +68,48 @@ impl IntoResponse for AppError
                 // 数据库错误：服务器内部错误 500
                 // 【教学】tracing::error! 记录日志，方便排查
                 tracing::error!("数据库错误: {e}");
-                (StatusCode::INTERNAL_SERVER_ERROR, "数据库错误".to_string())
+                (
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    "数据库错误".to_string(),
+                )
             },
             AppError::Template(e) =>
             {
                 tracing::error!("模板渲染错误: {e}");
                 (
-                    StatusCode::INTERNAL_SERVER_ERROR,
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                     "页面渲染错误".to_string(),
                 )
             },
             AppError::Unauthorized =>
             {
                 // M7 第 2 步：未登录访问页面 → 302 跳转登录页（给"人"看）
-                // ⚠️ M8 的 REST API 会用自己的 ApiError 返回 401 JSON，
+                //  M8 的 REST API 会用自己的 ApiError 返回 401 JSON，
                 //    这里只管页面，全局跳转即可。
                 // Redirect 本身实现了 IntoResponse，直接 .into_response()
-                return Redirect::to("/login").into_response();
+                return axum::response::Redirect::to("/login").into_response();
             },
             AppError::NotFound(msg) =>
             {
                 // 404：找不到
-                (StatusCode::NOT_FOUND, msg)
+                (axum::http::StatusCode::NOT_FOUND, msg)
             },
             AppError::Validation(msg) =>
             {
                 // 422：参数不合法
-                (StatusCode::UNPROCESSABLE_ENTITY, msg)
+                (axum::http::StatusCode::UNPROCESSABLE_ENTITY, msg)
             },
             AppError::Forbidden(msg) =>
             {
                 // 403：拒绝
-                (StatusCode::FORBIDDEN, msg)
+                (axum::http::StatusCode::FORBIDDEN, msg)
             },
-            AppError::Other(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
+            AppError::Other(msg) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, msg),
         };
 
         // 返回 JSON 格式的错误信息
         // 【教学】json! 宏快速构造 JSON；Response::builder() 组装响应
-        let body = Json(json!({
+        let body = axum::Json(serde_json::json!({
             "error": message,
         }));
 

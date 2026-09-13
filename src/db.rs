@@ -16,13 +16,11 @@
 //   它是 Arc 内部共享的，可以 clone 一份传给多个 handler 使用。
 // ============================================================
 
-use sqlx::{
-    ConnectOptions, SqlitePool,
-    sqlite::{SqliteConnectOptions, SqlitePoolOptions},
-};
-use std::str::FromStr;
-
-use crate::config::AppConfig;
+// 【项目约定（M9 起）：全路径 + 最小 trait 引用】
+// 类型/函数一律写全路径（sqlx::SqlitePool、crate::config::AppConfig……）；
+// 唯一例外是 trait 方法调用：下面的 .log_statements() 是 ConnectOptions 的 trait 方法，
+// 必须把该 trait 引入作用域——按“最小引用”原则只导入这一个 trait：
+use sqlx::ConnectOptions;
 
 /// 初始化数据库连接池
 ///
@@ -38,11 +36,18 @@ use crate::config::AppConfig;
 ///   2. SqlitePoolOptions：配置连接池大小
 ///   3. .connect()：真正建立连接池
 ///   4. run_migrations()：确保表结构存在（幂等，已执行过的不重复执行）
-pub async fn init_pool(config: &AppConfig) -> Result<SqlitePool, sqlx::Error>
+pub async fn init_pool(config: &crate::config::AppConfig) -> Result<sqlx::SqlitePool, sqlx::Error>
 {
     // 【教学：Builder 模式】
-    // Rust 生态常用"链式调用"构造配置：每个方法返回自身，可连写
-    let connect_options = SqliteConnectOptions::from_str(&config.database_path)?
+    // Rust 生态常用“链式调用”构造配置：每个方法返回自身，可连写
+    //
+    // 【M9 约定小注解：为什么这里用 .parse() 而不是 from_str()？】
+    // `SqliteConnectOptions::from_str(...)` 是 std::str::FromStr 的 trait 方法，
+    // 按“最小引用”原则得额外 `use std::str::FromStr;`；
+    // 而 str 自带的 `.parse::<T>()` 不需要任何导入，语义完全相同（内部调的就是 FromStr）。
+    let connect_options = config
+        .database_path
+        .parse::<sqlx::sqlite::SqliteConnectOptions>()?
         // create_if_missing(true)：文件不存在就自动创建
         .create_if_missing(true)
         // 启用外键约束（我们表之间有 FOREIGN KEY 关联）
@@ -82,7 +87,7 @@ pub async fn init_pool(config: &AppConfig) -> Result<SqlitePool, sqlx::Error>
     // 请求来了从池里借一条，用完归还，所有请求共用这最多 5 条。
     // 为什么 5 条够用？SQLite 是单文件，同一时刻只有一个连接能写，
     // 开再多写操作也得排队，5 条绰绰有余。
-    let pool = SqlitePoolOptions::new()
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
         // 最大连接数。SQLite 单文件，并发写需要排队，5 个够用
         .max_connections(5)
         // 连接空闲超时
@@ -132,7 +137,7 @@ pub async fn init_pool(config: &AppConfig) -> Result<SqlitePool, sqlx::Error>
 ///   - 0001_init.sql：创建所有表
 ///
 /// 好处：数据库结构用 SQL 文件管理，团队协作/部署升级都清晰。
-async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error>
+async fn run_migrations(pool: &sqlx::SqlitePool) -> Result<(), sqlx::Error>
 {
     // migrate!() 是宏，括号里写相对 src/ 的路径
     sqlx::migrate!("./migrations")

@@ -21,13 +21,13 @@
 //   · 反向转换（请求）也对称：`PhaseCreateReq::from(&req)`
 //
 // 【教学：转换里能做什么、不能做什么？】
-//   ✅ 字段改名（REST 的 "1rm" → proto 的 one_rm）
-//   ✅ Option → Option（None 表示"不传"，proto 里就是字段缺省）
-//   ✅ 实时计算派生值（1RM 用 calc::epley_1rm 现算）
-//   ❌ 查数据库（转换是纯函数，async 不进来——要查库在 service 里查完再转）
-//   ❌ 业务校验（校验属于 rest 层的查询函数，转换不做"判断"）
+//    字段改名（REST 的 "1rm" → proto 的 one_rm）
+//    Option → Option（None 表示"不传"，proto 里就是字段缺省）
+//    实时计算派生值（1RM 用 calc::epley_1rm 现算）
+//    查数据库（转换是纯函数，async 不进来——要查库在 service 里查完再转）
+//    业务校验（校验属于 rest 层的查询函数，转换不做"判断"）
 //
-// ⚠️ 一个已知的"字段来源差异"（见 pb::Record 的 body_part 注释）：
+//  一个已知的"字段来源差异"（见 pb::Record 的 body_part 注释）：
 //   REST 的 RecordOut（写路径返回值）**不含部位**，而 proto 的 Record 有 body_part。
 //   M9 的选择：留空串 + 文档说明（最小改动），而不是改 M8 的响应形状。
 //   教学点：两个出口的 DTO 不一致时，有三种应对——
@@ -37,24 +37,17 @@
 //   GetDayRecords / StreamRecords（它们的部位来自 JOIN，一定有值）。
 // ============================================================
 
-use super::pb;
-use crate::{
-    api::rest::{exercises, phases, plans, records, stats},
-    calc::epley_1rm,
-    models::User,
-};
-
 // ============================================================
 // 一、认证：models::User → pb::User
 // ============================================================
 // 【教学：为什么从 models::User 转，而不是从 REST 的 UserOut 转？】
 // gRPC 的 Login 走的是"自己查用户 + 复用 auth::create_session"，
 // 没有经过 REST 的 login handler，所以源头是领域模型 User。
-// ⚠️ 安全纪律：只挑安全字段（id/username/is_admin/body_weight），
+//  安全纪律：只挑安全字段（id/username/is_admin/body_weight），
 //    **绝不**把 password_hash 带进 pb::User——它压根没这个字段（契约即防线）。
-impl From<&User> for pb::User
+impl From<&crate::models::User> for crate::api::grpc::pb::User
 {
-    fn from(u: &User) -> Self
+    fn from(u: &crate::models::User) -> Self
     {
         Self {
             id: u.id,
@@ -69,9 +62,9 @@ impl From<&User> for pb::User
 // 二、阶段：PhaseOut → pb::Phase
 // ============================================================
 // 字段一一对应（含派生字段 days，REST 已经算好了）。
-impl From<&phases::PhaseOut> for pb::Phase
+impl From<&crate::api::rest::phases::PhaseOut> for crate::api::grpc::pb::Phase
 {
-    fn from(p: &phases::PhaseOut) -> Self
+    fn from(p: &crate::api::rest::phases::PhaseOut) -> Self
     {
         Self {
             id: p.id,
@@ -85,7 +78,7 @@ impl From<&phases::PhaseOut> for pb::Phase
 }
 
 // ============================================================
-// 三、动作：ExerciseOut → pb::Exercise（★ 挖空练习）
+// 三、动作：ExerciseOut → pb::Exercise（ 挖空练习）
 // ============================================================
 // 【教学：这个转换的"教学价值"在哪？】
 // 它是"派生字段"的典型：best_1rm / last_record_date 都是 REST 层
@@ -97,11 +90,11 @@ impl From<&phases::PhaseOut> for pb::Phase
 // 1. Self { id: ex.id, name: ex.name.clone(), ... } —— 逐字段照抄
 // 2. 字符串字段要 .clone()（参数是 &ExerciseOut，不能拿走所有权）
 // 3. best_1rm / last_record_date 直接赋 ex.xxx.clone()（Option 对 Option）
-impl From<&exercises::ExerciseOut> for pb::Exercise
+impl From<&crate::api::rest::exercises::ExerciseOut> for crate::api::grpc::pb::Exercise
 {
-    // ⚠️ 挖空练习期间加 allow 消除 unused 警告，实现完成后可删
+    // 挖空练习期间加 allow 消除 unused 警告，实现完成后可删
     #[allow(unused)]
-    fn from(ex: &exercises::ExerciseOut) -> Self
+    fn from(ex: &crate::api::rest::exercises::ExerciseOut) -> Self
     {
         // 【实现步骤】见上方注释
         todo!("M9 练习：ExerciseOut → pb::Exercise 转换实现") // 【待实现】
@@ -111,9 +104,9 @@ impl From<&exercises::ExerciseOut> for pb::Exercise
 // ============================================================
 // 四、模板：TemplateOut → pb::Template
 // ============================================================
-impl From<&plans::TemplateItemOut> for pb::TemplateItem
+impl From<&crate::api::rest::plans::TemplateItemOut> for crate::api::grpc::pb::TemplateItem
 {
-    fn from(i: &plans::TemplateItemOut) -> Self
+    fn from(i: &crate::api::rest::plans::TemplateItemOut) -> Self
     {
         Self {
             id: i.id,
@@ -125,9 +118,9 @@ impl From<&plans::TemplateItemOut> for pb::TemplateItem
     }
 }
 
-impl From<&plans::TemplateOut> for pb::Template
+impl From<&crate::api::rest::plans::TemplateOut> for crate::api::grpc::pb::Template
 {
-    fn from(t: &plans::TemplateOut) -> Self
+    fn from(t: &crate::api::rest::plans::TemplateOut) -> Self
     {
         Self {
             id: t.id,
@@ -135,7 +128,11 @@ impl From<&plans::TemplateOut> for pb::Template
             name: t.name.clone(),
             // 【教学：一次迭代器适配器完成"嵌套 Vec 转换"】
             // iter() → map(From) → collect()：Vec<TemplateItemOut> → Vec<pb::TemplateItem>
-            items: t.items.iter().map(pb::TemplateItem::from).collect(),
+            items: t
+                .items
+                .iter()
+                .map(crate::api::grpc::pb::TemplateItem::from)
+                .collect(),
         }
     }
 }
@@ -143,9 +140,9 @@ impl From<&plans::TemplateOut> for pb::Template
 // ============================================================
 // 五、计划：PlanOut → pb::Plan
 // ============================================================
-impl From<&plans::PlanItemOut> for pb::PlanItem
+impl From<&crate::api::rest::plans::PlanItemOut> for crate::api::grpc::pb::PlanItem
 {
-    fn from(i: &plans::PlanItemOut) -> Self
+    fn from(i: &crate::api::rest::plans::PlanItemOut) -> Self
     {
         Self {
             id: i.id,
@@ -162,22 +159,26 @@ impl From<&plans::PlanItemOut> for pb::PlanItem
     }
 }
 
-impl From<&plans::PlanOut> for pb::Plan
+impl From<&crate::api::rest::plans::PlanOut> for crate::api::grpc::pb::Plan
 {
-    fn from(p: &plans::PlanOut) -> Self
+    fn from(p: &crate::api::rest::plans::PlanOut) -> Self
     {
         Self {
             id: p.id,
             phase_id: p.phase_id,
             date: p.date.clone(),
             note: p.note.clone(),
-            items: p.items.iter().map(pb::PlanItem::from).collect(),
+            items: p
+                .items
+                .iter()
+                .map(crate::api::grpc::pb::PlanItem::from)
+                .collect(),
         }
     }
 }
 
 // ============================================================
-// 六、今日卡片：TodayOut → pb::TodayView（★ 挖空练习）
+// 六、今日卡片：TodayOut → pb::TodayView（ 挖空练习）
 // ============================================================
 // 【教学：这是最"难"的一个转换，难在**三层嵌套 + 两个 Option**】
 //   TodayOut
@@ -202,9 +203,9 @@ impl From<&plans::PlanOut> for pb::Plan
 //      .map(From::from) 对 Some 里的引用做转换，None 原样传下去
 //      —— 这是 Rust 最常见的"可选嵌套转换"写法，务必练熟。
 // 4. 别忘 last_record 也是 Option，同理处理（提示：它在 TodayItemOut 里）。
-impl From<&records::TodayPhaseOut> for pb::PhaseBrief
+impl From<&crate::api::rest::records::TodayPhaseOut> for crate::api::grpc::pb::PhaseBrief
 {
-    fn from(p: &records::TodayPhaseOut) -> Self
+    fn from(p: &crate::api::rest::records::TodayPhaseOut) -> Self
     {
         Self {
             id: p.id,
@@ -214,9 +215,9 @@ impl From<&records::TodayPhaseOut> for pb::PhaseBrief
     }
 }
 
-impl From<&records::LastRecordOut> for pb::LastRecord
+impl From<&crate::api::rest::records::LastRecordOut> for crate::api::grpc::pb::LastRecord
 {
-    fn from(r: &records::LastRecordOut) -> Self
+    fn from(r: &crate::api::rest::records::LastRecordOut) -> Self
     {
         Self {
             id: r.id,
@@ -230,9 +231,9 @@ impl From<&records::LastRecordOut> for pb::LastRecord
     }
 }
 
-impl From<&records::TodayItemOut> for pb::TodayItem
+impl From<&crate::api::rest::records::TodayItemOut> for crate::api::grpc::pb::TodayItem
 {
-    fn from(i: &records::TodayItemOut) -> Self
+    fn from(i: &crate::api::rest::records::TodayItemOut) -> Self
     {
         Self {
             id: i.id,
@@ -244,28 +245,35 @@ impl From<&records::TodayItemOut> for pb::TodayItem
             plan_weight: i.plan_weight,
             plan_rest: i.plan_rest,
             plan_key_points: i.plan_key_points.clone(),
-            last_record: i.last_record.as_ref().map(pb::LastRecord::from),
+            last_record: i
+                .last_record
+                .as_ref()
+                .map(crate::api::grpc::pb::LastRecord::from),
         }
     }
 }
 
-impl From<&records::TodayPlanOut> for pb::TodayPlan
+impl From<&crate::api::rest::records::TodayPlanOut> for crate::api::grpc::pb::TodayPlan
 {
-    fn from(p: &records::TodayPlanOut) -> Self
+    fn from(p: &crate::api::rest::records::TodayPlanOut) -> Self
     {
         Self {
             id: p.id,
             note: p.note.clone(),
-            items: p.items.iter().map(pb::TodayItem::from).collect(),
+            items: p
+                .items
+                .iter()
+                .map(crate::api::grpc::pb::TodayItem::from)
+                .collect(),
         }
     }
 }
 
-impl From<&records::TodayOut> for pb::TodayView
+impl From<&crate::api::rest::records::TodayOut> for crate::api::grpc::pb::TodayView
 {
-    // ⚠️ 挖空练习期间加 allow 消除 unused 警告，实现完成后可删
+    // 挖空练习期间加 allow 消除 unused 警告，实现完成后可删
     #[allow(unused)]
-    fn from(v: &records::TodayOut) -> Self
+    fn from(v: &crate::api::rest::records::TodayOut) -> Self
     {
         // 【实现步骤】见本节上方注释（三层嵌套 + 两个 Option）
         todo!("M9 练习：TodayOut → pb::TodayView 转换实现") // 【待实现】
@@ -279,15 +287,15 @@ impl From<&records::TodayOut> for pb::TodayView
 //   来源 A：RecordOut（upsert/update 的返回值）—— 没有部位
 //   来源 B：RecordRow（range/day 查询：记录 + 动作名 + 部位）—— 字段最全
 // 转换里 body_part 因此不同（空串 vs 真实值），已在 proto 注释里写明。
-impl From<&records::RecordOut> for pb::Record
+impl From<&crate::api::rest::records::RecordOut> for crate::api::grpc::pb::Record
 {
-    fn from(r: &records::RecordOut) -> Self
+    fn from(r: &crate::api::rest::records::RecordOut) -> Self
     {
         Self {
             id: r.id,
             exercise_id: r.exercise_id,
             exercise_name: r.exercise_name.clone(),
-            // ⚠️ REST 的 RecordOut 不含部位 → 留空（见文件头"字段来源差异"）
+            //  REST 的 RecordOut 不含部位 → 留空（见文件头"字段来源差异"）
             body_part: String::new(),
             record_date: r.record_date.clone(),
             mode: r.mode.clone(),
@@ -300,7 +308,7 @@ impl From<&records::RecordOut> for pb::Record
             key_points: r.key_points.clone(),
             // 【教学：派生值现算】1RM 不落库（存了就会与原始数据漂移），
             // 转发时用 calc.rs 的纯函数算一次，成本和读字段差不多。
-            one_rm: epley_1rm(r.weight, r.reps),
+            one_rm: crate::calc::epley_1rm(r.weight, r.reps),
             completed: r.completed,
         }
     }
@@ -313,10 +321,12 @@ impl From<&records::RecordOut> for pb::Record
 //     pb::Record::from(&row)      ← 读代码的人要停下来看 row 是什么类型
 //     convert::record_from_row(&row)   ← 一眼知道来源
 // （两者都能用；本项目在“多来源转换”处统一用函数。）
-pub(crate) fn record_from_row(row: &records::RecordRow) -> pb::Record
+pub(crate) fn record_from_row(
+    row: &crate::api::rest::records::RecordRow,
+) -> crate::api::grpc::pb::Record
 {
     let r = &row.record;
-    pb::Record {
+    crate::api::grpc::pb::Record {
         id: r.id,
         exercise_id: r.exercise_id,
         exercise_name: row.exercise_name.clone(),
@@ -330,7 +340,7 @@ pub(crate) fn record_from_row(row: &records::RecordRow) -> pb::Record
         feeling: r.feeling.clone(),
         strategy: r.strategy.clone(),
         key_points: r.key_points.clone(),
-        one_rm: epley_1rm(r.weight, r.reps),
+        one_rm: crate::calc::epley_1rm(r.weight, r.reps),
         completed: r.completed,
     }
 }
@@ -338,9 +348,9 @@ pub(crate) fn record_from_row(row: &records::RecordRow) -> pb::Record
 // ============================================================
 // 八、统计：日历 + 动作序列点
 // ============================================================
-impl From<&stats::CalendarOut> for pb::CalendarView
+impl From<&crate::api::rest::stats::CalendarOut> for crate::api::grpc::pb::CalendarView
 {
-    fn from(c: &stats::CalendarOut) -> Self
+    fn from(c: &crate::api::rest::stats::CalendarOut) -> Self
     {
         Self {
             year: c.year.clone(),
@@ -355,15 +365,15 @@ impl From<&stats::CalendarOut> for pb::CalendarView
 /// 而 `From`/`Into` 是"一对一"的转换。这种情况用普通函数最清楚。
 /// （替代方案：把 exercise_id 塞进一个元组再 From<(i64, &ExerciseRecordOut)>——
 ///   但元组可读性差，"专门的函数 + 好名字"更好。）
-/// ⚠️ 挖空期间：只有待实现的 stream_exercise_series 会调它，
+/// 挖空期间：只有待实现的 stream_exercise_series 会调它，
 ///    所以现在加 allow 消除 dead_code 警告；实现后删掉这行 allow。
 #[allow(unused)]
 pub(crate) fn series_point(
     exercise_id: i64,
-    r: &stats::ExerciseRecordOut,
-) -> pb::ExerciseSeriesPoint
+    r: &crate::api::rest::stats::ExerciseRecordOut,
+) -> crate::api::grpc::pb::ExerciseSeriesPoint
 {
-    pb::ExerciseSeriesPoint {
+    crate::api::grpc::pb::ExerciseSeriesPoint {
         exercise_id,
         date: r.date.clone(),
         weight: r.weight,
@@ -382,9 +392,9 @@ pub(crate) fn series_point(
 // 于是这里再做一次"协议 → 内部输入"的翻译。
 // 好处：REST 层一行不改就同时服务两个出口；代价：多一层结构体。
 // （这正是"两个出口共用一层内部输入类型"的设计——比各自写一套 SQL 便宜得多。）
-impl From<&pb::CreatePhaseRequest> for phases::PhaseCreateReq
+impl From<&crate::api::grpc::pb::CreatePhaseRequest> for crate::api::rest::phases::PhaseCreateReq
 {
-    fn from(req: &pb::CreatePhaseRequest) -> Self
+    fn from(req: &crate::api::grpc::pb::CreatePhaseRequest) -> Self
     {
         Self {
             name: req.name.clone(),
@@ -394,9 +404,9 @@ impl From<&pb::CreatePhaseRequest> for phases::PhaseCreateReq
     }
 }
 
-impl From<&pb::UpdatePhaseRequest> for phases::PhaseUpdateReq
+impl From<&crate::api::grpc::pb::UpdatePhaseRequest> for crate::api::rest::phases::PhaseUpdateReq
 {
-    fn from(req: &pb::UpdatePhaseRequest) -> Self
+    fn from(req: &crate::api::grpc::pb::UpdatePhaseRequest) -> Self
     {
         Self {
             name: req.name.clone(),
@@ -411,9 +421,10 @@ impl From<&pb::UpdatePhaseRequest> for phases::PhaseUpdateReq
 // gRPC 的 optional 字段不传也是 None，于是**转换层要复用同一套默认值**——
 // 直接调用 rest::exercises 里那几个 pub(crate) default_* 函数，
 // 而不是在这里重写一遍字面量（重写 = 两个出口的默认值以后会漂移）。
-impl From<&pb::CreateExerciseRequest> for exercises::ExerciseCreateReq
+impl From<&crate::api::grpc::pb::CreateExerciseRequest>
+    for crate::api::rest::exercises::ExerciseCreateReq
 {
-    fn from(req: &pb::CreateExerciseRequest) -> Self
+    fn from(req: &crate::api::grpc::pb::CreateExerciseRequest) -> Self
     {
         Self {
             name: req.name.clone(),
@@ -421,22 +432,29 @@ impl From<&pb::CreateExerciseRequest> for exercises::ExerciseCreateReq
             default_mode: req
                 .default_mode
                 .clone()
-                .unwrap_or_else(exercises::default_mode),
-            bar_weight: req.bar_weight.unwrap_or_else(exercises::default_bar_weight),
+                .unwrap_or_else(crate::api::rest::exercises::default_mode),
+            bar_weight: req
+                .bar_weight
+                .unwrap_or_else(crate::api::rest::exercises::default_bar_weight),
             default_unit: req
                 .default_unit
                 .clone()
-                .unwrap_or_else(exercises::default_unit),
-            default_sets: req.default_sets.unwrap_or_else(exercises::default_sets),
-            default_reps: req.default_reps.unwrap_or_else(exercises::default_reps),
+                .unwrap_or_else(crate::api::rest::exercises::default_unit),
+            default_sets: req
+                .default_sets
+                .unwrap_or_else(crate::api::rest::exercises::default_sets),
+            default_reps: req
+                .default_reps
+                .unwrap_or_else(crate::api::rest::exercises::default_reps),
             key_points: req.key_points.clone().unwrap_or_default(),
         }
     }
 }
 
-impl From<&pb::UpdateExerciseRequest> for exercises::ExerciseUpdateReq
+impl From<&crate::api::grpc::pb::UpdateExerciseRequest>
+    for crate::api::rest::exercises::ExerciseUpdateReq
 {
-    fn from(req: &pb::UpdateExerciseRequest) -> Self
+    fn from(req: &crate::api::grpc::pb::UpdateExerciseRequest) -> Self
     {
         Self {
             name: req.name.clone(),
@@ -451,9 +469,9 @@ impl From<&pb::UpdateExerciseRequest> for exercises::ExerciseUpdateReq
     }
 }
 
-impl From<&pb::TemplateItemInput> for plans::TemplateItemReq
+impl From<&crate::api::grpc::pb::TemplateItemInput> for crate::api::rest::plans::TemplateItemReq
 {
-    fn from(item: &pb::TemplateItemInput) -> Self
+    fn from(item: &crate::api::grpc::pb::TemplateItemInput) -> Self
     {
         Self {
             exercise_id: item.exercise_id,
@@ -461,31 +479,39 @@ impl From<&pb::TemplateItemInput> for plans::TemplateItemReq
     }
 }
 
-impl From<&pb::CreateTemplateRequest> for plans::TemplateReq
+impl From<&crate::api::grpc::pb::CreateTemplateRequest> for crate::api::rest::plans::TemplateReq
 {
-    fn from(req: &pb::CreateTemplateRequest) -> Self
+    fn from(req: &crate::api::grpc::pb::CreateTemplateRequest) -> Self
     {
         Self {
             name: req.name.clone(),
-            items: req.items.iter().map(plans::TemplateItemReq::from).collect(),
+            items: req
+                .items
+                .iter()
+                .map(crate::api::rest::plans::TemplateItemReq::from)
+                .collect(),
         }
     }
 }
 
-impl From<&pb::UpdateTemplateRequest> for plans::TemplateReq
+impl From<&crate::api::grpc::pb::UpdateTemplateRequest> for crate::api::rest::plans::TemplateReq
 {
-    fn from(req: &pb::UpdateTemplateRequest) -> Self
+    fn from(req: &crate::api::grpc::pb::UpdateTemplateRequest) -> Self
     {
         Self {
             name: req.name.clone(),
-            items: req.items.iter().map(plans::TemplateItemReq::from).collect(),
+            items: req
+                .items
+                .iter()
+                .map(crate::api::rest::plans::TemplateItemReq::from)
+                .collect(),
         }
     }
 }
 
-impl From<&pb::PlanItemInput> for plans::PlanItemReq
+impl From<&crate::api::grpc::pb::PlanItemInput> for crate::api::rest::plans::PlanItemReq
 {
-    fn from(item: &pb::PlanItemInput) -> Self
+    fn from(item: &crate::api::grpc::pb::PlanItemInput) -> Self
     {
         Self {
             exercise_id: item.exercise_id,
@@ -499,33 +525,41 @@ impl From<&pb::PlanItemInput> for plans::PlanItemReq
     }
 }
 
-impl From<&pb::CreatePlanRequest> for plans::PlanReq
+impl From<&crate::api::grpc::pb::CreatePlanRequest> for crate::api::rest::plans::PlanReq
 {
-    fn from(req: &pb::CreatePlanRequest) -> Self
+    fn from(req: &crate::api::grpc::pb::CreatePlanRequest) -> Self
     {
         Self {
             date: req.date.clone(),
             note: req.note.clone(),
-            items: req.items.iter().map(plans::PlanItemReq::from).collect(),
+            items: req
+                .items
+                .iter()
+                .map(crate::api::rest::plans::PlanItemReq::from)
+                .collect(),
         }
     }
 }
 
-impl From<&pb::UpdatePlanRequest> for plans::PlanReq
+impl From<&crate::api::grpc::pb::UpdatePlanRequest> for crate::api::rest::plans::PlanReq
 {
-    fn from(req: &pb::UpdatePlanRequest) -> Self
+    fn from(req: &crate::api::grpc::pb::UpdatePlanRequest) -> Self
     {
         Self {
             date: req.date.clone(),
             note: req.note.clone(),
-            items: req.items.iter().map(plans::PlanItemReq::from).collect(),
+            items: req
+                .items
+                .iter()
+                .map(crate::api::rest::plans::PlanItemReq::from)
+                .collect(),
         }
     }
 }
 
-impl From<&pb::UpsertRecordRequest> for records::RecordCreateReq
+impl From<&crate::api::grpc::pb::UpsertRecordRequest> for crate::api::rest::records::RecordCreateReq
 {
-    fn from(req: &pb::UpsertRecordRequest) -> Self
+    fn from(req: &crate::api::grpc::pb::UpsertRecordRequest) -> Self
     {
         Self {
             weight: req.weight,
@@ -540,9 +574,9 @@ impl From<&pb::UpsertRecordRequest> for records::RecordCreateReq
     }
 }
 
-impl From<&pb::UpdateRecordRequest> for records::RecordUpdateReq
+impl From<&crate::api::grpc::pb::UpdateRecordRequest> for crate::api::rest::records::RecordUpdateReq
 {
-    fn from(req: &pb::UpdateRecordRequest) -> Self
+    fn from(req: &crate::api::grpc::pb::UpdateRecordRequest) -> Self
     {
         Self {
             weight: req.weight,

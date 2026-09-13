@@ -6,7 +6,7 @@
 //          未命中走网络，成功后把响应存进缓存
 //          网络失败（离线）时：导航请求回退到预缓存的离线页
 //
-// ⚠️ M6 实际验证发现的两个坑：
+// M6 实际验证发现的两个坑：
 //   1. 注册必须显式 { scope: '/' }，否则 SW 只管 /static/ 管不到页面导航
 //   2. 光有 fetch 缓存不够——首次注册的页面还没被 SW 控制，
 //      导航请求从未经过 SW 就进不了缓存；必须 install 时 addAll 预缓存
@@ -31,7 +31,7 @@ self.addEventListener('activate', (e) => {
             Promise.all(
                 keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))
             )
-        )
+            )
     );
     self.clients.claim();
 });
@@ -61,6 +61,6 @@ self.addEventListener('fetch', (e) => {
                     }
                     return Response.error();
                 })
-        )
+            )
     );
 });

@@ -9,15 +9,15 @@
 // 三个 handler 对应三张页面（层层下钻）：
 //   GET /history                → 历史首页（日历 + 训练日列表）
 //   GET /history/{date}         → 某天全部记录
-//   GET /exercises/{id}/stats   → 某动作全部历史 + 重量/1RM 折线图 ★ 重点
+//   GET /exercises/{id}/stats   → 某动作全部历史 + 重量/1RM 折线图  重点
 //
 // 下钻关系：
 //   历史首页点某天 → 当天详情点某动作 → 动作详情（趋势图）
 //
-// 📌 阶段要求：M5 你来实现本文件所有函数。
+//  阶段要求：M5 你来实现本文件所有函数。
 //   实现完成后对照检查（完整实现备份在 docs/learning_path/M5_ref/）。
 //
-// ⚠️ 接线提醒（本文件写完后）：
+//  接线提醒（本文件写完后）：
 //   1. src/handlers/mod.rs 加一行：pub mod stats;
 //   2. src/main.rs 注册三条路由（见 M5.md 第 2~4 步）
 //   3. src/main.rs 的 home 加历史入口链接（M5.md 第 5 步）
@@ -31,23 +31,6 @@
 //   - 新增 Path<String>（日期是字符串 'YYYY-MM-DD'，不是 i64）
 //   - HashMap：动作 id → 名字索引（M3/M4 同款模式）
 //   - calc::{epley_1rm, wathan_mrm}：M5 第 1 步写的纯函数，这里用上
-use std::collections::HashMap;
-
-use axum::{
-    extract::{Path, Query, State},
-    response::Html,
-};
-use serde::Deserialize;
-use serde_json::json;
-use sqlx::SqlitePool;
-
-use crate::{
-    AppState,
-    calc::{epley_1rm, wathan_mrm},
-    error::AppError,
-    handlers::auth::AuthUser,
-    models::{Exercise, Record, group_by_body_part},
-};
 
 // ============================================================
 // 【教学：M5 核心认知 —— "记录"的两种查询口径】
@@ -60,7 +43,7 @@ use crate::{
 // 为什么？历史回顾不关心"记录来自哪个计划"（计划可能已删除），
 // 只关心"事实"：哪天练了什么、表现如何。
 // （还记得 M4_bugfix_notes §11 吗？plan_item_id 可能为 NULL，
-//  但 M5 的查询不依赖它，所以孤儿记录也能正常统计 ✅）
+//  但 M5 的查询不依赖它，所以孤儿记录也能正常统计 ）
 
 // ============================================================
 // 第一部分：历史首页（GET /history）
@@ -80,10 +63,10 @@ use crate::{
 /// 6. 按动作查看：checkbox 控制显隐（默认收起）+ 部位筛选
 /// 7. 空态：一条记录都没有 → 引导去今日页
 pub async fn history(
-    State(state): State<AppState>,
-    AuthUser(user): AuthUser,
-    Query(query): Query<CalQuery>,
-) -> Result<Html<String>, AppError>
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    crate::handlers::auth::AuthUser(user): crate::handlers::auth::AuthUser,
+    axum::extract::Query(query): axum::extract::Query<CalQuery>,
+) -> Result<axum::response::Html<String>, crate::error::AppError>
 {
     let pool = state.pool.read().await.clone();
 
@@ -95,12 +78,12 @@ pub async fn history(
     .bind(&user.id)
     .fetch_all(&pool)
     .await
-    .map_err(AppError::Database)?;
+    .map_err(crate::error::AppError::Database)?;
 
     // 空态：一条记录都没有 → 引导去今日页
     if non_empty_train_dts.is_empty()
     {
-        return Ok(Html(
+        return Ok(axum::response::Html(
             format!(
                 r#"{head}
             <h2>历史回顾</h2>
@@ -120,7 +103,7 @@ pub async fn history(
         sqlx::query_scalar::<_, String>("SELECT strftime('%Y-%m', date('now','localtime'))")
             .fetch_one(&pool)
             .await
-            .map_err(AppError::Database)?;
+            .map_err(crate::error::AppError::Database)?;
     let target_year = query
         .year
         .clone()
@@ -132,11 +115,12 @@ pub async fn history(
     let target_ym = format!("{target_year}-{target_month}");
 
     // 【M5 修订：按动作查看 —— 全部动作（id + 名字 + 部位）】
-    let all_exercises = sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE user_id = ?")
-        .bind(&user.id)
-        .fetch_all(&pool)
-        .await
-        .map_err(AppError::Database)?;
+    let all_exercises =
+        sqlx::query_as::<_, crate::models::Exercise>("SELECT * FROM exercises WHERE user_id = ?")
+            .bind(&user.id)
+            .fetch_all(&pool)
+            .await
+            .map_err(crate::error::AppError::Database)?;
     // 部位下拉选项（去重 + 排序，"全部"用空串）
     let mut part_list: Vec<String> = all_exercises
         .iter()
@@ -159,7 +143,7 @@ pub async fn history(
                 part = ex.body_part,
                 id = ex.id,
                 name = ex.name,
-            )
+    )
         })
         .collect::<Vec<String>>()
         .join("\n");
@@ -204,7 +188,7 @@ pub async fn history(
     .bind(format!("{target_ym}-01"))
     .fetch_one(&pool)
     .await
-    .map_err(AppError::Database)?;
+    .map_err(crate::error::AppError::Database)?;
 
     // 【bugfix：日历对齐 —— 1 号是星期几？】
     // 旧版从 day=1 直接渲染、每 7 格换行 → 1 号永远在"一"列，
@@ -216,7 +200,7 @@ pub async fn history(
         .bind(format!("{target_ym}-01"))
         .fetch_one(&pool)
         .await
-        .map_err(AppError::Database)?;
+        .map_err(crate::error::AppError::Database)?;
     let lead_offset = (first_wday + 6) % 7;
     // 1 号前面的空白格（上月的占位，不链接）
     let lead_cells = std::iter::repeat_n(r#"<td></td>"#, lead_offset as usize).collect::<String>();
@@ -232,33 +216,33 @@ pub async fn history(
             let date_str = format!("{target_ym}-{day:02}");
             let is_train_day = non_empty_train_dts.iter().any(|dt| dt == &date_str);
             let cell = if is_train_day
-            {
-                format!(
+{
+            format!(
                     r#"<td style="background-color:#b7e4b0"><a href="/history/{date_str}">{day}</a></td>"#
-                )
-            }
+    )
+    }
             else
-            {
+{
                 format!(r#"<td style="background-color:#dddddd">{day}</td>"#)
-            };
+};
             // 每 7 格换行；最后一天恰好整行时不多插空行
             if (day + lead_offset) % 7 == 0 && day != days_in_month
-            {
+{
                 format!("{cell}</tr><tr>")
-            }
+    }
             else
-            {
+{
                 cell
-            }
+    }
         })
         .collect::<String>();
 
     // 【M5 修订：按动作查看 —— 直接展示（部位下拉筛选）】
     //   原 checkbox 勾选是在"有训练日列表"前提下避免页面过长；
     //   训练日列表已移除，页面只剩日历 + 动作列表，直接展示即可。
-    Ok(Html(format!(
+    Ok(axum::response::Html(format!(
         r#"{head}
-        <h2>历史回顾</h2>
+            <h2>历史回顾</h2>
         <p>年份：
         <select id="cal-year-filter" onchange="changeCalMonth()">
             {year_options}
@@ -295,7 +279,7 @@ pub async fn history(
             document.querySelectorAll('#ex-list-rows .ex-row').forEach(function(row){
                 row.style.display = (part === '' || row.getAttribute('data-part') === part) ? '' : 'none';
             });
-        }
+    }
         function changeCalMonth(){
             var y = document.getElementById('cal-year-filter').value;
             var m = document.getElementById('cal-month-filter').value;
@@ -318,7 +302,7 @@ pub async fn history(
 /// 1. 签名：State + AuthUser + Path(date): Path<String>
 /// 2. 校验日期格式（简单检查：长度 10、第 5/8 位是 '-'）
 /// 3. 查该天全部记录：
-///    ⚠️ records 表没有 user_id 列！数据隔离要走 JOIN：
+///     records 表没有 user_id 列！数据隔离要走 JOIN：
 ///    SELECT r.* FROM records r
 ///    INNER JOIN exercises e ON r.exercise_id = e.id
 ///    WHERE e.user_id = ? AND r.record_date = ?
@@ -335,10 +319,10 @@ pub async fn history(
 ///    （无效记录 weight/reps <= 0 时公式返回 0，页面显示 "-"）
 /// 6. 顶部返回历史首页链接；该天无记录 → 空态"这一天没有训练记录"
 pub async fn history_day(
-    State(state): State<AppState>,
-    AuthUser(user): AuthUser,
-    Path(date): Path<String>,
-) -> Result<Html<String>, AppError>
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    crate::handlers::auth::AuthUser(user): crate::handlers::auth::AuthUser,
+    axum::extract::Path(date): axum::extract::Path<String>,
+) -> Result<axum::response::Html<String>, crate::error::AppError>
 {
     let pool = state.pool.read().await.clone();
 
@@ -347,15 +331,15 @@ pub async fn history_day(
         [yyyy, mm, dd] =>
         {
             yyyy.parse::<i64>()
-                .map_err(|_| AppError::Validation("年份必须是数字".to_string()))?;
+                .map_err(|_| crate::error::AppError::Validation("年份必须是数字".to_string()))?;
             mm.parse::<i64>()
-                .map_err(|_| AppError::Validation("月份必须是数字".to_string()))?;
+                .map_err(|_| crate::error::AppError::Validation("月份必须是数字".to_string()))?;
             dd.parse::<i64>()
-                .map_err(|_| AppError::Validation("日必须是数字".to_string()))?;
+                .map_err(|_| crate::error::AppError::Validation("日必须是数字".to_string()))?;
         },
         _ =>
         {
-            return Err(AppError::Validation(
+            return Err(crate::error::AppError::Validation(
                 "日期格式必须是 YYYY-MM-DD".to_string(),
             ));
         },
@@ -401,16 +385,17 @@ pub async fn history_day(
     .bind(&date)
     .fetch_all(&pool)
     .await
-    .map_err(AppError::Database)?;
+    .map_err(crate::error::AppError::Database)?;
 
-    let all_exercises = sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE user_id = ?")
-        .bind(&user.id)
-        .fetch_all(&pool)
-        .await
-        .map_err(AppError::Database)?
-        .into_iter()
-        .map(|ex| (ex.id, ex.name))
-        .collect::<HashMap<i64, String>>();
+    let all_exercises =
+        sqlx::query_as::<_, crate::models::Exercise>("SELECT * FROM exercises WHERE user_id = ?")
+            .bind(&user.id)
+            .fetch_all(&pool)
+            .await
+            .map_err(crate::error::AppError::Database)?
+            .into_iter()
+            .map(|ex| (ex.id, ex.name))
+            .collect::<std::collections::HashMap<i64, String>>();
 
     // —— 以下为渲染部分（HTML 拼接，老师代写）——
     // 【教学：M4_bugfix_notes §6 约定——前端 DOM/HTML 部分 vibe coding 不补课。
@@ -420,7 +405,7 @@ pub async fn history_day(
     // 空态：该天没有记录
     if rows_raw.is_empty()
     {
-        return Ok(Html(format!(
+        return Ok(axum::response::Html(format!(
             r#"{head}
             <h2>{date} 训练记录</h2>
             <p>这一天没有训练记录</p>
@@ -456,7 +441,7 @@ pub async fn history_day(
                     .get(ex_id)
                     .map(|s| s.as_str())
                     .unwrap_or("未知动作");
-                let rm = epley_1rm(*weight, *reps);
+                let rm = crate::calc::epley_1rm(*weight, *reps);
                 let rm_text = if rm <= 0.0
                 {
                     "-".to_string()
@@ -501,7 +486,7 @@ pub async fn history_day(
         .collect();
 
     // 按部位分组（保序分组 + 组间配置排序，today 页同款模式）
-    let groups = group_by_body_part(rows.into_iter(), &state.config.body_part_order);
+    let groups = crate::models::group_by_body_part(rows.into_iter(), &state.config.body_part_order);
     let grouped_html = groups
         .iter()
         .map(|(part, rows)| {
@@ -509,22 +494,22 @@ pub async fn history_day(
                 "<h3>{part}</h3>\n<table border=\"1\"><tr><th>动作</th><th>观测强度</th><th>重量</th><th>组*次</th><th>休息</th><th>1RM(Epley)</th><th>感受</th><th>策略</th><th>要领</th></tr>\n{rows}\n</table>",
                 part = part,
                 rows = rows.join("\n"),
-            )
+    )
         })
         .collect::<Vec<String>>()
         .join("\n");
 
-    Ok(Html(format!(
+    Ok(axum::response::Html(format!(
         r#"{head}
-        <h2>{date} 训练记录</h2>
+            <h2>{date} 训练记录</h2>
         {grouped_html}
-        <p><a href="/history">返回历史回顾</a></p>"#,
+            <p><a href="/history">返回历史回顾</a></p>"#,
         head = crate::page::page_head("训练记录"),
     )))
 }
 
 // ============================================================
-// 第三部分：动作详情页（GET /exercises/{id}/stats）★ M5 重点
+// 第三部分：动作详情页（GET /exercises/{id}/stats） M5 重点
 // ============================================================
 /// 某动作全部历史：表格 + 重量/1RM 折线图（Chart.js）
 ///
@@ -541,7 +526,7 @@ pub async fn history_day(
 /// 3. 查该动作全部记录（按日期升序，画折线图必须时间有序）：
 ///    SELECT * FROM records WHERE exercise_id = ?
 ///    ORDER BY record_date, id
-///    （⚠️ 这里不需要 user_id 条件：第 2 步已验证动作归属，
+///    （ 这里不需要 user_id 条件：第 2 步已验证动作归属，
 ///    exercise_id 已确定属于当前用户；records 表本身没有 user_id 列）
 /// 4. 表格渲染：日期 | 重量 | 组×次 | 1RM(Epley) | 感受 | 策略
 /// 5. 折线图数据：遍历记录生成两个数组
@@ -564,44 +549,47 @@ pub async fn history_day(
 ///   前端直接 var CHART_POINTS = [...] 就是合法 JS——
 ///   这就是 M4_bugfix_notes §10.3 的"数据注入 vs 手写"。
 pub async fn exercise_stats(
-    State(state): State<AppState>,
-    AuthUser(user): AuthUser,
-    Path(id): Path<i64>,
-) -> Result<Html<String>, AppError>
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    crate::handlers::auth::AuthUser(user): crate::handlers::auth::AuthUser,
+    axum::extract::Path(id): axum::extract::Path<i64>,
+) -> Result<axum::response::Html<String>, crate::error::AppError>
 {
     let pool = state.pool.read().await.clone();
 
     // ① 数据隔离纪律：先验证动作存在且属于当前用户
     //    （同时拿到动作名，渲染页面标题用——查询结果别丢）
-    let exercise =
-        sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE id = ? AND user_id = ?")
-            .bind(&id)
-            .bind(&user.id)
-            .fetch_optional(&pool)
-            .await
-            .map_err(AppError::Database)?
-            .ok_or_else(|| AppError::NotFound("No such exercise in your profile".to_string()))?;
-    let all_records = sqlx::query_as::<_, Record>(
+    let exercise = sqlx::query_as::<_, crate::models::Exercise>(
+        "SELECT * FROM exercises WHERE id = ? AND user_id = ?",
+    )
+    .bind(&id)
+    .bind(&user.id)
+    .fetch_optional(&pool)
+    .await
+    .map_err(crate::error::AppError::Database)?
+    .ok_or_else(|| {
+        crate::error::AppError::NotFound("No such exercise in your profile".to_string())
+    })?;
+    let all_records = sqlx::query_as::<_, crate::models::Record>(
         "SELECT * FROM records WHERE exercise_id = ? ORDER BY record_date ASC, id",
     )
     .bind(&id)
     .fetch_all(&pool)
     .await
-    .map_err(AppError::Database)?
+    .map_err(crate::error::AppError::Database)?
     .into_iter()
     .map(|rec| {
-        let one_rm = epley_1rm(rec.weight, rec.reps);
-        let two_rm = if rec.reps > 2 && wathan_mrm(one_rm, 2) > rec.weight
+        let one_rm = crate::calc::epley_1rm(rec.weight, rec.reps);
+        let two_rm = if rec.reps > 2 && crate::calc::wathan_mrm(one_rm, 2) > rec.weight
         {
-            wathan_mrm(one_rm, 2)
+            crate::calc::wathan_mrm(one_rm, 2)
         }
         else
         {
             rec.weight
         };
-        let three_rm = if rec.reps > 3 && wathan_mrm(one_rm, 3) > rec.weight
+        let three_rm = if rec.reps > 3 && crate::calc::wathan_mrm(one_rm, 3) > rec.weight
         {
-            wathan_mrm(one_rm, 3)
+            crate::calc::wathan_mrm(one_rm, 3)
         }
         else
         {
@@ -609,12 +597,12 @@ pub async fn exercise_stats(
         };
         (rec, one_rm, two_rm, three_rm)
     })
-    .collect::<Vec<(Record, f64, f64, f64)>>();
+    .collect::<Vec<(crate::models::Record, f64, f64, f64)>>();
 
     // 【M5 修订：观测强度列 —— 需要每条记录的杆重预设】
     // records 不存杆重，按 plan_item_id LEFT JOIN plan_items 拿
     // COALESCE：孤儿记录（计划已删）→ 回退动作默认杆重
-    let bar_map: HashMap<i64, f64> = sqlx::query_as::<_, (i64, f64)>(
+    let bar_map: std::collections::HashMap<i64, f64> = sqlx::query_as::<_, (i64, f64)>(
         "SELECT r.id, COALESCE(pi.plan_bar_weight, ?) AS bar
         FROM records r
         LEFT JOIN plan_items pi ON r.plan_item_id = pi.id
@@ -624,7 +612,7 @@ pub async fn exercise_stats(
     .bind(&id)
     .fetch_all(&pool)
     .await
-    .map_err(AppError::Database)?
+    .map_err(crate::error::AppError::Database)?
     .into_iter()
     .collect();
 
@@ -635,7 +623,7 @@ pub async fn exercise_stats(
     // 空态：一条记录都没有
     if all_records.is_empty()
     {
-        return Ok(Html(format!(
+        return Ok(axum::response::Html(format!(
             r#"{head}
             <h2>{name} 的历史记录</h2>
             <p>这个动作还没有记录</p>
@@ -704,16 +692,16 @@ pub async fn exercise_stats(
         None => "<p>记录太少，攒几次训练再看趋势</p>".to_string(),
     };
 
-    Ok(Html(format!(
+    Ok(axum::response::Html(format!(
         r#"{head}
-        <h2>{name} 的历史记录</h2>
+            <h2>{name} 的历史记录</h2>
         <table border="1">
         <tr><th>日期</th><th>观测强度</th><th>重量</th><th>组*次</th><th>1RM</th><th>2RM</th><th>3RM</th>
         <th>感受</th><th>策略</th></tr>
         {rows}
         </table>
         {chart_section}
-        <p><a href="/history">返回历史回顾</a></p>"#,
+            <p><a href="/history">返回历史回顾</a></p>"#,
         head = crate::page::page_head("动作历史"),
         name = exercise.name,
     )))
@@ -743,12 +731,12 @@ pub async fn exercise_stats(
 ///   - Some(html)：>= 2 条记录，返回完整图表 HTML
 ///   - None：< 2 条记录（或查询出错前），由调用方决定显示什么提示
 pub async fn exercise_chart_html(
-    pool: &SqlitePool,
+    pool: &sqlx::SqlitePool,
     exercise_id: i64,
-) -> Result<Option<String>, AppError>
+) -> Result<Option<String>, crate::error::AppError>
 {
     // 查最近 180 天记录（日期升序，折线图时间轴）
-    let records = sqlx::query_as::<_, Record>(
+    let records = sqlx::query_as::<_, crate::models::Record>(
         "SELECT * FROM records
         WHERE exercise_id = ?
         AND record_date >= date('now', 'localtime', '-180 days')
@@ -757,7 +745,7 @@ pub async fn exercise_chart_html(
     .bind(exercise_id)
     .fetch_all(pool)
     .await
-    .map_err(AppError::Database)?;
+    .map_err(crate::error::AppError::Database)?;
 
     // < 2 条 → 无趋势可画，返回 None
     if records.len() < 2
@@ -770,16 +758,16 @@ pub async fn exercise_chart_html(
     let weights: Vec<f64> = records.iter().map(|rec| rec.weight).collect();
     let one_rms: Vec<f64> = records
         .iter()
-        .map(|rec| epley_1rm(rec.weight, rec.reps))
+        .map(|rec| crate::calc::epley_1rm(rec.weight, rec.reps))
         .collect();
     let two_rms: Vec<f64> = records
         .iter()
         .map(|rec| {
-            let one_rm = epley_1rm(rec.weight, rec.reps);
+            let one_rm = crate::calc::epley_1rm(rec.weight, rec.reps);
             // 与 exercise_stats 同款钳制：估算 2RM 低于实际重量 → 用实际值
-            if rec.reps > 2 && wathan_mrm(one_rm, 2) > rec.weight
+            if rec.reps > 2 && crate::calc::wathan_mrm(one_rm, 2) > rec.weight
             {
-                wathan_mrm(one_rm, 2)
+                crate::calc::wathan_mrm(one_rm, 2)
             }
             else
             {
@@ -788,13 +776,13 @@ pub async fn exercise_chart_html(
         })
         .collect();
 
-    let chart_json = serde_json::to_string(&json!({
+    let chart_json = serde_json::to_string(&serde_json::json!({
         "labels": labels,
         "weight": weights,
         "one_rm": one_rms,
         "two_rm": two_rms,
     }))
-    .map_err(|e| AppError::Other(e.to_string()))?;
+    .map_err(|e| crate::error::AppError::Other(e.to_string()))?;
 
     Ok(Some(format!(
         r#"<div style="max-width:700px;margin:16px auto">
@@ -828,7 +816,7 @@ pub async fn exercise_chart_html(
 ///
 /// 【教学：Query 提取器 + Option 字段（M2 exercises.rs 同款）】
 /// 查询参数天然可选：不传 → None → 用默认（当前年月）。
-#[derive(Deserialize)]
+#[derive(serde::Deserialize)]
 pub struct CalQuery
 {
     pub year: Option<String>,

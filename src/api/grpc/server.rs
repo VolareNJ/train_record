@@ -30,19 +30,6 @@
 // 排查时一看日志就知道（比"curl 没反应"猜半天强）。
 // ============================================================
 
-use std::net::SocketAddr;
-
-use tonic::transport::Server;
-
-use super::{
-    pb,
-    service::{
-        auth::AuthServiceImpl, exercises::ExerciseServiceImpl, phases::PhaseServiceImpl,
-        plans::PlanServiceImpl, records::RecordServiceImpl, stats::StatsServiceImpl,
-    },
-};
-use crate::AppState;
-
 /// 启动 gRPC 服务器（在 main.rs 里被 tokio::spawn 起来，与 axum 并行）
 ///
 /// 【教学：返回 Box<dyn Error> 合适吗？】
@@ -51,7 +38,10 @@ use crate::AppState;
 /// 所以用 `Box<dyn Error>` 装箱足够（这也是应用层 main/启动函数的常规写法；
 /// 库代码才需要精确的错误类型——项目纪律"避免 dyn"针对的是**热路径**，
 /// 启动路径一次性装箱没有性能影响）。
-pub async fn serve(state: AppState, addr: SocketAddr) -> Result<(), Box<dyn std::error::Error>>
+pub async fn serve(
+    state: crate::AppState,
+    addr: std::net::SocketAddr,
+) -> Result<(), Box<dyn std::error::Error>>
 {
     tracing::info!(
         "gRPC 服务监听 {addr}（auth/phases/exercises/plans/records/stats 共 6 个 service）"
@@ -60,25 +50,37 @@ pub async fn serve(state: AppState, addr: SocketAddr) -> Result<(), Box<dyn std:
     // 【教学：add_service 的顺序无关紧要】
     // tonic 内部按 proto 里的"服务全名"（train_record.v1.PhaseService）路由，
     // 不是按注册顺序匹配。所以下面这串纯粹是"把 6 张名片递上去"。
-    Server::builder()
-        .add_service(pb::auth_service_server::AuthServiceServer::new(
-            AuthServiceImpl::new(state.clone()),
-        ))
-        .add_service(pb::phase_service_server::PhaseServiceServer::new(
-            PhaseServiceImpl::new(state.clone()),
-        ))
-        .add_service(pb::exercise_service_server::ExerciseServiceServer::new(
-            ExerciseServiceImpl::new(state.clone()),
-        ))
-        .add_service(pb::plan_service_server::PlanServiceServer::new(
-            PlanServiceImpl::new(state.clone()),
-        ))
-        .add_service(pb::record_service_server::RecordServiceServer::new(
-            RecordServiceImpl::new(state.clone()),
-        ))
-        .add_service(pb::stats_service_server::StatsServiceServer::new(
-            StatsServiceImpl::new(state.clone()),
-        ))
+    tonic::transport::Server::builder()
+        .add_service(
+            crate::api::grpc::pb::auth_service_server::AuthServiceServer::new(
+                crate::api::grpc::service::auth::AuthServiceImpl::new(state.clone()),
+            ),
+        )
+        .add_service(
+            crate::api::grpc::pb::phase_service_server::PhaseServiceServer::new(
+                crate::api::grpc::service::phases::PhaseServiceImpl::new(state.clone()),
+            ),
+        )
+        .add_service(
+            crate::api::grpc::pb::exercise_service_server::ExerciseServiceServer::new(
+                crate::api::grpc::service::exercises::ExerciseServiceImpl::new(state.clone()),
+            ),
+        )
+        .add_service(
+            crate::api::grpc::pb::plan_service_server::PlanServiceServer::new(
+                crate::api::grpc::service::plans::PlanServiceImpl::new(state.clone()),
+            ),
+        )
+        .add_service(
+            crate::api::grpc::pb::record_service_server::RecordServiceServer::new(
+                crate::api::grpc::service::records::RecordServiceImpl::new(state.clone()),
+            ),
+        )
+        .add_service(
+            crate::api::grpc::pb::stats_service_server::StatsServiceServer::new(
+                crate::api::grpc::service::stats::StatsServiceImpl::new(state.clone()),
+            ),
+        )
         // 【教学：serve 会一直 await 到进程结束】
         // 它内部是个 loop { accept; spawn(处理连接) }。
         // 所以调用方要么 spawn 它（本项目：main.rs），要么把它作为 main 的最后一行。

@@ -52,7 +52,7 @@ package train_record.v1;
 //   字段名  ：snake_case（protobuf 规范；生成 Rust 后还是 snake_case，
 //             转成 JSON（protojson）时会自动变 camelCase）
 //
-// 【2. 字段编号纪律 ★ 最容易踩的坑】
+// 【2. 字段编号纪律  最容易踩的坑】
 //   字段后的 `= 1` 是**二进制线格式里的编号**，不是默认值、也不是顺序！
 //   - 编号一旦发布就不能改（改了老客户端解析出来的字段会错位）
 //   - 删字段要把编号写进 `reserved`（防止以后有人复用导致老数据被误解）
@@ -68,7 +68,7 @@ package train_record.v1;
 //   代价：契约里体现不出格式约束（客户端传错只有运行时才发现）→
 //   服务器端统一用 REST 层已有的 validate_date 校验。
 //
-// 【4. PATCH 语义与 optional ★ proto3 的经典坑】
+// 【4. PATCH 语义与 optional  proto3 的经典坑】
 //   proto3 里**普通标量字段没有"未设置"状态**：
 //       string note = 2;    → 传空串和"没传"在 wire 上无法区分（都是空串）
 //   REST 的 PATCH 靠"字段缺省 = 不改"（serde 的 Option），gRPC 要表达同样语义
@@ -86,7 +86,7 @@ package train_record.v1;
 //       ApiError::Forbidden       → Status::permission_denied "归档阶段不可编辑"
 //       ApiError::Database/Other  → Status::internal          "数据库错误"
 //   客户端只判断 code 就行，不用解析错误文本（文本给人看，code 给程序判断）。
-//   ⚠️ 与 REST 的差异：401 在 gRPC 里叫 UNAUTHENTICATED（16），
+// 与 REST 的差异：401 在 gRPC 里叫 UNAUTHENTICATED（16），
 //      403 叫 PERMISSION_DENIED（7），404 叫 NOT_FOUND（5）——对照表见 M9.md §2.4。
 //
 // 【6. 认证约定：token 放 metadata】
@@ -175,7 +175,7 @@ service PhaseService
     // 更新阶段（只改传了的字段，见上文"PATCH 语义与 optional"）
     rpc UpdatePhase(UpdatePhaseRequest) returns (Phase);
 
-    // 归档 / 启用（★ 与 REST 的差异：REST 是两个端点，这里合成一个方法）
+    // 归档 / 启用（ 与 REST 的差异：REST 是两个端点，这里合成一个方法）
     // 【教学】IDL 设计可以做"接口收敛"：archive 与 unarchive 只差一个布尔值，
     // 合并后客户端少记一个方法名。REST 里也能合并（POST /archive {archived:true}），
     // 但 REST 社区习惯用动词 + 路径，gRPC 社区习惯"少而正交的方法"。
@@ -255,7 +255,7 @@ service ExerciseService
     // 删除动作
     rpc DeleteExercise(DeleteExerciseRequest) returns (Ack);
 
-    // ★ 服务器流式（server streaming）：该动作的训练序列（画折线图用）
+    //  服务器流式（server streaming）：该动作的训练序列（画折线图用）
     // 【教学】对比 REST 的 GET /exercises/{id}/stats：REST 一次性返回整个数组，
     // 客户端要等全部查完 + 全部序列化才能开始画。
     // 流式版：服务器查一条发一条，客户端边收边画（首屏更快，
@@ -558,14 +558,14 @@ service RecordService
     // 删除单条记录
     rpc DeleteRecord(DeleteRecordRequest) returns (Ack);
 
-    // ★ 客户端流式（client streaming）：训练结束后一次性批量提交
+    //  客户端流式（client streaming）：训练结束后一次性批量提交
     // 【教学】与"循环调用 UpsertRecord"相比：一次连接、一次往返，
     // 服务器可以在收完最后一组后统一算汇总（总容量/最佳 1RM）再回一条消息。
     // 客户端写法：let (tx, rx) = mpsc::channel(...)；
     //   用 stream::iter(items).map(Ok) 喂给客户端调用，服务器端 while let Some(x) = stream.message().await。
     rpc SubmitWorkout(stream UpsertRecordRequest) returns (SubmitWorkoutSummary);
 
-    // ★ 双向流（bidirectional streaming）：训练中"一组一上报一组一回执"
+    //  双向流（bidirectional streaming）：训练中"一组一上报一组一回执"
     // 【教学】服务端每收到一组就立刻回执（本组 1RM、是否破纪录、已完成组数），
     // 客户端可以边练边看反馈。这是 REST 根本不具备的能力。
     rpc LiveSession(stream UpsertRecordRequest) returns (stream LiveSetFeedback);
@@ -638,7 +638,7 @@ message Record
     int64 id = 1;
     int64 exercise_id = 2;
     string exercise_name = 3;
-    // 部位（⚠️ UpsertRecord/UpdateRecord 的返回值里可能是空串：
+    // 部位（ UpsertRecord/UpdateRecord 的返回值里可能是空串：
     //   REST 的 RecordOut 不含部位字段，M9 选择"留空 + 文档"而不是改 REST 形状。
     //   需要部位请看 GetDayRecords / StatsService.StreamRecords。）
     string body_part = 4;
@@ -743,7 +743,7 @@ service StatsService
     // 历史日历：某月有训练的日期列表（客户端自己画日历）
     rpc GetCalendar(GetCalendarRequest) returns (CalendarView);
 
-    // ★ 服务器流式：按条件导出训练记录（替代 REST 的"一次性大数组"）
+    //  服务器流式：按条件导出训练记录（替代 REST 的"一次性大数组"）
     // 【教学】流式导出还有个实际好处：服务器可以边查边发，
     // 不必把所有记录先堆进内存（REST 版必须 collect 成 Vec 再序列化）。
     // 典型用法：导出全部历史做数据分析/备份。

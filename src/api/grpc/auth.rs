@@ -27,17 +27,10 @@
 //     x-session-token: <token>
 // 客户端（iced / grpcurl）二选一即可。
 //
-// ⚠️ 关于"明文传输"：metadata 是明文（无 TLS 时）。生产暴露到公网时
+//  关于"明文传输"：metadata 是明文（无 TLS 时）。生产暴露到公网时
 //    应该套 TLS（tonic 的 tls 特性），否则 token 会被中间人看到——
 //    当前部署在本机/内网，与 web 版同一信任边界，M9 不做 TLS（见 todo.md）。
 // ============================================================
-
-use crate::{AppState, models::User};
-// ⚠️ 挖空练习期间 require_user 还没实现，这个 import 暂时无用；
-//    实现完删掉下面这行 allow。
-#[allow(unused_imports)]
-use crate::auth;
-use tonic::{Request, Status};
 
 /// 从请求 metadata 里取 token
 ///
@@ -56,7 +49,7 @@ use tonic::{Request, Status};
 ///   .and_then(|v| v.to_str().ok())→ Option<&str>
 ///     （to_str() 会因为非法字节返回 Err；metadata 里可能塞任意二进制，
 ///       所以必须容错——这一步不能 unwrap）
-pub(crate) fn token_from_metadata<T>(request: &Request<T>) -> Option<String>
+pub(crate) fn token_from_metadata<T>(request: &tonic::Request<T>) -> Option<String>
 {
     let metadata = request.metadata();
 
@@ -93,12 +86,12 @@ pub(crate) fn token_from_metadata<T>(request: &Request<T>) -> Option<String>
 // 1. let token = token_from_metadata(request)
 //      .ok_or_else(|| Status::unauthenticated("缺少 token：请在 metadata 里带
 //                     authorization: Bearer <token>"))?;
-//    （⚠️ 这里用 Status::unauthenticated 直接构造，不走 ApiError —— 因为
+//    （ 这里用 Status::unauthenticated 直接构造，不走 ApiError —— 因为
 //      "没带 token"是协议层问题，还没进到业务层）
 // 2. let pool = state.pool.read().await.clone();
 // 3. let user = auth::get_user_by_session(&pool, &token).await
 //      .map_err(|_| Status::unauthenticated("会话无效或已过期"))?;
-//    （⚠️ get_user_by_session 返回 Result<User, AppError>；这里把**所有**错误
+//    （ get_user_by_session 返回 Result<User, AppError>；这里把**所有**错误
 //      都归为"未登录"——与 REST 守卫同样的选择：不把内部错误细节暴露给客户端）
 // 4. Ok(user)
 //
@@ -106,10 +99,12 @@ pub(crate) fn token_from_metadata<T>(request: &Request<T>) -> Option<String>
 // 取 metadata 不需要消费请求——后面 handler 还要 request.into_inner() 拿 body。
 // 借用（&）不夺走所有权，调用方先守卫、再取 body，顺序自然。
 /// 【实现步骤】见上方注释
-/// ⚠️ 挖空练习期间加 allow 消除 unused 警告，实现完成后可删
+/// 挖空练习期间加 allow 消除 unused 警告，实现完成后可删
 #[allow(unused)]
-pub(crate) async fn require_user<T>(request: &Request<T>, state: &AppState)
--> Result<User, Status>
+pub(crate) async fn require_user<T>(
+    request: &tonic::Request<T>,
+    state: &crate::AppState,
+) -> Result<crate::models::User, tonic::Status>
 {
     // 【实现步骤】见上方注释
     todo!("M9 练习：require_user 实现") // 【待实现】

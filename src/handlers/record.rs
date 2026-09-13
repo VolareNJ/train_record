@@ -13,7 +13,7 @@
 // 三、保存记录
 //   POST /plans/{id}/record/{item_id}/save → 保存（插入或更新）（record_save）
 //
-// 📌 阶段要求：M4 你来实现本文件所有函数。
+// 阶段要求：M4 你来实现本文件所有函数。
 //   实现完成后对照检查（完整实现备份在 docs/learning_path/M4_ref/）。
 // ============================================================
 
@@ -21,20 +21,6 @@
 // 和 M3 的 plan.rs 对比，多了 Json（其实这文件不用 Json，但保留注释说明）：
 // 主要新增：HashMap —— 建"动作 id → 动作名"索引（M3 同款模式，见 today 注释第 5 步）
 // 关键：Record / Plan / PlanItem / Exercise 模型 + AuthUser 守卫。
-use std::collections::HashMap;
-
-use axum::{
-    extract::{Form, Path, State},
-    response::{Html, Redirect},
-};
-use serde::Deserialize;
-
-use crate::{
-    AppState,
-    error::AppError,
-    handlers::auth::AuthUser,
-    models::{Exercise, Phase, Plan, PlanItem, Record, group_by_body_part},
-};
 
 // ============================================================
 // 【M5 修订：计重模式展示串 —— 计划值/上次参考/历史页共用】
@@ -63,7 +49,7 @@ pub fn bar_name(bar_weight: f64) -> &'static str
 /// 【M5 修订：unit 参数 —— 观测强度单位（kg/lb）】
 ///   lb 单位 → 观测强度显示值 = kg 值 ÷ 0.4536（与换算器互逆）。
 ///   实际强度始终是 kg（weight 字段），只有观测强度换单位。
-/// ⚠️ 已知取舍：support 用当前体重逆换算，改体重后历史记录的
+/// 已知取舍：support 用当前体重逆换算，改体重后历史记录的
 ///   观测强度会跟着变——与旧 Python 版行为一致，接受。
 pub fn mode_display(
     mode: &str,
@@ -143,7 +129,7 @@ pub fn mode_display(
 /// 用户训练时打开这个页面，一眼看到：
 ///   - 顶部：阶段名 + 已坚持 N 天 + 今天日期
 ///   - 中间：今天的计划动作清单（动作名 + 计划值）
-///   - 每个动作：状态徽标（✅已训练 / ⬜未训练）+ 上次策略提示
+///   - 每个动作：状态徽标（已训练 / 未训练）+ 上次策略提示
 ///   - 点动作 → 进入记录/编辑页
 ///
 /// 实现步骤：
@@ -166,13 +152,13 @@ pub fn mode_display(
 /// 6. 每个计划项查"最近一条记录"判断状态 + 上次策略：
 ///    SELECT * FROM records WHERE plan_item_id = ?
 ///    ORDER BY record_date DESC, id DESC LIMIT 1
-///    → 有记录 → ✅已训练 + 显示该条 strategy
-///    → 无记录 → ⬜未训练
+///    → 有记录 → 已训练 + 显示该条 strategy
+///    → 无记录 → 未训练
 /// 7. 拼 HTML：阶段信息 + 计划动作列表（每行：动作名/计划值/状态/策略/记录链接）
 pub async fn today(
-    State(state): State<AppState>,
-    AuthUser(user): AuthUser,
-) -> Result<Html<String>, AppError>
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    crate::handlers::auth::AuthUser(user): crate::handlers::auth::AuthUser,
+) -> Result<axum::response::Html<String>, crate::error::AppError>
 {
     let pool = state.pool.read().await.clone();
 
@@ -181,19 +167,19 @@ pub async fn today(
     //    SELECT * FROM phases WHERE user_id = ? AND archived = 0
     //    ORDER BY created_at DESC LIMIT 1
     //    → 没有 → 空态提示"暂无进行中阶段，请先创建"
-    let current_phase = match sqlx::query_as::<_, Phase>(
+    let current_phase = match sqlx::query_as::<_, crate::models::Phase>(
         "SELECT * FROM phases WHERE user_id = ? AND archived = 0 ORDER BY created_at DESC LIMIT 1",
     )
     .bind(&user.id)
     .fetch_optional(&pool)
     .await
-    .map_err(AppError::Database)?
+    .map_err(crate::error::AppError::Database)?
     {
         Some(p) => p,
         // 【M7 第 4 步：空态 —— 无进行中阶段 → 友好提示页（原来是 404）】
         None =>
         {
-            return Ok(Html(
+            return Ok(axum::response::Html(
                 format!(
                     r#"{head}
             <h2>今日训练</h2>
@@ -210,37 +196,38 @@ pub async fn today(
     let today_dt = sqlx::query_scalar::<_, String>("SELECT date('now', 'localtime')")
         .fetch_one(&pool)
         .await
-        .map_err(AppError::Database)?;
+        .map_err(crate::error::AppError::Database)?;
     // 4. 查今天的计划：
     //    SELECT * FROM plans WHERE phase_id = ? AND date = ?
     //    → 没有 → 空态提示"今天还没有计划"
-    let today_plan =
-        match sqlx::query_as::<_, Plan>("SELECT * FROM plans WHERE phase_id = ? AND date = ?")
-            .bind(&current_phase.id)
-            .bind(&today_dt)
-            .fetch_optional(&pool)
-            .await
-            .map_err(AppError::Database)?
+    let today_plan = match sqlx::query_as::<_, crate::models::Plan>(
+        "SELECT * FROM plans WHERE phase_id = ? AND date = ?",
+    )
+    .bind(&current_phase.id)
+    .bind(&today_dt)
+    .fetch_optional(&pool)
+    .await
+    .map_err(crate::error::AppError::Database)?
+    {
+        Some(p) => p,
+        // 【M7 第 4 步：空态 —— 今天无计划 → 友好提示页（原来是 404）】
+        None =>
         {
-            Some(p) => p,
-            // 【M7 第 4 步：空态 —— 今天无计划 → 友好提示页（原来是 404）】
-            None =>
-            {
-                return Ok(Html(
-                    format!(
-                        r#"{head}
+            return Ok(axum::response::Html(
+                format!(
+                    r#"{head}
             <h2>今日训练({today_dt})</h2>
             <p class="empty-tip">今天还没有计划</p>
             <p><a href="/phases/{phase_id}/plans/new">去新建今日计划</a></p>
             <p><a href="/">返回首页</a></p>"#,
-                        head = crate::page::page_head("今日训练"),
-                        today_dt = today_dt,
-                        phase_id = current_phase.id,
-                    )
-                    .to_string(),
-                ));
-            },
-        };
+                    head = crate::page::page_head("今日训练"),
+                    today_dt = today_dt,
+                    phase_id = current_phase.id,
+                )
+                .to_string(),
+            ));
+        },
+    };
     // 5. 查计划项（不带动作名，避免 JOIN 破坏 query_as）：
     //    SELECT * FROM plan_items WHERE plan_id = ? ORDER BY sort_order
     //    再查全部动作 → 建 HashMap<i64, String>（id → 名字）索引：
@@ -248,40 +235,41 @@ pub async fn today(
     //    （M3 同款模式：查两次 + 内存索引。为什么不用 JOIN？
     //     query_as 按列名匹配结构体，JOIN 多出的 exercise_name 列
     //     与 PlanItem 不匹配，无法反序列化）
-    let today_plan_items = sqlx::query_as::<_, PlanItem>(
+    let today_plan_items = sqlx::query_as::<_, crate::models::PlanItem>(
         "SELECT * FROM plan_items WHERE plan_id = ? ORDER BY sort_order ASC",
     )
     .bind(&today_plan.id)
     .fetch_all(&pool)
     .await
-    .map_err(AppError::Database)?;
-    let id_to_ex = sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE user_id = ?")
-        .bind(&user.id)
-        .fetch_all(&pool)
-        .await
-        .map_err(AppError::Database)?
-        .iter()
-        // 【M4 修订：索引扩展成 (动作名, 身体部位) 元组】
-        // today 页要按 body_part 分组，所以索引不再只存名字
-        // 【M5 修订：再加 (默认模式, 默认杆重, 默认单位) —— 计划值展示需要】
-        .map(|e| {
-            (
-                e.id,
+    .map_err(crate::error::AppError::Database)?;
+    let id_to_ex =
+        sqlx::query_as::<_, crate::models::Exercise>("SELECT * FROM exercises WHERE user_id = ?")
+            .bind(&user.id)
+            .fetch_all(&pool)
+            .await
+            .map_err(crate::error::AppError::Database)?
+            .iter()
+            // 【M4 修订：索引扩展成 (动作名, 身体部位) 元组】
+            // today 页要按 body_part 分组，所以索引不再只存名字
+            // 【M5 修订：再加 (默认模式, 默认杆重, 默认单位) —— 计划值展示需要】
+            .map(|e| {
                 (
-                    e.name.clone(),
-                    e.body_part.clone(),
-                    e.default_mode.clone(),
-                    e.bar_weight,
-                    e.default_unit.clone(),
-                ),
-            )
-        })
-        .collect::<HashMap<i64, (String, String, String, f64, String)>>();
+                    e.id,
+                    (
+                        e.name.clone(),
+                        e.body_part.clone(),
+                        e.default_mode.clone(),
+                        e.bar_weight,
+                        e.default_unit.clone(),
+                    ),
+                )
+            })
+            .collect::<std::collections::HashMap<i64, (String, String, String, f64, String)>>();
     // 6. 每个计划项查"最近一条记录"判断状态 + 上次策略：
     //    SELECT * FROM records WHERE plan_item_id = ?
     //    ORDER BY record_date DESC, id DESC LIMIT 1
-    //    → 有记录 → ✅已训练 + 显示该条 strategy
-    //    → 无记录 → ⬜未训练
+    //    → 有记录 → 已训练 + 显示该条 strategy
+    //    → 无记录 → 未训练
     //    【bugfix：状态色查询保留未完成记录（黄色"已记录未完成"），
     //     但"上次策略"列只显示已完成记录的策略 —— 未完成记录
     //     只是草稿/进行中，不能当"上次参考"（用户诉求）】
@@ -290,26 +278,26 @@ pub async fn today(
     let mut items_with_completed_strategy = Vec::new();
     for item in &today_plan_items
     {
-        let last = sqlx::query_as::<_, Record>(
+        let last = sqlx::query_as::<_, crate::models::Record>(
             "SELECT * FROM records WHERE plan_item_id = ?
          ORDER BY record_date DESC, id DESC LIMIT 1",
         )
         .bind(item.id)
         .fetch_optional(&pool)
         .await
-        .map_err(AppError::Database)?;
+        .map_err(crate::error::AppError::Database)?;
         // 【bugfix：上次参考只取已完成的记录】
         //   未完成（completed = 0）的记录是"训练中改到一半"的草稿，
         //   把它当"上次策略"参考会误导渐进超负荷判断。
         //   → 策略参考单独查 completed = 1 的最近一条。
-        let last_completed = sqlx::query_as::<_, Record>(
+        let last_completed = sqlx::query_as::<_, crate::models::Record>(
             "SELECT * FROM records WHERE plan_item_id = ? AND completed = 1
          ORDER BY record_date DESC, id DESC LIMIT 1",
         )
         .bind(item.id)
         .fetch_optional(&pool)
         .await
-        .map_err(AppError::Database)?;
+        .map_err(crate::error::AppError::Database)?;
         items_with_records.push((item, last));
         items_with_completed_strategy.push(last_completed);
     }
@@ -326,7 +314,7 @@ pub async fn today(
         .bind(start_date)
         .fetch_one(&pool)
         .await
-        .map_err(AppError::Database)?
+        .map_err(crate::error::AppError::Database)?
         .to_string(),
         None => "未设置开始日期".to_string(),
     };
@@ -425,27 +413,28 @@ pub async fn today(
     }
     // 统一交给 group_by_body_part（保序分组 + 组间配置排序）
     // 【M4 修订：顺序来自 AppConfig.body_part_order（环境变量可配）】
-    let groups = group_by_body_part(groups.into_iter(), &state.config.body_part_order);
+    let groups =
+        crate::models::group_by_body_part(groups.into_iter(), &state.config.body_part_order);
 
     // 7c. 每组渲染一个小节（<h3>部位名</h3> + 表头 + 行）
     let grouped_html = groups
         .iter()
         .map(|(part, rows)| {
-            format!(
+                format!(
                 "<h3>{part}</h3>\n<table border=\"1\"><tr><th>动作</th><th>计划值</th><th>上次策略</th><th>操作</th></tr>\n{rows}\n</table>",
                 part = part,
                 rows = rows.join("\n"),
-            )
+    )
         })
         .collect::<Vec<String>>()
         .join("\n");
 
     // 7d. 拼整页（风格与 M3 一致：h2 + 分组小节 + 返回链接）
     // 【M6：PWA 注入 —— manifest + Service Worker 注册】
-    Ok(Html(format!(
+    Ok(axum::response::Html(format!(
         r#"
         {head}
-        <h2>今日训练({today_dt})</h2>
+            <h2>今日训练({today_dt})</h2>
         <p>阶段：{phase_name} | 已坚持 {persist_days} 天</p>
         {grouped_html}
         <p><a href="/">返回首页</a></p>
@@ -506,16 +495,16 @@ pub async fn today(
 ///   std     = 片重
 /// 观测强度带单位：选 lb 时先 ×0.4536 归一化成 kg 再套公式（M4 修订）
 pub async fn record_form(
-    State(state): State<AppState>,
-    AuthUser(user): AuthUser,
-    Path((plan_id, item_id)): Path<(i64, i64)>,
-) -> Result<Html<String>, AppError>
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    crate::handlers::auth::AuthUser(user): crate::handlers::auth::AuthUser,
+    axum::extract::Path((plan_id, item_id)): axum::extract::Path<(i64, i64)>,
+) -> Result<axum::response::Html<String>, crate::error::AppError>
 {
     let pool = state.pool.read().await.clone();
 
     // 1. 签名：State + AuthUser + Path((plan_id, item_id))
     // 2. 验证计划归属：JOIN phases 查 user_id
-    let current_plan = sqlx::query_as::<_, Plan>(
+    let current_plan = sqlx::query_as::<_, crate::models::Plan>(
         "SELECT p.* FROM plans p
         INNER JOIN phases ph ON p.phase_id = ph.id
         WHERE p.id = ? AND ph.user_id = ?",
@@ -524,57 +513,63 @@ pub async fn record_form(
     .bind(&user.id)
     .fetch_optional(&pool)
     .await
-    .map_err(AppError::Database)?
-    .ok_or_else(|| AppError::NotFound("No plan found in such user and phase".to_string()))?;
+    .map_err(crate::error::AppError::Database)?
+    .ok_or_else(|| {
+        crate::error::AppError::NotFound("No plan found in such user and phase".to_string())
+    })?;
 
-    let phase = sqlx::query_as::<_, Phase>("SELECT * FROM phases WHERE id = ? AND user_id = ?")
-        .bind(&current_plan.phase_id)
-        .bind(&user.id)
-        .fetch_optional(&pool)
-        .await
-        .map_err(AppError::Database)?
-        .ok_or_else(|| AppError::NotFound("No phase found".to_string()))?;
+    let phase = sqlx::query_as::<_, crate::models::Phase>(
+        "SELECT * FROM phases WHERE id = ? AND user_id = ?",
+    )
+    .bind(&current_plan.phase_id)
+    .bind(&user.id)
+    .fetch_optional(&pool)
+    .await
+    .map_err(crate::error::AppError::Database)?
+    .ok_or_else(|| crate::error::AppError::NotFound("No phase found".to_string()))?;
     if phase.archived
     {
-        return Err(AppError::Forbidden(
+        return Err(crate::error::AppError::Forbidden(
             "Can not edit archived phase".to_string(),
         ));
     }
 
     // 3. 验证计划项属于该计划：WHERE id = ? AND plan_id = ?（双条件防越权）
     // 3. 验证计划项属于该计划：双条件
-    let plan_item =
-        sqlx::query_as::<_, PlanItem>("SELECT * FROM plan_items WHERE id = ? AND plan_id = ?")
-            .bind(&item_id)
-            .bind(&current_plan.id)
-            .fetch_optional(&pool)
-            .await
-            .map_err(AppError::Database)?
-            .ok_or_else(|| AppError::NotFound("No plan item found".to_string()))?;
+    let plan_item = sqlx::query_as::<_, crate::models::PlanItem>(
+        "SELECT * FROM plan_items WHERE id = ? AND plan_id = ?",
+    )
+    .bind(&item_id)
+    .bind(&current_plan.id)
+    .fetch_optional(&pool)
+    .await
+    .map_err(crate::error::AppError::Database)?
+    .ok_or_else(|| crate::error::AppError::NotFound("No plan item found".to_string()))?;
 
     // 4. 查动作信息（拿 key_points 预填 + bar_weight 给换算器）
-    let exercise_details =
-        sqlx::query_as::<_, Exercise>("SELECT * FROM exercises WHERE id = ? AND user_id = ?")
-            .bind(&plan_item.exercise_id)
-            .bind(&user.id)
-            .fetch_optional(&pool)
-            .await
-            .map_err(AppError::Database)?
-            .ok_or_else(|| AppError::NotFound("No such exercise".to_string()))?;
+    let exercise_details = sqlx::query_as::<_, crate::models::Exercise>(
+        "SELECT * FROM exercises WHERE id = ? AND user_id = ?",
+    )
+    .bind(&plan_item.exercise_id)
+    .bind(&user.id)
+    .fetch_optional(&pool)
+    .await
+    .map_err(crate::error::AppError::Database)?
+    .ok_or_else(|| crate::error::AppError::NotFound("No such exercise".to_string()))?;
     // 5. 查记录（拆两个查询：当日值 + 上次训练值）
     //     【M5 修订：预填链升级 —— 当日值 > 计划值 > 上次训练值】
     //     旧版只查"最近一条"（可能=今天），且计划值优先于它。
     //     新版拆成两个查询，语义更清晰：
     //       - today_record：今天已保存的记录（训练中改过就回显"今天的实际"）
     //       - last_record：今天之前的最近一条（渐进超负荷参照物 + 兜底回显）
-    let today_record = sqlx::query_as::<_, Record>(
+    let today_record = sqlx::query_as::<_, crate::models::Record>(
         "SELECT * FROM records WHERE plan_item_id = ? AND record_date = date('now','localtime')
         ORDER BY id DESC LIMIT 1",
     )
     .bind(&item_id)
     .fetch_optional(&pool)
     .await
-    .map_err(AppError::Database)?;
+    .map_err(crate::error::AppError::Database)?;
     // 【M5 修订 bug：上次训练按 exercise_id 查，不按 plan_item_id！】
     // 计划项会因"先删后插"重建（新 id），历史记录挂旧 id——
     // 按当前 plan_item_id 查"上一次"→ 跨计划就查不到（显示"第一次训练"）。
@@ -582,15 +577,15 @@ pub async fn record_form(
     // 【bugfix：只取已完成的记录（completed = 1）】
     // 未完成记录是"训练中改到一半"的草稿，不能当"上次参考"，
     // 也不该预填表单（否则渐进超负荷参照物被草稿污染）。
-    let last_record = sqlx::query_as::<_, Record>(
+    let last_record = sqlx::query_as::<_, crate::models::Record>(
         "SELECT * FROM records WHERE exercise_id = ? AND record_date < date('now','localtime')
         AND completed = 1
-        ORDER BY record_date DESC, id DESC LIMIT 1",
+         ORDER BY record_date DESC, id DESC LIMIT 1",
     )
     .bind(&plan_item.exercise_id)
     .fetch_optional(&pool)
     .await
-    .map_err(AppError::Database)?;
+    .map_err(crate::error::AppError::Database)?;
     // 兼容变量：最近一次【已完成】记录（当日已完成 → 上次已完成），供"上次参考"展示
     // 【bugfix：未完成记录不算"上次参考" —— 当日草稿（completed=0）不算数，
     //   回退到上次已完成的记录；两个都无 → None（"第一次训练"文案）】
@@ -801,7 +796,7 @@ pub async fn record_form(
             Some(html) => html,
             None => String::new(),
         };
-    Ok(Html(format!(
+    Ok(axum::response::Html(format!(
         r#"<!DOCTYPE html>
         <html lang="zh">
         {head}
@@ -827,7 +822,7 @@ pub async fn record_form(
                 <label>杆重
                     <select id="bar-input" name="bar_weight">
                         {bar_weight_options}
-                    </select>
+                </select>
                 </label>
             </div>
             <div id="body-row" style="display:none">
@@ -840,7 +835,7 @@ pub async fn record_form(
                 <select id="unit-select" name="unit">
                     {unit_options}
                 </select>
-            </label>
+                </label>
             <span id="result"></span><br>
 
             <label>组数
@@ -848,7 +843,7 @@ pub async fn record_form(
             </label><br>
             <label>次数
                 <input name="reps" type="number" step="1" value="{prefill_reps}">
-            </label>
+                </label>
             <label style="margin-left:0.8em">
                 <input type="checkbox" name="sync_defaults" value="1"> 是否同步
             </label><br>
@@ -994,7 +989,7 @@ pub async fn record_form(
                 headers: {{ 'Content-Type': 'application/x-www-form-urlencoded' }},
                 body: cfg.toString()
             }});
-        }
+    }
         function syncUnit() {
             var cfg = new URLSearchParams();
             cfg.set('mode', document.getElementById('mode-select').value);
@@ -1005,7 +1000,7 @@ pub async fn record_form(
                 headers: {{ 'Content-Type': 'application/x-www-form-urlencoded' }},
                 body: cfg.toString()
             }});
-        }
+    }
         document.getElementById('bar-input').addEventListener('input', toggleBarWeight);
         document.getElementById('unit-select').addEventListener('input', syncUnit);
         document.getElementById('mode-select').addEventListener('input', toggleBarWeight);
@@ -1051,19 +1046,19 @@ pub async fn record_form(
 ///       weight, sets, reps, rest, feeling, strategy, key_points, mode)
 ///    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ///    （phase_id/exercise_id 从计划项 JOIN 取；record_date = 今天）
-/// 7. 重定向回 /today（今日页刷新后显示 ✅ 已训练）
+/// 7. 重定向回 /today（今日页刷新后显示  已训练）
 pub async fn record_save(
-    State(state): State<AppState>,
-    AuthUser(user): AuthUser,
-    Path((plan_id, item_id)): Path<(i64, i64)>,
-    Form(form): Form<RecordForm>,
-) -> Result<Redirect, AppError>
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    crate::handlers::auth::AuthUser(user): crate::handlers::auth::AuthUser,
+    axum::extract::Path((plan_id, item_id)): axum::extract::Path<(i64, i64)>,
+    axum::extract::Form(form): axum::extract::Form<RecordForm>,
+) -> Result<axum::response::Redirect, crate::error::AppError>
 {
     let pool = state.pool.read().await.clone();
 
     // 1. 签名：State + AuthUser + Path((plan_id, item_id)) + Form(form)
     // 2. 验证归属（同 record_form）
-    let current_plan = sqlx::query_as::<_, Plan>(
+    let current_plan = sqlx::query_as::<_, crate::models::Plan>(
         "SELECT p.* FROM plans p
         INNER JOIN phases ph ON p.phase_id = ph.id
         WHERE p.id = ? AND ph.user_id = ?",
@@ -1072,19 +1067,23 @@ pub async fn record_save(
     .bind(&user.id)
     .fetch_optional(&pool)
     .await
-    .map_err(AppError::Database)?
-    .ok_or_else(|| AppError::NotFound("No plan found in such user and phase".to_string()))?;
+    .map_err(crate::error::AppError::Database)?
+    .ok_or_else(|| {
+        crate::error::AppError::NotFound("No plan found in such user and phase".to_string())
+    })?;
 
-    let phase = sqlx::query_as::<_, Phase>("SELECT * FROM phases WHERE id = ? AND user_id = ?")
-        .bind(&current_plan.phase_id)
-        .bind(&user.id)
-        .fetch_optional(&pool)
-        .await
-        .map_err(AppError::Database)?
-        .ok_or_else(|| AppError::NotFound("No phase found".to_string()))?;
+    let phase = sqlx::query_as::<_, crate::models::Phase>(
+        "SELECT * FROM phases WHERE id = ? AND user_id = ?",
+    )
+    .bind(&current_plan.phase_id)
+    .bind(&user.id)
+    .fetch_optional(&pool)
+    .await
+    .map_err(crate::error::AppError::Database)?
+    .ok_or_else(|| crate::error::AppError::NotFound("No phase found".to_string()))?;
     if phase.archived
     {
-        return Err(AppError::Forbidden(
+        return Err(crate::error::AppError::Forbidden(
             "Can not edit archived phase".to_string(),
         ));
     }
@@ -1093,36 +1092,37 @@ pub async fn record_save(
     //     不只是"重复代码"问题：POST 可以被绕过前端直接发请求，
     //     不验证 plan_item 属于该 plan，就能拿别人的计划项 id 往自己库里插。
     //     顺便拿到 exercise_id（INSERT 要用）。
-    let plan_item =
-        sqlx::query_as::<_, PlanItem>("SELECT * FROM plan_items WHERE id = ? AND plan_id = ?")
-            .bind(&item_id)
-            .bind(&current_plan.id)
-            .fetch_optional(&pool)
-            .await
-            .map_err(AppError::Database)?
-            .ok_or_else(|| AppError::NotFound("No plan item found".to_string()))?;
+    let plan_item = sqlx::query_as::<_, crate::models::PlanItem>(
+        "SELECT * FROM plan_items WHERE id = ? AND plan_id = ?",
+    )
+    .bind(&item_id)
+    .bind(&current_plan.id)
+    .fetch_optional(&pool)
+    .await
+    .map_err(crate::error::AppError::Database)?
+    .ok_or_else(|| crate::error::AppError::NotFound("No plan item found".to_string()))?;
     // 3. parse 数字字段：weight → f64，sets/reps/rest → i64
     //    （parse 失败 → Validation；负数 → Validation）
     let weight = form
         .weight
         .parse::<f64>()
-        .map_err(|_| AppError::Validation("重量必须是数字".to_string()))?;
+        .map_err(|_| crate::error::AppError::Validation("重量必须是数字".to_string()))?;
     let sets = form
         .sets
         .parse::<i64>()
-        .map_err(|_| AppError::Validation("组数必须是数字".to_string()))?;
+        .map_err(|_| crate::error::AppError::Validation("组数必须是数字".to_string()))?;
     let reps = form
         .reps
         .parse::<i64>()
-        .map_err(|_| AppError::Validation("次数必须是数字".to_string()))?;
+        .map_err(|_| crate::error::AppError::Validation("次数必须是数字".to_string()))?;
     let rest = form
         .rest
         .parse::<i64>()
-        .map_err(|_| AppError::Validation("休息时间必须是数字".to_string()))?;
+        .map_err(|_| crate::error::AppError::Validation("休息时间必须是数字".to_string()))?;
     // 3.5 负数校验（训练数据不可能是负数）
     if weight < 0.0 || sets < 0 || reps < 0 || rest < 0
     {
-        return Err(AppError::Validation(
+        return Err(crate::error::AppError::Validation(
             "重量/组数/次数/休息不能为负数".to_string(),
         ));
     }
@@ -1130,14 +1130,14 @@ pub async fn record_save(
     // checkbox 勾选 → form.completed = Some("1") → true；未勾选 → None → false
     let completed = form.completed.as_deref() == Some("1");
     // 4. 查该计划项最近一条记录（决定 INSERT 还是 UPDATE）
-    let most_recent_record = sqlx::query_as::<_, Record>(
+    let most_recent_record = sqlx::query_as::<_, crate::models::Record>(
         "SELECT * FROM records WHERE plan_item_id = ?
-        ORDER BY record_date DESC, id DESC LIMIT 1",
+         ORDER BY record_date DESC, id DESC LIMIT 1",
     )
     .bind(&item_id)
     .fetch_optional(&pool)
     .await
-    .map_err(AppError::Database)?;
+    .map_err(crate::error::AppError::Database)?;
     // 5. 有记录 → UPDATE：
     //    UPDATE records SET weight=?, sets=?, reps=?, rest=?,
     //      feeling=?, strategy=?, key_points=?, mode=?
@@ -1177,14 +1177,14 @@ pub async fn record_save(
             .bind(&record.id)
             .execute(&pool)
             .await
-            .map_err(AppError::Database)?;
+            .map_err(crate::error::AppError::Database)?;
         },
         None =>
         {
             let today_dt = sqlx::query_scalar::<_, String>("SELECT date('now', 'localtime')")
                 .fetch_one(&pool)
                 .await
-                .map_err(AppError::Database)?;
+                .map_err(crate::error::AppError::Database)?;
             sqlx::query(
                 "INSERT INTO records
                 (plan_item_id, phase_id, exercise_id, record_date, completed,
@@ -1206,7 +1206,7 @@ pub async fn record_save(
             .bind(&form.mode)
             .execute(&pool)
             .await
-            .map_err(AppError::Database)?;
+            .map_err(crate::error::AppError::Database)?;
         },
     }
     // 6.5 【M5 修订：用户诉求 0 —— 记录里的要领回写动作库】
@@ -1214,9 +1214,9 @@ pub async fn record_save(
     //     边练边修正（"行程深一些"、"手腕中立"），这些修正比动作库的
     //     通用描述更贴合本人，保存记录时同步回 exercises.key_points。
     //     下次任何计划用这个动作，要领都是更新后的版本。
-    //     ⚠️ 只回写非空值：空字符串说明用户清空了（有意或无意），
+    //      只回写非空值：空字符串说明用户清空了（有意或无意），
     //        不覆盖动作库的默认描述。
-    //     ⚠️ 数据隔离：WHERE id = ? AND user_id = ?（按 id 查询必须带 user_id）
+    //      数据隔离：WHERE id = ? AND user_id = ?（按 id 查询必须带 user_id）
     if !form.key_points.trim().is_empty()
     {
         sqlx::query("UPDATE exercises SET key_points = ? WHERE id = ? AND user_id = ?")
@@ -1225,7 +1225,7 @@ pub async fn record_save(
             .bind(&user.id)
             .execute(&pool)
             .await
-            .map_err(AppError::Database)?;
+            .map_err(crate::error::AppError::Database)?;
     }
     // 6.6 【M6 修订：计重方式/杆重/单位回写动作库】
     //     record_form 表单里有三个"配置类"字段不存记录表，
@@ -1234,7 +1234,7 @@ pub async fn record_save(
     //       - mode（form.mode）→ default_mode
     //       - 杆重（bar-input，前端提交为 hidden 字段 bar_weight）→ bar_weight
     //       - 单位（unit-select，前端提交为 hidden 字段 unit）→ default_unit
-    //     ⚠️ 杆重/单位不在 RecordForm 里，需要加字段（见结构体）。
+    //      杆重/单位不在 RecordForm 里，需要加字段（见结构体）。
     sqlx::query(
         "UPDATE exercises SET default_mode = ?, bar_weight = ?, default_unit = ?
         WHERE id = ? AND user_id = ?",
@@ -1246,20 +1246,20 @@ pub async fn record_save(
     .bind(&user.id)
     .execute(&pool)
     .await
-    .map_err(AppError::Database)?;
+    .map_err(crate::error::AppError::Database)?;
     // 6.7 【M8 bugfix：是否同步默认组/次（用户诉求）】
     //     record_form 的组数/次数旁新增"是否同步"勾选框：
     //     勾选（sync_defaults=1）→ 本次 sets/reps 回写
     //     exercises.default_sets / default_reps（以后建计划默认用新值）；
     //     不勾选 → 不动动作库的默认组/次。
-    //     ⚠️ 数据隔离：WHERE id = ? AND user_id = ?
-    //     ⚠️ 其他字段（重量/休息/感受/策略/要领/计重配置）的回写逻辑不变，
+    //      数据隔离：WHERE id = ? AND user_id = ?
+    //      其他字段（重量/休息/感受/策略/要领/计重配置）的回写逻辑不变，
     //       只有组/次受这个勾选框控制。
     if form.sync_defaults.as_deref() == Some("1")
     {
         sqlx::query(
             "UPDATE exercises SET default_sets = ?, default_reps = ?
-            WHERE id = ? AND user_id = ?",
+        WHERE id = ? AND user_id = ?",
         )
         .bind(&sets)
         .bind(&reps)
@@ -1267,10 +1267,10 @@ pub async fn record_save(
         .bind(&user.id)
         .execute(&pool)
         .await
-        .map_err(AppError::Database)?;
+        .map_err(crate::error::AppError::Database)?;
     }
-    // 7. 重定向回 /today（今日页刷新后显示 ✅ 已训练）
-    Ok(Redirect::to("/today"))
+    // 7. 重定向回 /today（今日页刷新后显示  已训练）
+    Ok(axum::response::Redirect::to("/today"))
 }
 
 // ============================================================
@@ -1283,12 +1283,12 @@ pub async fn record_save(
 /// f64 直接 400，String 能收到 "" 再判断。
 /// 这里 weight 是"必填"（实际重量必须有），
 /// 但 sets/reps/rest 也可能被用户清空——全用 String 统一处理。
-#[derive(Debug, Deserialize)]
+#[derive(Debug, serde::Deserialize)]
 pub struct RecordForm
 {
     /// 【M4 修订：已完成勾选框（表单第一个字段）】
     /// checkbox 勾选 → 提交 completed=1 → Some("1")；未勾选 → 键不提交 → None
-    /// 只有 completed = 1 时，今日页该动作才标"✅已完成"
+    /// 只有 completed = 1 时，今日页该动作才标"已完成"
     pub completed: Option<String>,
     /// 实际总重 kg（表单层 String，入库前 parse）
     pub weight: String,
