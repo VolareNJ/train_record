@@ -55,8 +55,9 @@
   已能用但有“名不副实”之嫌）。当第二个非 HTTP 出口出现时（M10 后），
   把这 27 个函数搬到顶层 `src/service/`，rest/grpc 都变成纯适配层。
 - **gRPC 可观测性/运维**：服务器反射（`tonic-reflection`，grpcurl 就不用带 `-proto`）、
-  健康检查（`tonic-health`）、TLS（`tonic` 的 tls 特性 + 证书；公网暴露前必做，
-  否则 token 明文传输）。
+  健康检查（`tonic-health`）。
+  （TLS 已在 M9 收尾实现：设 `GRPC_TLS_CERT` / `GRPC_TLS_KEY` 即启用，
+  自签证书生成与客户端信任见 `docs/deploy.md` 六；证书不支持热重载，换证书重启进程。）
 - **REST 也支持 `Authorization: Bearer`**：M8 留的扩展点（todo 旧条目），
   现在 gRPC 已用 Bearer，若要做“两个出口同一种 token 携带方式”，改
   `handlers::auth::extract_token` 同时看 Cookie 与 Authorization 头即可。
@@ -111,6 +112,41 @@
   2. 生产部署必须显式设 `SESSION_SECRET`。现在未设置会静默落到 dev 默认值：
      可选做法是非 debug 构建下发现还是默认值就打 `tracing::warn!`（甚至拒绝启动）。
 - **触发条件**：决定引入签名式 token（M10+）；或公网暴露前。
+
+### 1.9 gRPC 认证改用 tonic Interceptor（M9 记录，中优先级）
+
+- **现状**：每个 RPC 方法第一行显式 `auth::require_user(&request, &self.state).await?`
+  （30 个方法各一行；AuthService 的 login 不需要）。选择理由与取舍见
+  `src/api/grpc/auth.rs` 顶部教学注释：个人项目里“显式一行”更好读，谁需要登录一眼可见。
+- **要改的话**（三个技术要点，先记下免得重新踩）：
+  1. 拦截器按 **service** 生效：`XxxServiceServer::with_interceptor(impl, interceptor)`
+     或 `Server::builder().layer(...)`。但 AuthService 里 login 是公开方法，
+     所以要么只包另外 5 个 service，要么 AuthService 内仍手工判。
+  2. 拦截器要拿 `AppState`：实现体里持一份（`crate::AppState` 内部是 Arc，clone 廉价），
+     写成带状态的 struct 并实现 `tonic::service::Interceptor`。
+  3. 身份要“带进”方法体：拦截器里 `request.extensions_mut().insert(user)`，
+     方法里 `request.extensions().get::<User>()` 取——这一步最容易漏。
+- **触发条件**：方法数继续增长（>40），或需要统一限流/审计日志/耗时统计
+  （在拦截器里加 tracing span 比在 30 处复制更合适）。
+
+### 1.10 网页版（HTTP）的 HTTPS 未启用（M9 记录，已决定暂缓）
+
+- **决定**：**暂不做**——不打算为它买域名。保持现状（明文 HTTP + 公网 IP 直连），
+  下面两个代价照单收下；将来真要离线/PWA 时再回来选第 2 条路。
+- **现状**：网页版是明文 HTTP（`axum::serve`，生产跑 80 端口），没有反代。
+  两个后果：
+  1. 登录密码与会话 cookie 在公网上明文传输；
+  2. **PWA / Service Worker 在公网 HTTP 下注册不了**（浏览器只在 HTTPS 或
+     localhost 允许注册 SW）：能“添加到主屏幕”，但 `sw.js` 不生效、离线缓存不可用
+     （README 的核心特性表已加注意，本机开发不受影响）。
+- **将来若要做的选项**（不买域名的话只有第 2 条可用）：
+  1. 买域名 + Caddy/nginx 反代：自动签发续期，HTTP 与 gRPC 一起解决
+     （`reverse_proxy h2c://127.0.0.1:50051`），Rust 侧零改动；
+  2. **进程内 TLS**（`axum-server` + rustls，复用同张自签证书）：零域名成本，
+     代价是浏览器报“证书不受信任”，需给客户端手动加例外（SW 才允许注册）。
+- **命令与配置**：见 `docs/deploy.md` 七。
+- **触发条件**：手机端真要用到离线训练/桌面图标时（日常“记训练”单个页面不需要 PWA）。
+- **相关**：gRPC 侧已于 M9 收尾支持 TLS（自签 + 配置启用，见 §1.5 与 `deploy.md` 六）。
 
 ### 1.1 模板间排序：`templates.sort_order` 真值分配 （M7 第 3 步已解决，4d2231a 之前）
 
