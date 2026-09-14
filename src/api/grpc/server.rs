@@ -26,8 +26,31 @@
 // 换端口的成本是"部署时多开一个端口"，换来的清晰度是"两套协议互不干扰"。
 //
 // 【教学：日志为什么写在这里？】
-// 服务器起不来最常见的原因是端口被占。tracing::info! 打一行"我监听在哪"，
-// 排查时一看日志就知道（比"curl 没反应"猜半天强）。
+// 服务器起不来最常见的原因是端口被占。tracing::info! 打一行“我监听在哪”，
+// 排查时一看日志就知道（比“curl 没反应”猜半天强）。
+//
+// ============================================================
+// 【教学：TLS 解决了什么？为什么公网必须开？】
+// ============================================================
+// 明文 gRPC 在公网上会漏两样东西：
+//   1. metadata 里的 token（authorization: Bearer xxx）—— 中间人拿到就能冒充你
+//   2. 请求/响应正文（训练数据；Login 请求里就是账号密码）
+// TLS 做的事：握手时协商出只有两端知道的会话密钥，之后所有帧都加密；
+//   并用**证书**证明“对端确实是我要访问的那台服务器”（防中间人顶替）。
+//
+// 【教学：证书从哪来？两条现实路线】
+//   1. 公网 IP + 自签证书：用 openssl 自己签一张（命令见 docs/deploy.md）。
+//      客户端要显式信任这张证书（tonic 客户端：ClientTlsConfig::ca_certificate）。
+//      本项目当前没有域名 → 走这条。
+//   2. 有域名：Let's Encrypt 免费签发（certbot / caddy 自动续期），
+//      客户端信任系统根证书即可，无需手工配置。
+// 注意：证书里必须有 SAN（Subject Alternative Name，写明 IP 或域名）——
+//   现代 TLS 实现（rustls 也是）**只看 SAN 不看 CN**，只写 CN 的证书会被直接拒。
+//
+// 【教学：为什么做成“配置存在才启用”，而不是硬编码开/关？】
+//   本地开发与冒烟测试走 127.0.0.1，明文最省事（不用先造证书）；
+//   公网部署才要 TLS。配置驱动两边都兼顾，且启动日志会明说
+//   当前是 TLS 还是明文——运维一眼能确认，不用猜。
 // ============================================================
 
 /// 启动 gRPC 服务器（在 main.rs 里被 tokio::spawn 起来，与 axum 并行）
@@ -47,10 +70,42 @@ pub async fn serve(
         "gRPC 服务监听 {addr}（auth/phases/exercises/plans/records/stats 共 6 个 service）"
     );
 
+    // 【M9 TLS】证书 + 私钥都配了 → 启用 TLS
+    // （配置层已经保证“要么都给、要么都不给”，见 config.rs）
+    //
+    // 【教学：为什么读文件失败就直接返错、不静默降级成明文？】
+    // 如果证书文件写错路径就默默变明文，运维会以为“已经加密了”——
+    // 这比启动失败危险得多（安全性静默丢失，且没有任何报警）。
+    // 所以启动阶段宁可失败：让 systemd 重启告警、日志里看到原因。
+    //
+    // 【教学：为什么用 tokio::fs 而不是 std::fs？】
+    // 这里在 async 上下文里，std::fs 会阻塞 runtime 线程；
+    // 启动阶段虽然只读一次，但保持“async 里不阻塞”的习惯更省心。
+    let mut server = tonic::transport::Server::builder();
+    match (&state.config.grpc_tls_cert, &state.config.grpc_tls_key)
+    {
+        (Some(cert_path), Some(key_path)) =>
+        {
+            let cert = tokio::fs::read(cert_path).await?;
+            let key = tokio::fs::read(key_path).await?;
+            tracing::info!("gRPC 已启用 TLS（证书 {cert_path}）");
+            server = server.tls_config(
+                tonic::transport::ServerTlsConfig::new()
+                    .identity(tonic::transport::Identity::from_pem(cert, key)),
+            )?;
+        },
+        _ =>
+        {
+            tracing::warn!(
+                "gRPC 明文模式（未设置 GRPC_TLS_CERT / GRPC_TLS_KEY）——仅限本机/内网使用"
+            );
+        },
+    }
+
     // 【教学：add_service 的顺序无关紧要】
-    // tonic 内部按 proto 里的"服务全名"（train_record.v1.PhaseService）路由，
-    // 不是按注册顺序匹配。所以下面这串纯粹是"把 6 张名片递上去"。
-    tonic::transport::Server::builder()
+    // tonic 内部按 proto 里的“服务全名”（train_record.v1.PhaseService）路由，
+    // 不是按注册顺序匹配。所以下面这串纯粹是“把 6 张名片递上去”。
+    server
         .add_service(
             crate::api::grpc::pb::auth_service_server::AuthServiceServer::new(
                 crate::api::grpc::service::auth::AuthServiceImpl::new(state.clone()),

@@ -16,7 +16,9 @@ sqlx = { version = "0.9.0", features = ["runtime-tokio", "sqlite", "macros", "mi
 time = { version = "0.3.55", features = ["serde", "formatting"] }
 tokio = { version = "1.53.1", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
-tonic = "0.14"
+# tonic 的 tls-ring：启用服务端 TLS（rustls + ring 后端）。
+# 只加能力、不改行为：没配证书时仍旧明文（见 api/grpc/server.rs 与 docs/deploy.md）。
+tonic = { version = "0.14", features = ["tls-ring"] }
 tonic-prost = "0.14"
 tower = "0.5.3"
 tower-http = { version = "0.7.0", features = ["fs", "cors", "set-header"] }

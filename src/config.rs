@@ -11,6 +11,9 @@
 //   - 读取 PORT（端口，默认 8080）
 //   - 读取 DATABASE_PATH（数据库文件路径，默认 train_record.db）
 //   - 读取 SESSION_SECRET（会话签名密钥，默认开发用值）
+//   - 【M9】读取 GRPC_PORT（gRPC 端口，默认 50051）
+//   - 【M9 TLS】读取 GRPC_TLS_CERT / GRPC_TLS_KEY（证书与私钥路径，
+//     不给 = 明文，公网部署必给，见 docs/deploy.md）
 // 默认值让程序在本地无需任何配置就能跑起来；
 // 部署到服务器时再通过环境变量覆盖。
 // ============================================================
@@ -36,6 +39,22 @@ pub struct AppConfig
     /// 50051 是 gRPC 社区的"惯例端口"（类似 8080 之于 HTTP）。
     /// 部署时若端口被占/被防火墙拦，用环境变量 GRPC_PORT 改即可。
     pub grpc_port: u16,
+    /// 【M9 TLS 新增】gRPC 服务端证书链（PEM 文件路径）。与 grpc_tls_key 成对出现
+    ///
+    /// 【教学：为什么是 Option？】
+    /// 本地开发/内网不需要证书（明文更省事，冒烟测试就走明文）；
+    /// 部署到公网才需要 TLS。用 Option 表达“可配可不配”：
+    ///   None       → 明文（server.rs 启动时会打一条 warn 提醒）
+    ///   Some(路径) → 启动时读文件、装上 TLS
+    ///
+    /// 【教学：为什么存“路径”而不是“证书内容”？】
+    /// 证书会过期、会被替换（Let's Encrypt 是 90 天一签），配置里放路径最灵活：
+    /// 换证书只要重启进程，不用重新编译。另外私钥不该放环境变量里
+    /// （环境变量会被 ps / /proc 看到），放文件 + chmod 600 更安全。
+    pub grpc_tls_cert: Option<String>,
+    /// 【M9 TLS 新增】gRPC 服务端私钥（PEM 文件路径）。与 grpc_tls_cert 成对出现
+    /// 注意：私钥文件权限要收紧（chmod 600），且绝不要提交进 git
+    pub grpc_tls_key: Option<String>,
     /// SQLite 数据库文件路径。默认 "train_record.db"
     /// 这个文件会自动创建，所有数据都存在里面
     pub database_path: String,
@@ -174,6 +193,20 @@ impl AppConfig
             .parse()
             .expect("GRPC_PORT 必须是数字");
 
+        // 【M9 TLS】gRPC 证书/私钥：可选，但**要么都给、要么都不给**
+        //
+        // 【教学：为什么用 match 而不是两个 read(..) 直接塞进字段？】
+        // 只配一个（比如忘了设 GRPC_TLS_KEY）是典型的部署事故：
+        // 若此时默默按明文跑，你可能以为“已经加密了”——这种**静默降级**
+        // 比启动失败危险得多（错误不会报出来，风险却真实存在）。
+        // 所以在启动阶段就炸掉，报错信息直接说明该怎么办。
+        let (grpc_tls_cert, grpc_tls_key) = match (read("GRPC_TLS_CERT"), read("GRPC_TLS_KEY"))
+        {
+            (Some(cert), Some(key)) => (Some(cert), Some(key)),
+            (None, None) => (None, None),
+            _ => panic!("GRPC_TLS_CERT 与 GRPC_TLS_KEY 必须成对设置（只给一个是配置错误）"),
+        };
+
         // 数据库路径：默认放在项目根目录的 train_record.db
         let database_path = read("DATABASE_PATH").unwrap_or_else(|| "train_record.db".to_string());
 
@@ -218,6 +251,8 @@ impl AppConfig
         Self {
             port,
             grpc_port,
+            grpc_tls_cert,
+            grpc_tls_key,
             database_path,
             session_secret,
             admin_username,

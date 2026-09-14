@@ -32,6 +32,9 @@ async fn spawn_test_server() -> (String, sqlx::SqlitePool)
     let config = crate::config::AppConfig {
         port: 0,
         grpc_port: 0,
+        // 冒烟测试走 127.0.0.1，不需要 TLS（明文最省事，也不用手工信任自签证书）
+        grpc_tls_cert: None,
+        grpc_tls_key: None,
         database_path: db_path,
         session_secret: "test-secret".to_string(),
         admin_username: String::new(),
