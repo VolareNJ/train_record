@@ -164,8 +164,7 @@ pub async fn list(
 ) -> Result<axum::response::Html<String>, crate::error::AppError>
 {
     let pool = state.pool.read().await.clone();
-    // TODO(M2 第 3 步): 学生实现（步骤见上方注释）
-    // 部位筛选下拉框选项：DISTINCT 查询数据库实际部位（动态，含"全部"）
+    // 部位筛选下拉框选项：DISTINCT 查询数据库实际部位（动态，含“全部”）
     let part_options = sqlx::query_scalar::<_, String>(
         "SELECT DISTINCT body_part FROM exercises WHERE user_id = ? ORDER BY body_part",
     )

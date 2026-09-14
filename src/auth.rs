@@ -87,15 +87,6 @@ use argon2::PasswordVerifier; // 提供 .verify_password()
 /// 3. 取哈希字符串：.to_string()
 pub fn hash_password(plain: &str) -> Result<String, crate::error::AppError>
 {
-    // TODO(M1): 学生实现
-    // 提示：
-    //   let salt = SaltString::generate(&mut OsRng);
-    //   let hash = Argon2::default()
-    //       .hash_password(plain.as_bytes(), &salt)
-    //       .map_err(|e| AppError::Other(format!("密码哈希失败: {e}")))?;
-    //   Ok(hash.to_string())
-    // unimplemented!("M1 学生实现：密码哈希")
-
     let random_salt =
         argon2::password_hash::SaltString::generate(&mut argon2::password_hash::rand_core::OsRng);
     let hashed = argon2::Argon2::default()
@@ -149,15 +140,6 @@ pub fn hash_password(plain: &str) -> Result<String, crate::error::AppError>
 ///    返回 Result，用 .is_ok() 转成 bool
 pub fn verify_password(plain: &str, hash: &str) -> Result<bool, crate::error::AppError>
 {
-    // TODO(M1): 学生实现
-    // 提示：
-    //   let parsed_hash = PasswordHash::new(hash)
-    //       .map_err(|e| AppError::Other(format!("密码哈希格式无效: {e}")))?;
-    //   Ok(Argon2::default()
-    //       .verify_password(plain.as_bytes(), &parsed_hash)
-    //       .is_ok())
-    // unimplemented!("M1 学生实现：密码校验")
-
     let parsed_hash = argon2::PasswordHash::new(hash)
         .map_err(|e| crate::error::AppError::Other(format!("解析哈希失败: {}", e)))?;
     Ok(argon2::Argon2::default()
@@ -305,23 +287,6 @@ pub async fn create_session(
     user_id: i64,
 ) -> Result<String, crate::error::AppError>
 {
-    // TODO(M1): 学生实现
-    // 提示：
-    //   let token = uuid::Uuid::new_v4().to_string();
-    //   let expires_at = time::OffsetDateTime::now_utc() + time::Duration::days(30);
-    //   let expires_at_str = expires_at
-    //       .format(&time::format_description::well_known::Rfc3339)
-    //       .map_err(|e| AppError::Other(format!("时间格式化失败: {e}")))?;
-    //   sqlx::query("INSERT INTO sessions (user_id, token, expires_at) VALUES (?, ?, ?)")
-    //       .bind(user_id)
-    //       .bind(&token)
-    //       .bind(expires_at_str)
-    //       .execute(pool)
-    //       .await
-    //       .map_err(AppError::Database)?;
-    //   Ok(token)
-    // unimplemented!("M1 学生实现：创建 session")
-
     let new_token = uuid::Uuid::new_v4().to_string();
     let expire_dt = (time::OffsetDateTime::now_utc() + time::Duration::days(30))
         .format(&time::format_description::well_known::Rfc3339)
@@ -387,24 +352,6 @@ pub async fn get_user_by_session(
     token: &str,
 ) -> Result<crate::models::User, crate::error::AppError>
 {
-    // TODO(M1): 学生实现
-    // 提示：
-    //   let user: Option<User> = sqlx::query_as::<_, User>(
-    //       "SELECT u.* FROM users u
-    //        JOIN sessions s ON s.user_id = u.id
-    //        WHERE s.token = ?",
-    //   )
-    //   .bind(token)
-    //   .fetch_optional(pool)
-    //       .await
-    //       .map_err(AppError::Database)?;
-    //
-    //   let user = user.ok_or_else(|| AppError::Unauthorized)?;
-    //   Ok(user)
-    //   （注意：完整版应在 SQL 里加 expires_at > now 条件检查过期。
-    //     这里为教学清晰先简化，以后在 M4+ 完善。）
-    // unimplemented!("M1 学生实现：凭 token 查用户")
-
     let user_op = sqlx::query_as::<_, crate::models::User>(
         "SELECT u.* FROM users u
          INNER JOIN sessions s ON s.user_id = u.id
@@ -428,16 +375,6 @@ pub async fn destroy_session(
     token: &str,
 ) -> Result<(), crate::error::AppError>
 {
-    // TODO(M1): 学生实现
-    // 提示：
-    //   sqlx::query("DELETE FROM sessions WHERE token = ?")
-    //       .bind(token)
-    //       .execute(pool)
-    //       .await
-    //       .map_err(AppError::Database)?;
-    //   Ok(())
-    // unimplemented!("M1 学生实现：销毁 session")
-
     sqlx::query("DELETE FROM sessions WHERE token = ?")
         .bind(token)
         .execute(pool)

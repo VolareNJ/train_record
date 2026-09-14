@@ -522,8 +522,6 @@ pub async fn logout(
 ///     })
 pub fn extract_token(headers: &axum::http::HeaderMap) -> Option<String>
 {
-    // TODO(M1): 学生实现（步骤见上方注释）
-    // unimplemented!("M1 学生实现：解析 cookie token")
     // ============================================================
     // 【headers 样例】假设浏览器发来的请求头是：
     //   Cookie: foo=bar; session=550e8400-e29b-41d4-a716-446655440000; theme=dark
@@ -832,8 +830,6 @@ pub async fn admin_create_user(
         .map_err(crate::error::AppError::Database)?;
 
     Ok(axum::response::Redirect::to("/admin/users"))
-
-    // unimplemented!("M1 学生实现：创建用户")
 }
 
 // ============================================================
@@ -898,7 +894,7 @@ pub async fn admin_create_user(
 //   require_user 本身保留：admin 页面还要用它（它返回 User 方便 .is_admin），
 //   以及作为教学对照。
 //
-// 【实现步骤】（学生填写 impl 块里的函数体）
+// 【实现步骤】
 // 1. 取 token：
 //      let token = extract_token(&parts.headers).ok_or(AppError::Unauthorized)?;
 //    （extract_token 收 &HeaderMap，parts.headers 就是 HeaderMap）
@@ -994,7 +990,6 @@ impl axum::extract::FromRequestParts<crate::AppState> for AuthUser
             extract_token(&parts.headers).ok_or_else(|| crate::error::AppError::Unauthorized)?;
         let user = crate::auth::get_user_by_session(&pool, &token).await?;
         Ok(AuthUser(user))
-        // unimplemented!("M2 学生实现：AuthUser 提取器")
     }
 }
 
