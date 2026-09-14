@@ -5,7 +5,7 @@
 // M8 的 ApiError 是 **HTTP 语义**的错误（401/403/404/400/500 + JSON body）。
 // gRPC 的错误模型完全不同：
 //   · 错误不放在 body 里，而是放在 trailer（HTTP/2 的尾部头）
-//   · 状态码不是数字 401，而是枚举 Code::Unauthenticated（10/16 编号见下）
+//   · 状态码不是数字 401，而是枚举 tonic::Code::Unauthenticated（编号 16，对照表见下）
 //   · 客户端拿到的是 `tonic::Status`（code + message + 可选 details）
 //
 // 两个模型对照（记这一张表就够）：
@@ -46,13 +46,22 @@ impl From<crate::api::rest::ApiError> for tonic::Status
         // 【实现步骤】
         // 1. match err，把 6 个变体各自映射成 (Code, message)：
         //      ApiError::Database(e)   → 先 tracing::error!("gRPC 数据库错误: {e}")
-        //                                再 (Code::Internal, "数据库错误")
-        //      ApiError::Unauthorized  → (Code::Unauthenticated, "未登录")
-        //      ApiError::NotFound(msg) → (Code::NotFound, msg)
-        //      ApiError::Validation(msg)   → (Code::InvalidArgument, msg)
-        //      ApiError::Forbidden(msg)    → (Code::PermissionDenied, msg)
-        //      ApiError::Other(msg)        → (Code::Internal, msg)
+        //                                再 (tonic::Code::Internal, "数据库错误")
+        //      ApiError::Unauthorized  → (tonic::Code::Unauthenticated, "未登录")
+        //      ApiError::NotFound(msg) → (tonic::Code::NotFound, msg)
+        //      ApiError::Validation(msg)   → (tonic::Code::InvalidArgument, msg)
+        //      ApiError::Forbidden(msg)    → (tonic::Code::PermissionDenied, msg)
+        //      ApiError::Other(msg)        → (tonic::Code::Internal, msg)
         // 2. 用 Status::new(code, message) 构造返回
+        //
+        // 【提示：Code 是什么？从哪来？（学生问过，答案写在这）】
+        //   `tonic::Code` 是 tonic 自带的公开枚举，定义在 tonic 源码的
+        //   src/status.rs，并在 crate 根 re-export：
+        //       pub use status::{Code, ConnectError, Status, TimeoutExpired};
+        //   17 个变体，数字编号 0-16（Ok = 0 不算错误；对照表见本文件开头）。
+        //   所以：**不要自己造 Code，也不要 `use tonic::Code;` 写短名**——
+        //   按项目约定（AGENTS.md：全路径优先）写成 `tonic::Code::Internal`。
+        //   （看不到 tonic 源码时，查 https://docs.rs/tonic/0.14.6/tonic/enum.Code.html）
 //
         // 【提示：为什么用 match 而不是 if/else 链？】
         //   枚举 + match 让编译器保证"每个变体都被处理过"——
