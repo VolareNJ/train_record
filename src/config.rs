@@ -177,8 +177,9 @@ impl AppConfig
         // 数据库路径：默认放在项目根目录的 train_record.db
         let database_path = read("DATABASE_PATH").unwrap_or_else(|| "train_record.db".to_string());
 
-        // 会话密钥：开发默认值。生产必须覆盖！
-        // TODO(M1): 生产环境应从环境变量读取，否则有安全风险
+        // 会话密钥：支持 `SESSION_SECRET` 环境变量覆盖（生产必须显式设置）。
+        // 注意：它目前是预留字段，不参与签名；未设置时落到 dev 默认值，
+        //       详见 docs/todo.md §1.8（原行内 M1 待办注释已搬到那里）。
         //
         // 【教学：unwrap_or_else 是什么？】
         // 拆开看：

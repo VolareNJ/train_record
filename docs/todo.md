@@ -98,6 +98,20 @@
   而不是混在功能改动里。
 - **新代码要求**（AGENTS.md 已写）：不得引入新的 clippy 警告。
 
+### 1.8 SESSION_SECRET 仍是预留字段（M9 记录，低优先级）
+
+- **现状**（把 config.rs 里那条已过时的 `TODO(M1)` 搬到这里）：
+  - `Config.session_secret` 确实已从环境变量 `SESSION_SECRET` 读取，
+    默认值 `dev-only-secret-change-me`（见 `src/config.rs` 与 `src/auth.rs` 开头的教学说明）。
+  - 但它**不参与任何签名/校验**：session 目前是“随机 token 存库”方案，
+    所以这个字段目前是预留（“装饰品”），没有它也不会不安全。
+- **收尾两件事**（等真要用签名式 token 时一起做）：
+  1. 把 token 换成签名通行证（HMAC/JWT）时，它才真正生效——
+     届时同步 `structure.md` 的部署说明与配置项注释。
+  2. 生产部署必须显式设 `SESSION_SECRET`。现在未设置会静默落到 dev 默认值：
+     可选做法是非 debug 构建下发现还是默认值就打 `tracing::warn!`（甚至拒绝启动）。
+- **触发条件**：决定引入签名式 token（M10+）；或公网暴露前。
+
 ### 1.1 模板间排序：`templates.sort_order` 真值分配 （M7 第 3 步已解决，4d2231a 之前）
 
 - **现状**：`templates.sort_order` 是预留字段，M3 阶段插入时恒为 `0`（占位）。

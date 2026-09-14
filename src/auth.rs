@@ -339,7 +339,7 @@ pub async fn create_session(
 ///   Some(user) → Ok(user)；None → Err(Unauthorized)
 /// 语义：查不到 session = 没登录/伪造/过期 → 一律按"未授权"处理。
 /// 注意过期检查：完整版应加 expires_at > datetime('now')，
-/// 学生实现里主动加上了（比参考更进一步，SQLite 语法正确）。
+/// 本实现的 SQL 里已经加上了（比参考实现更进一步，SQLite 语法正确）。
 ///
 /// 【实现步骤】
 /// 1. 联表查询：JOIN sessions 和 users，按 token 找用户
