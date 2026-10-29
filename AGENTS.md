@@ -21,12 +21,9 @@ You are a helpful software engineer assistant. When you thought, thought in ENGL
   - **只有格式化需要 nightly**：`cargo +nightly fmt`（rustfmt.toml 里的
     `brace_style` 等选项是 unstable 特性，stable rustfmt 会忽略它们）
   - 所以命令一律写 `+nightly fmt`，**不要**用裸 `cargo fmt`
-- **每次 build 前先检查编译缓存大小**：`du -sm target | cut -f1`
-  - 超过 5GB → `cargo clean` 后再 `cargo build` / `cargo run`
-  - 未超过 → 直接增量编译（省时间）
-  原因：云服务器磁盘空间有限，增量编译会累积大量 target 缓存，
-  clean 后重新编译可释放磁盘空间（代价是编译时间变长），
-  所以只在缓存膨胀时 clean，避免每次都全量重编
+- **不再按缓存大小强制 clean**：原先「target 超过 5GB 就 cargo clean」的规定已取消
+  - 日常直接增量编译（省时间）
+  - 仅当磁盘确实不足、或需要验证全新构建时，才手动执行 `cargo clean`
 - 验证命令顺序：`cargo +nightly fmt --check` → `cargo check` → `cargo test`
 - 格式不符合时用 `cargo +nightly fmt` 自动修正
 
@@ -144,3 +141,25 @@ You are a helpful software engineer assistant. When you thought, thought in ENGL
 - 每个 HTML 页面**必须带移动端 viewport head**（手机浏览器训练场景）：
   `<head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>`
   拼 HTML 时第一行就写，别忘
+## Rust 编码规则（强制遵守）
+
+> 本文档由 AI 生成。规则来源：skill `rust-coding-rules`；本目录 Rust 任务先加载该 skill。
+
+### 一、导入最小化
+
+- 文件开头禁止写 `use`；类型、函数、模块、常量一律使用全路径，例如 `std::collections::HashMap`、`crate::config::Config`、`super::inner::run`。
+- 唯一例外：某个 trait 不在 prelude 中，且必须以方法调用或运算符形式使用它，此时允许 `use` 该 trait 本身。例外只覆盖 trait，不覆盖模块、类型、常量、宏。
+- 不得以路径长、可读性、团队惯例为由放宽本条。
+
+### 二、内聚与解耦
+
+- 一个源文件只承担一个功能或一个关注点，不把无关功能放进同一个文件。
+- 新增代码沿用既有设计模式与模块划分，不引入第二套并行写法。
+- 出现下列任一情况，说明模块边界需要先调整再实现：同一文件内存在两组互不调用的功能；接入新功能要改动多个不相关模块的公共接口；单个模块名需要同时覆盖两类职责。
+
+### 三、前端国际化（i18n）
+
+- 语言支持中文与英文，默认中文。
+- 每个 mod 的文案集中在该 mod 下独立的文案函数中：接收 State 引用，返回 `String` 或 `&str`，按当前语言返回对应文案。
+- 所有面向用户的文案必须由该函数输出；组件、事件处理与其他界面代码中不得硬编码文案字符串。
+- 新增或修改界面文案时，中英文两个分支同时补齐。

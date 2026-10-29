@@ -1,0 +1,24 @@
+[package]
+name = "train_record_client"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+console_error_panic_hook = "0.1.7"
+iced = { version = "0.14.0", default-features = false, features = ["webgl", "wgpu", "crisp", "web-colors"] }
+js-sys = "0.3.106"
+reqwest = { version = "0.13.4", default-features = false, features = ["json", "query"] }
+wasm-bindgen = "0.2.129"
+web-sys = { version = "0.3.106", features = ["Location", "Storage", "Window"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+iced = { version = "0.14.0", default-features = false, features = ["crisp", "tiny-skia", "tokio", "wayland", "web-colors", "wgpu", "x11"] }
+reqwest = { version = "0.13.4", default-features = false, features = ["json", "query", "rustls"] }
+time = { version = "0.3.55", features = ["local-offset"] }
+
+[lints]
+workspace = true

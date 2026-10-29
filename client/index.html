@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#0e1117" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <title>训练记录</title>
+    <link rel="manifest" href="manifest.webmanifest" />
+    <link data-trunk rel="copy-file" href="assets/manifest.webmanifest" />
+    <link rel="icon" href="/static/icon-192.png" />
+    <link rel="apple-touch-icon" href="/static/icon-192.png" />
+    <link data-trunk rel="rust" />
+    <style>
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+        padding: 0;
+        overflow: hidden;
+        background: #0e1117;
+        overscroll-behavior: none;
+      }
+      body {
+        touch-action: manipulation;
+        -webkit-tap-highlight-color: transparent;
+      }
+      canvas {
+        display: block;
+        width: 100% !important;
+        height: 100% !important;
+        outline: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="iced"></div>
+  </body>
+</html>

@@ -1,0 +1,21 @@
+{
+  "name": "训练记录",
+  "short_name": "训练",
+  "start_url": "/static/app/",
+  "scope": "/static/app/",
+  "display": "standalone",
+  "background_color": "#0e1117",
+  "theme_color": "#0e1117",
+  "icons": [
+    {
+      "src": "/static/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/static/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

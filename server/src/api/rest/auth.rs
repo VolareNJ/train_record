@@ -78,7 +78,8 @@ impl axum::extract::FromRequestParts<crate::AppState> for ApiAuthUser
         //   AppError 不能直接 ? 转成 ApiError（没有 From 实现），
         //   需要 map_err 转成 ApiError::Unauthorized。
         let pool = state.pool.read().await.clone();
-        let token = crate::handlers::auth::extract_token(&parts.headers)
+        let token = bearer_token(&parts.headers)
+            .or_else(|| crate::handlers::auth::extract_token(&parts.headers))
             .ok_or(crate::api::rest::ApiError::Unauthorized)?;
         let user = crate::auth::get_user_by_session(&pool, &token)
             .await
@@ -86,6 +87,17 @@ impl axum::extract::FromRequestParts<crate::AppState> for ApiAuthUser
 
         Ok(ApiAuthUser(user))
     }
+}
+
+fn bearer_token(headers: &axum::http::HeaderMap) -> Option<String>
+{
+    headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+        .map(str::to_string)
 }
 
 // ============================================================
@@ -254,7 +266,8 @@ pub async fn logout(
     let pool = state.pool.read().await.clone();
 
     // 有 token 才销毁（温柔跳过，见上方教学）
-    if let Some(token) = crate::handlers::auth::extract_token(&headers)
+    if let Some(token) =
+        bearer_token(&headers).or_else(|| crate::handlers::auth::extract_token(&headers))
     {
         crate::auth::destroy_session(&pool, &token)
             .await
@@ -287,6 +300,43 @@ pub async fn logout(
 /// 【实现步骤】
 /// 1. 签名：State + ApiAuthUser(user)
 /// 2. 返回 Json(UserOut::from(&user))
+#[derive(serde::Deserialize)]
+pub struct MeUpdateReq
+{
+    #[serde(default)]
+    pub body_weight: Option<f64>,
+}
+
+pub async fn update_me(
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    crate::api::rest::auth::ApiAuthUser(user): crate::api::rest::auth::ApiAuthUser,
+    axum::Json(req): axum::Json<MeUpdateReq>,
+) -> Result<axum::Json<UserOut>, crate::api::rest::ApiError>
+{
+    if let Some(weight) = req.body_weight
+        && !(0.0..=500.0).contains(&weight)
+    {
+        return Err(crate::api::rest::ApiError::Validation(
+            "体重必须在 0~500kg 之间".to_string(),
+        ));
+    }
+
+    let pool = state.pool.read().await.clone();
+    sqlx::query("UPDATE users SET body_weight = ? WHERE id = ?")
+        .bind(req.body_weight)
+        .bind(user.id)
+        .execute(&pool)
+        .await
+        .map_err(crate::api::rest::ApiError::Database)?;
+
+    Ok(axum::Json(UserOut {
+        id: user.id,
+        username: user.username,
+        is_admin: user.is_admin,
+        body_weight: req.body_weight,
+    }))
+}
+
 pub async fn me(
     axum::extract::State(_state): axum::extract::State<crate::AppState>,
     ApiAuthUser(user): ApiAuthUser,

@@ -1,5 +1,12 @@
 ﻿# 训练记录系统 · 需求与技术设计文档（structure.md）
 
+> 2026-10 更新（AI 生成）：项目已拆为 Cargo workspace。
+> 下文路径中的 `src/` 指 `server/src/`，`static/` 指 `server/static/`，
+> `migrations/` 指 `server/migrations/`，`proto/` 指 `server/proto/`。
+> 手机客户端位于 `client/`（iced 0.14 + WebAssembly），构建产物写入
+> `server/static/app/`，由既有 `/static` 路由同源提供。
+
+
 > 本文档由多轮需求调查整理而成，是项目的**设计地基**。后续开发、评审均以此为准；如有变更，先改此文档再改代码。
 
 ---

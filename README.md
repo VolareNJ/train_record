@@ -42,7 +42,7 @@
 | API 出口 ② | **gRPC**（tonic + prost + protobuf） | M9：契约即代码 + 4 种流式，桌面客户端主用 |
 | 前端 | 原生 HTML/CSS/JS | 无重型框架，轻量 |
 
-完整依赖清单见 [`Cargo.toml`](Cargo.toml)。
+完整依赖见根 [`Cargo.toml`](Cargo.toml)（workspace）与 [`server/Cargo.toml`](server/Cargo.toml)、[`client/Cargo.toml`](client/Cargo.toml)。
 
 ---
 
@@ -73,14 +73,16 @@ git clone <your-repo-url> train_record
 cd train_record
 
 # 2. 构建（首次会自动下载依赖，耗时较长）
-cargo build
+cargo build -p train_record
 
-# 3. 运行（自动创建 SQLite 数据库并执行迁移）
+# 3. 运行（必须在 server/ 目录启动：static/ 与 sw.js 是相对路径）
+cd server
 cargo run
 
 # 4. 浏览器访问
-# 本机:   http://127.0.0.1:8080
-# 局域网: http://<服务器IP>:8080
+# iced WASM 客户端: http://127.0.0.1:8080/static/app/
+# 服务端渲染网页:   http://127.0.0.1:8080/
+# 局域网:           http://<服务器IP>:8080/static/app/
 ```
 
 ### 配置（环境变量）
@@ -100,7 +102,7 @@ PORT=3000 GRPC_PORT=50052 DATABASE_PATH=/data/train.db SESSION_SECRET=your-secre
 
 ### 调用 gRPC 接口（可选）
 
-契约在 [`proto/train_record.proto`](proto/train_record.proto)（6 个 service / 32 个方法），
+契约在 [`server/proto/train_record.proto`](server/proto/train_record.proto)（6 个 service / 32 个方法），
 端口 `GRPC_PORT`（默认 50051）。没有 grpcurl 也能验证：仓库内自带端到端测试
 （临时数据库 + 临时端口，不碰生产数据）：
 
@@ -111,7 +113,7 @@ cargo test grpc_smoke -- --ignored --nocapture
 用 grpcurl 手动调（不需要服务器反射，直接指定契约文件）：
 
 ```bash
-grpcurl -plaintext -proto proto/train_record.proto -import-path . \
+grpcurl -plaintext -proto server/proto/train_record.proto -import-path server \
   -d '{"username":"admin","password":"admin123"}' \
   127.0.0.1:50051 train_record.v1.AuthService/Login
 ```
@@ -151,12 +153,16 @@ cargo build --release   # 只编译优化版，不碰 debug
 
 ```bash
 # 1. 编译 release 版
-cargo clean && cargo build --release
+cargo clean && cargo build --release -p train_record
+
+# 1.5 构建 WASM 客户端（需先安装 trunk；见 client/README.md）
+cd client && trunk build --release && cd ..
 
 # 2. 部署
 mkdir -p /opt/train_record/static /var/lib/train_record
 cp target/release/train_record /opt/train_record/
-cp static/* /opt/train_record/static/
+cp -r server/static/* /opt/train_record/static/
+cp server/sw.js /opt/train_record/
 
 # 3. 后台启动（nohup = 关终端不杀进程；& = 放后台）
 cd /opt/train_record
@@ -179,7 +185,7 @@ tail -f /opt/train_record/app.log   # 查看启动日志
 | 8080 | debug 开发版 | `./train_record.db`（测试数据） | 开发调试 |
 
 两者**完全独立**：端口不同（出入口不同）、数据库不同（数据隔离）、静态文件各归各。
-以后更新部署版：`cargo build --release` → 复制新二进制到 `/opt/train_record/` → 杀掉旧进程重启，开发版 8080 可一直开着。
+以后更新部署版：`cargo build --release -p train_record` → 复制新二进制到 `/opt/train_record/` → 杀掉旧进程重启，开发版 8080 可一直开着。
 
 ### 代码格式化（大括号换行）
 
@@ -200,61 +206,46 @@ cargo +nightly fmt --check  # 检查是否合规（CI/验收用）
 
 ```
 train_record/
-├── Cargo.toml              # 依赖清单（axum 含 multipart；M9 起含 tonic/prost）
-├── build.rs                # M9：构建期用 protoc 生成 gRPC 代码
-├── rustfmt.toml            # 格式化配置（大括号换行；需 nightly rustfmt）
-├── migrations/             # SQLite 迁移（自动执行，幂等）
-│   ├── 0001_init.sql       # 8 张基础表
-│   ├── 0002_sessions.sql   # 会话表
-│   ├── 0003_plan_items_metadata.sql  # 计划项计重元数据
-│   ├── 0004_plan_items_note.sql      # 计划项备注
-│   ├── 0005_exercises_sort_order_records_completed.sql
-│   ├── 0006_users_body_weight.sql    # 全局体重
-│   └── 0007_exercises_default_unit.sql  # 默认计重单位
-├── src/
-│   ├── lib.rs              # 库入口：模块树 + 共享状态 AppState（M9 起 lib + bin 分离）
-│   ├── main.rs             # 入口：装配 AppState、注册路由、启动 HTTP + gRPC 两个服务器
-│   ├── config.rs           # 配置（端口/数据库路径/密钥/部位顺序）
-│   ├── error.rs            # 统一错误类型 → HTTP 状态码
-│   ├── db.rs               # 数据库连接池 + 迁移
-│   ├── models.rs           # 数据模型（User/Phase/Exercise/...）
-│   ├── calc.rs             # 1RM 纯函数（Epley/Wathan）+ 单元测试
-│   ├── handlers/
-│       ├── auth.rs         # 登录/登出/用户管理/体重维护
-│       ├── phases.rs       # 阶段管理
-│       ├── exercises.rs    # 动作库 CRUD
-│       ├── plan.rs         # 模板 + 当日计划
-│       ├── record.rs       # 今日页 + 记录表单 + 保存 + 计重展示串
-│       ├── stats.rs        # 历史回顾（日历/当天详情/动作详情/图表）
-│       └── backup.rs       # 备份（下载/上传恢复/CSV+JSON 导出）
-│   └── api/                # M8/M9：给程序用的两个出口
-│       ├── mod.rs          # 模块树（rest / grpc）
-│       ├── rest/           # REST API 层（/api/v1，含协议无关共享函数）
-│       └── grpc/           # gRPC 层（M9：tonic 服务实现 + 端到端测试）
-├── proto/
-│   └── train_record.proto  # gRPC 契约（M9）
-├── build.rs                # 构建期用 protoc 生成 Rust 代码（M9）
-├── static/
-│   ├── manifest.json       # PWA 清单
-│   ├── sw.js               # Service Worker（静态资源离线缓存）
-│   └── weight_converter.js # 重量换算器
-├── sw.js                   # Service Worker（M6 移到根目录，作用域才覆盖全站）
-├── docs/
-│   ├── proposal.md         # 项目背景与动机
-│   ├── structure.md        # 完整设计文档（需求/表结构/页面/计划）
-│   ├── todo.md             # 待办与设计决策（跨会话）
-│   └── learning_path/      #  分阶段开发路径图
-│       ├── M0.md ~ M9.md   # 各阶段路径图（M0-M8  完成；M9 定义完成待实现）
-│       ├── M1_ref/ M4_ref/ M8_ref/ M9_ref/ # 参考答案（M9_ref = gRPC 完整实现）
-│       ├── M4_bugfix_notes.md      # M4 后 Bug 复盘
-│       └── M5_roadmap_notes.md     # M5 前路线复盘（含 GUI 决策）
-├── Python_pkg/             # 原 Python 版（历史数据与参考）
-│   ├── sys.py              # 原记录程序
-│   └── all_data/           # 原 CSV 数据（按训练阶段组织）
-└── train_record.db         # SQLite 数据库（运行时自动生成）
+├── Cargo.toml                  # workspace（server + client）
+├── rustfmt.toml                # 格式化配置（大括号换行；需 nightly rustfmt）
+├── server/                     # 服务端 crate（二进制名 train_record）
+│   ├── Cargo.toml
+│   ├── build.rs                # 构建期用 protoc 生成 gRPC 代码
+│   ├── migrations/             # SQLite 迁移（自动执行，幂等）
+│   ├── proto/
+│   │   └── train_record.proto  # gRPC 契约（6 service / 32 方法）
+│   ├── src/
+│   │   ├── lib.rs              # 模块树 + AppState
+│   │   ├── main.rs             # 装配路由，启动 HTTP + gRPC
+│   │   ├── api/                # REST 与 gRPC 两个出口
+│   │   ├── handlers/           # 服务端渲染页面
+│   │   └── ...                 # config/db/models/calc 等
+│   ├── static/                 # 网页静态资源 + 编译后的 WASM 客户端
+│   │   └── app/                # trunk 输出（index.html + js + wasm）
+│   └── sw.js                   # Service Worker（须在站点根作用域）
+├── client/                     # iced WASM 客户端 crate
+│   ├── Cargo.toml
+│   ├── Trunk.toml              # 构建输出到 server/static/app，开发代理 /api
+│   ├── index.html              # 手机 viewport、全屏 canvas
+│   ├── assets/                 # 内嵌字体（Latin + CJK）
+│   └── src/
+│       ├── main.rs             # iced 应用入口（WASM start / 原生 main）
+│       ├── app.rs              # 全局状态、路由、消息分发
+│       ├── api.rs              # REST 客户端（Bearer / Cookie）
+│       ├── model.rs            # API DTO
+│       ├── copy/               # 中英文文案（每页一组）
+│       ├── pages/              # 登录、今日、记录、历史、动作、阶段、模板、计划、设置
+│       ├── platform.rs         # 日期、存储、服务器地址
+│       ├── style.rs            # 深色主题与控件样式
+│       └── ui.rs               # 移动端通用组件
+├── docs/                       # 设计、API、部署与学习路径
+├── reference/                  # 原 Python 版与 iced 早期参考
+└── README.md
 ```
 
----
+> 后端代码、静态资源与迁移均在 `server/`；前端与构建配置在 `client/`。
+> WASM 构建输出写入 `server/static/app/`，由现有 `/static` 路由直接提供，
+> 因此客户端与 API 同源，浏览器 Cookie 与 `Authorization: Bearer` 均可用。
 
 ## 开发进度
 
@@ -280,7 +271,7 @@ train_record/
 - [`docs/proposal.md`](docs/proposal.md) —— 项目背景：为什么重写
 - [`docs/structure.md`](docs/structure.md) —— **设计地基**：完整需求结论、数据库 DDL、页面规格、开发计划
 - [`docs/api.md`](docs/api.md) —— **REST 接口文档**（M8，/api/v1 端到端示例）
-- [`proto/train_record.proto`](proto/train_record.proto) —— **gRPC 契约**（M9，注释即文档）
+- [`server/proto/train_record.proto`](server/proto/train_record.proto) —— **gRPC 契约**（M9，注释即文档）
 - [`docs/todo.md`](docs/todo.md) —— 待办与设计决策（跨会话备忘）
 - [`docs/learning_path/M0.md`](docs/learning_path/M0.md) ~ [`M9.md`](docs/learning_path/M9.md) —— **分阶段开发路径图**（M0-M8 已完成，M9 待实现）
 - [`docs/learning_path/M4_bugfix_notes.md`](docs/learning_path/M4_bugfix_notes.md) —— M4 后 Bug 修复复盘（iced 必考清单）

@@ -165,7 +165,10 @@ pub fn router() -> axum::Router<crate::AppState>
         // ----------------------------------------------------------
         .route("/api/v1/login", axum::routing::post(auth::login))
         .route("/api/v1/logout", axum::routing::post(auth::logout))
-        .route("/api/v1/me", axum::routing::get(auth::me))
+        .route(
+            "/api/v1/me",
+            axum::routing::get(auth::me).patch(auth::update_me),
+        )
         // ----------------------------------------------------------
         // 第 3 步：阶段 API（src/api/phases.rs）
         // ----------------------------------------------------------

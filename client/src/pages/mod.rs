@@ -1,0 +1,15 @@
+pub mod day;
+pub mod exercise_form;
+pub mod history;
+pub mod library;
+pub mod login;
+pub mod phase_form;
+pub mod phases;
+pub mod plan_form;
+pub mod plans;
+pub mod record;
+pub mod settings;
+pub mod stats;
+pub mod template_form;
+pub mod templates;
+pub mod today;

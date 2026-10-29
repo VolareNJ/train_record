@@ -1,4 +1,5 @@
 /target
+/reference
 
 # 数据库文件（运行时自动生成，不应提交）
 *.db
@@ -12,3 +13,7 @@
 # 备份目录（数据库同目录下的 backup/，含 *.bak-*）
 backup/
 rustc-ice-*.txt
+
+# WASM 客户端构建产物（trunk 输出，按需重建）
+/server/static/app/
+/client/dist/

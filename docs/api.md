@@ -1,9 +1,9 @@
 ﻿# train_record REST API 接口文档（v1）
 
-> 面向桌面客户端开发。最后更新：2026-08-31，与 commit `59e0b98` 对应。
+> 面向 iced / WebAssembly 客户端开发。最后更新：2026-10-29。
 >
-> 【M9 补充】本文件描述的是 **REST 出口**（`/api/v1`，实现于 `src/api/rest/`）。
-> M9 另开了一个 **gRPC 出口**（`proto/train_record.proto`，实现于 `src/api/grpc/`，
+> 【M9 补充】本文件描述的是 **REST 出口**（`/api/v1`，实现于 `server/src/api/rest/`）。
+> M9 另开了一个 **gRPC 出口**（`server/proto/train_record.proto`，实现于 `server/src/api/grpc/`，
 > 默认端口 `GRPC_PORT=50051`）：两者共用同一套业务函数（rest 层的
 > `pub(crate)` 共享函数），但契约形式不同（JSON vs protobuf、无流式 vs 四种流式）。
 > 写客户端时二选一即可；需要流式（图表/导出/实时回执）就选 gRPC。
@@ -33,20 +33,22 @@
 
 ### 1.2 认证方式（重要）
 
-本项目认证走 **session cookie**，不是 Bearer token：
+本项目认证以 **session cookie** 为主，同时接受 **Bearer token**：
 
 1. `POST /api/v1/login` 成功后：
    - 响应头 `Set-Cookie: session=<token>; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000`（30 天）
    - 响应体 JSON 里**冗余返回** `"token"` 字段（专为非浏览器客户端设计）
-2. iced 客户端（reqwest 等）**不会自动存 cookie**，必须自己保存 token，
-   之后每个请求手动带请求头：
+2. 非浏览器客户端（如原生 reqwest）可保存 `token`，之后每个请求带：
    ```
-   Cookie: session=<token>
+   Authorization: Bearer <token>
    ```
+3. WebAssembly 客户端与 API 同源时，浏览器自动携带 `Set-Cookie` 写入的会话；
+   同时也可显式发送 `Authorization: Bearer <token>`。
 3. 未登录 / session 失效 → `401 {"error": "未登录"}`。
 
-> 说明：`Authorization: Bearer` 头认证留到 M9 再做（见 `docs/todo.md` 扩展点）。
-> 当前所有 `ApiAuthUser` 守卫的端点都认 `Cookie: session=<token>`。
+> 说明：所有 `ApiAuthUser` 守卫的端点同时认两种携带方式：
+> `Cookie: session=<token>` 与 `Authorization: Bearer <token>`。
+> WebAssembly 客户端使用后者（浏览器禁止脚本设置 Cookie 头）。
 
 ### 1.3 错误响应格式
 
@@ -128,7 +130,20 @@ PATCH = 部分更新：**不传的字段保持旧值**（null 和缺字段都视
 - 成功 `200`：`UserOut`（同 2.1 的 `user` 对象）
 - 失败 `401 {"error": "未登录"}`
 
-**用途**：iced 启动时用本地 token 调一次 `/me` 判断登录态是否有效。
+**用途**：iced 启动时用本地 token 或 Cookie 调一次 `/me` 判断登录态是否有效。
+
+### 2.3.1 更新当前用户 `PATCH /api/v1/me`
+
+请求：
+
+```json
+{ "body_weight": 75.5 }
+```
+
+- `body_weight` 可省略或传 `null`，表示清除体重
+- 有效范围 `0..=500`，越界返回 `400`
+- 成功 `200`：更新后的 `UserOut`
+- 逻辑与页面层 `POST /profile/weight` 一致（同一张 `users` 表、同一范围校验）
 
 ### 2.4 `UserOut` 结构
 
@@ -655,9 +670,9 @@ let resp = client.post("http://host/api/v1/login")
 let body: serde_json::Value = resp.json().await?;
 let token = body["token"].as_str().unwrap().to_string(); // 持久化（如本地文件）
 
-// ② 后续每个请求手动带 Cookie 头
+// ② 后续每个请求带 Bearer 头
 let resp = client.get("http://host/api/v1/today")
-    .header("Cookie", format!("session={}", token))
+    .header("Authorization", format!("Bearer {token}"))
     .send().await?;
 
 // ③ 启动自检：GET /api/v1/me
@@ -700,7 +715,7 @@ match resp.status().as_u16() {
 4. **记录日期**：upsert 的 `record_date` 由**服务器时钟**决定（`date('now','localtime')`），客户端不传
 5. **1RM 键名**：`"1rm"` 小写；`ExerciseOut` 里是 `"best_1rm"`
 6. **体重**：`UserOut.body_weight` 为 `null` 表示未设置；API 暂无修改体重的端点（页面层有，M9 可补）
-7. **Cookie 头格式**：`Cookie: session=<token>`，`token` 是 UUID 字符串（登录响应里的 `token` 字段）
+7. **认证头格式**：`Authorization: Bearer <token>`，或同源浏览器自动携带 `Cookie: session=<token>`；`token` 是 UUID 字符串
 
 ---
 
@@ -711,6 +726,7 @@ match resp.status().as_u16() {
 |POST | `/api/v1/login` | 登录，返回 user + token | 否 |
 |POST | `/api/v1/logout` | 登出 | 否 |
 |GET | `/api/v1/me` | 当前用户 | 是 |
+|PATCH | `/api/v1/me` | 更新体重 | 是 |
 |GET | `/api/v1/phases` | 阶段列表 | 是 |
 |POST | `/api/v1/phases` | 创建阶段 | 是 |
 |GET | `/api/v1/phases/{id}` | 阶段详情 | 是 |
