@@ -199,6 +199,8 @@ pub enum Message
     ItemRest(usize, String),
     ItemKeyPoints(usize, String),
     ItemNote(usize, String),
+    MoveUp(usize),
+    MoveDown(usize),
     RemoveItem(usize),
     Save,
     Saved(Result<crate::model::Plan, crate::api::ApiError>),
@@ -287,6 +289,22 @@ pub fn update(app: &mut crate::app::App, message: Message) -> iced::Task<crate::
             if let Some(item) = app.plan_form.items.get_mut(index)
             {
                 item.note = value;
+            }
+            iced::Task::none()
+        },
+        Message::MoveUp(index) =>
+        {
+            if index > 0 && index < app.plan_form.items.len()
+            {
+                app.plan_form.items.swap(index, index - 1);
+            }
+            iced::Task::none()
+        },
+        Message::MoveDown(index) =>
+        {
+            if index + 1 < app.plan_form.items.len()
+            {
+                app.plan_form.items.swap(index, index + 1);
             }
             iced::Task::none()
         },
@@ -476,6 +494,14 @@ pub fn view(app: &crate::app::App) -> crate::ui::El<'_>
                     .color(crate::style::TEXT),
                 iced::widget::space().width(iced::Length::Fill),
                 crate::ui::ghost_button(
+                    text.move_up,
+                    crate::app::Message::PlanForm(Message::MoveUp(index)),
+                ),
+                crate::ui::ghost_button(
+                    text.move_down,
+                    crate::app::Message::PlanForm(Message::MoveDown(index)),
+                ),
+                crate::ui::ghost_button(
                     common.remove,
                     crate::app::Message::PlanForm(Message::RemoveItem(index)),
                 ),
@@ -519,6 +545,28 @@ pub fn view(app: &crate::app::App) -> crate::ui::El<'_>
                 .width(iced::Length::Fill),
             ]
             .spacing(8),
+            if let (Ok(weight), Some(exercise)) = (
+                item.weight.trim().parse::<f64>(),
+                state
+                    .exercises
+                    .iter()
+                    .find(|exercise| exercise.id == item.exercise_id),
+            )
+            {
+                iced::widget::text(crate::weight::observed_label(
+                    &exercise.default_mode,
+                    weight,
+                    exercise.bar_weight,
+                    app.user.as_ref().and_then(|user| user.body_weight),
+                    &exercise.default_unit,
+                ))
+                .size(12)
+                .color(crate::style::MUTED)
+            }
+            else
+            {
+                iced::widget::text("")
+            },
             crate::ui::text_field(
                 common.key_points,
                 "",

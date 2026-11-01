@@ -39,5 +39,168 @@
   </head>
   <body>
     <div id="iced"></div>
+    <script>
+      // 手机端软键盘支持：winit 的 web 后端不支持 IME / 软键盘，
+      // canvas 获得焦点也不会弹出输入法。这里用一个不可见的 input 接收
+      // 触屏输入，再把 keydown 转发给 canvas，iced 的 text_input 照常处理。
+      // 只在 touchstart 命中文本输入框（canvas 光标为 text）时唤起键盘。
+      (() => {
+        const input = document.createElement("input");
+        input.type = "text";
+        input.autocomplete = "off";
+        input.autocapitalize = "off";
+        input.spellcheck = false;
+        input.setAttribute("aria-hidden", "true");
+        input.style.cssText =
+          "position:fixed;left:0;top:0;width:1px;height:1px;opacity:0.01;" +
+          "font-size:16px;border:0;padding:0;margin:0;z-index:-1;pointer-events:none;";
+        document.body.appendChild(input);
+
+        let last = "";
+        let silent = false;
+        let composing = false;
+        let startX = 0;
+        let startY = 0;
+        let moved = false;
+
+        const send = (key) => {
+          const canvas = document.querySelector("canvas");
+          if (!canvas) return;
+          canvas.dispatchEvent(
+            new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true })
+          );
+        };
+
+        const sync = () => {
+          const value = input.value;
+          if (value.startsWith(last)) {
+            for (const ch of value.slice(last.length)) send(ch);
+          } else if (last.startsWith(value)) {
+            for (let i = 0; i < last.length - value.length; i++) send("Backspace");
+          } else {
+            // 自动纠错/替换：先删掉上一轮内容，再输入新内容。
+            for (let i = 0; i < last.length; i++) send("Backspace");
+            for (const ch of value) send(ch);
+          }
+          last = value;
+        };
+
+        document.body.addEventListener(
+          "touchstart",
+          (event) => {
+            if (!(event.target instanceof HTMLCanvasElement)) return;
+            const touch = event.changedTouches[0];
+            startX = touch ? touch.clientX : 0;
+            startY = touch ? touch.clientY : 0;
+            moved = false;
+          },
+          true
+        );
+        document.body.addEventListener(
+          "touchmove",
+          (event) => {
+            if (!(event.target instanceof HTMLCanvasElement)) return;
+            const touch = event.changedTouches[0];
+            if (!touch) return;
+            if (Math.abs(touch.clientX - startX) > 10 ||
+                Math.abs(touch.clientY - startY) > 10) {
+              moved = true;
+            }
+          },
+          true
+        );
+
+        // 冒泡阶段执行，确保 iced 已经处理完本次触摸并更新了 canvas 的 cursor。
+        // 用 touchend 而不是 touchstart：iOS 上 touchstart 时 cursor 可能还没更新。
+        document.body.addEventListener(
+          "touchend",
+          (event) => {
+            if (!(event.target instanceof HTMLCanvasElement)) return;
+            if (moved) return;
+            const canvas = event.target;
+            if (canvas.style.cursor === "text") {
+              silent = true;
+              input.value = "";
+              silent = false;
+              last = "";
+              if (document.activeElement !== input) {
+                input.focus({ preventScroll: true });
+              }
+            } else if (document.activeElement === input) {
+              input.blur();
+            }
+          },
+          false
+        );
+
+        input.addEventListener("keydown", (event) => {
+          if (event.isComposing) return;
+          if (
+            ["Backspace", "Delete", "Enter", "Tab", "ArrowLeft", "ArrowRight",
+             "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)
+          ) {
+            // 隐藏 input 里有内容时，Backspace 交给 input 事件按差值处理，
+            // 避免和这里转发的一次删除叠加。
+            if (event.key === "Backspace" && input.value.length > 0) return;
+            event.preventDefault();
+            send(event.key);
+          }
+        });
+
+        input.addEventListener("compositionstart", () => {
+          composing = true;
+        });
+        input.addEventListener("compositionend", () => {
+          composing = false;
+          sync();
+        });
+        input.addEventListener("input", (event) => {
+          if (silent || composing || event.isComposing) return;
+          sync();
+        });
+      })();
+
+      // 数据恢复：用浏览器原生文件选择器上传 .db，成功后由 Rust 侧刷新提示。
+      window.trainRecordUploadBackup = () =>
+        new Promise((resolve) => {
+          const picker = document.createElement("input");
+          picker.type = "file";
+          picker.accept = ".db";
+          picker.style.display = "none";
+          picker.onchange = async () => {
+            const file = picker.files && picker.files[0];
+            if (!file) {
+              resolve({ ok: false, message: "没有选择文件" });
+              return;
+            }
+            const data = new FormData();
+            data.append("db_file", file);
+            try {
+              const response = await fetch("/api/v1/admin/backup/upload", {
+                method: "POST",
+                body: data,
+                credentials: "include",
+              });
+              const text = await response.text();
+              let message = text;
+              try {
+                const parsed = JSON.parse(text);
+                message =
+                  parsed.error ||
+                  parsed.message ||
+                  (parsed.ok ? "数据库已恢复" : text);
+              } catch (_) {}
+              resolve({ ok: response.ok, message });
+            } catch (error) {
+              resolve({ ok: false, message: String(error) });
+            }
+          };
+          picker.click();
+        });
+
+      if ("serviceWorker" in navigator) {
+        navigator.serviceWorker.register("/sw.js");
+      }
+    </script>
   </body>
 </html>

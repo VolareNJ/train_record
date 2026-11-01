@@ -7,6 +7,7 @@ mod pages;
 mod platform;
 mod style;
 mod ui;
+mod weight;
 
 fn window_settings() -> iced::window::Settings
 {

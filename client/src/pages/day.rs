@@ -84,51 +84,94 @@ pub fn view(app: &crate::app::App) -> crate::ui::El<'_>
     {
         content = content.push(crate::ui::muted(text.no_records));
     }
+    let mut groups: Vec<(String, Vec<&crate::model::DayRecord>)> = Vec::new();
     for record in &app.day.records
     {
-        let body = iced::widget::column![
-            iced::widget::row![
-                iced::widget::text(record.exercise_name.as_str())
-                    .size(17)
-                    .font(crate::style::bold())
+        match groups
+            .iter_mut()
+            .find(|(part, _)| *part == record.body_part)
+        {
+            Some((_, records)) => records.push(record),
+            None => groups.push((record.body_part.clone(), vec![record])),
+        }
+    }
+    groups.sort_by_key(|(part, _)| crate::weight::part_rank(part));
+
+    for (part, records) in groups
+    {
+        content = content.push(crate::ui::section_title(crate::i18n::part_label(
+            app.lang, &part,
+        )));
+        for record in records
+        {
+            let observed = crate::weight::observed_label(
+                &record.mode,
+                record.weight,
+                record.bar_weight,
+                app.user.as_ref().and_then(|user| user.body_weight),
+                &record.unit,
+            );
+            let body = iced::widget::column![
+                iced::widget::row![
+                    iced::widget::text(record.exercise_name.as_str())
+                        .size(17)
+                        .font(crate::style::bold())
+                        .color(crate::style::TEXT),
+                    iced::widget::space().width(iced::Length::Fill),
+                    crate::ui::badge(
+                        if record.completed
+                        {
+                            crate::copy::common(app.lang).completed
+                        }
+                        else
+                        {
+                            crate::copy::common(app.lang).logged
+                        },
+                        if record.completed
+                        {
+                            crate::style::SUCCESS
+                        }
+                        else
+                        {
+                            crate::style::WARN
+                        },
+                    ),
+                ]
+                .align_y(iced::Alignment::Center),
+                iced::widget::text(observed)
+                    .size(14)
                     .color(crate::style::TEXT),
-                iced::widget::space().width(iced::Length::Fill),
-                crate::ui::badge(record.body_part.as_str(), crate::style::PRIMARY_LIGHT),
-            ]
-            .align_y(iced::Alignment::Center),
-            iced::widget::text(common.volume(record.sets, record.reps, record.weight))
-                .size(14)
-                .color(crate::style::TEXT),
-            iced::widget::text(format!(
-                "1RM {:.1}  {} {}  {}",
-                record.one_rm,
-                common.rest,
-                record.rest,
-                crate::i18n::mode_label(app.lang, &record.mode)
-            ))
-            .size(13)
-            .color(crate::style::MUTED),
-            iced::widget::text(common.or_not_set(&record.feeling))
+                iced::widget::text(common.volume(record.sets, record.reps, record.weight))
+                    .size(13)
+                    .color(crate::style::MUTED),
+                iced::widget::text(format!(
+                    "1RM {:.1}  {} {}",
+                    record.one_rm, common.rest, record.rest
+                ))
                 .size(13)
-                .color(crate::style::TEXT),
-            iced::widget::text(common.or_not_set(&record.strategy))
-                .size(13)
-                .color(crate::style::WARN),
-            iced::widget::text(common.or_not_set(&record.key_points))
-                .size(12)
                 .color(crate::style::MUTED),
-        ]
-        .spacing(5);
-        content = content.push(
-            iced::widget::button(body)
-                .width(iced::Length::Fill)
-                .padding(14)
-                .style(crate::style::list_button)
-                .on_press(crate::app::Message::OpenStats(
-                    record.exercise_id,
-                    record.exercise_name.clone(),
-                )),
-        );
+                iced::widget::text(common.or_not_set(&record.feeling))
+                    .size(13)
+                    .color(crate::style::TEXT),
+                iced::widget::text(common.or_not_set(&record.strategy))
+                    .size(13)
+                    .color(crate::style::WARN),
+                iced::widget::text(common.or_not_set(&record.key_points))
+                    .size(12)
+                    .color(crate::style::MUTED),
+            ]
+            .spacing(5);
+            content = content.push(
+                iced::widget::button(body)
+                    .width(iced::Length::Fill)
+                    .padding(14)
+                    .style(crate::style::list_button)
+                    .on_press(crate::app::Message::OpenStats(
+                        record.exercise_id,
+                        record.exercise_name.clone(),
+                    )),
+            );
+        }
     }
     crate::ui::detail_page(
         app,

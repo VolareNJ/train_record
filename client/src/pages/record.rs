@@ -3,6 +3,7 @@ pub struct State
 {
     pub plan_id: i64,
     pub item_id: i64,
+    pub exercise_id: i64,
     pub exercise_name: String,
     pub body_part: String,
     pub plan_sets: Option<i64>,
@@ -10,6 +11,8 @@ pub struct State
     pub plan_weight: Option<f64>,
     pub plan_rest: Option<i64>,
     pub plan_key_points: Option<String>,
+    pub plan_note: String,
+    pub item_note: Option<String>,
     pub last: Option<crate::model::LastRecord>,
     pub weight: String,
     pub sets: String,
@@ -20,8 +23,12 @@ pub struct State
     pub key_points: String,
     pub completed: bool,
     pub mode: String,
+    pub unit: String,
     pub converter_value: String,
     pub bar_weight: String,
+    pub body_weight: String,
+    pub sync_defaults: bool,
+    pub chart: Option<Vec<crate::model::ExerciseRecord>>,
     pub saving: bool,
     pub error: Option<String>,
     pub confirm_delete: bool,
@@ -31,31 +38,52 @@ impl State
 {
     pub fn from_item(app: &crate::app::App, plan_id: i64, item: &crate::model::TodayItem) -> Self
     {
-        let last = item.last_record.clone();
-        let weight = last
+        let today = crate::platform::today();
+        let today_record = item
+            .last_record
             .as_ref()
+            .filter(|record| record.record_date == today);
+        let last = item.last_record.clone();
+        let weight = today_record
             .map(|record| format!("{:.1}", record.weight))
             .or_else(|| item.plan_weight.map(|weight| format!("{weight:.1}")))
+            .or_else(|| last.as_ref().map(|record| format!("{:.1}", record.weight)))
             .unwrap_or_default();
-        let sets = last
-            .as_ref()
+        let sets = today_record
             .map(|record| record.sets)
             .or(item.plan_sets)
-            .unwrap_or(3);
-        let reps = last
-            .as_ref()
+            .or_else(|| last.as_ref().map(|record| record.sets))
+            .unwrap_or(item.default_sets);
+        let reps = today_record
             .map(|record| record.reps)
             .or(item.plan_reps)
-            .unwrap_or(8);
-        let rest = last
-            .as_ref()
+            .or_else(|| last.as_ref().map(|record| record.reps))
+            .unwrap_or(item.default_reps);
+        let rest = today_record
             .map(|record| record.rest)
             .or(item.plan_rest)
+            .or_else(|| last.as_ref().map(|record| record.rest))
             .unwrap_or(0);
-        let _ = app;
+        let mode = today_record
+            .map(|record| record.mode.clone())
+            .or_else(|| last.as_ref().map(|record| record.mode.clone()))
+            .unwrap_or_else(|| item.default_mode.clone());
+        let key_points = today_record
+            .map(|record| record.key_points.clone())
+            .or(item.plan_key_points.clone())
+            .or_else(|| last.as_ref().map(|record| record.key_points.clone()))
+            .unwrap_or_else(|| item.default_key_points.clone());
+        let body_weight = app
+            .user
+            .as_ref()
+            .and_then(|user| user.body_weight)
+            .map(|weight| format!("{weight:.1}"))
+            .unwrap_or_else(|| "70".to_string());
+
         Self {
             plan_id,
             item_id: item.id,
+            exercise_id: item.exercise_id,
             exercise_name: item.exercise_name.clone(),
             body_part: item.body_part.clone(),
             plan_sets: item.plan_sets,
@@ -63,27 +91,38 @@ impl State
             plan_weight: item.plan_weight,
             plan_rest: item.plan_rest,
             plan_key_points: item.plan_key_points.clone(),
+            plan_note: String::new(),
+            item_note: item.plan_note.clone(),
             last,
             weight,
             sets: sets.to_string(),
             reps: reps.to_string(),
             rest: rest.to_string(),
-            feeling: String::new(),
-            strategy: String::new(),
-            key_points: item.plan_key_points.clone().unwrap_or_default(),
-            completed: item.last_record.is_some(),
-            mode: "bar".to_string(),
+            feeling: today_record
+                .map(|record| record.feeling.clone())
+                .unwrap_or_default(),
+            strategy: today_record
+                .map(|record| record.strategy.clone())
+                .unwrap_or_default(),
+            key_points,
+            completed: today_record.is_some_and(|record| record.completed),
+            mode,
+            unit: item.default_unit.clone(),
             converter_value: String::new(),
-            bar_weight: "20".to_string(),
+            bar_weight: format!("{}", item.bar_weight),
+            body_weight,
+            sync_defaults: false,
+            chart: None,
             saving: false,
             error: None,
             confirm_delete: false,
         }
     }
 
-    fn total(&self, body_weight: Option<f64>) -> Option<f64>
+    fn total(&self, fallback_body_weight: Option<f64>) -> Option<f64>
     {
         let raw = self.converter_value.trim().parse::<f64>().ok()?;
+        let raw_kg = if self.unit == "lb" { raw * 0.4536 } else { raw };
         match self.mode.as_str()
         {
             "bar" => self
@@ -91,10 +130,19 @@ impl State
                 .trim()
                 .parse::<f64>()
                 .ok()
-                .map(|bar| raw * 2.0 + bar),
-            "std" => Some(raw),
-            "support" => body_weight.map(|weight| weight - raw),
-            "lb" => Some(raw / 2.2046),
+                .map(|bar| bar + raw_kg * 2.0),
+            "std" => Some(raw_kg),
+            "support" =>
+            {
+                let body = self
+                    .body_weight
+                    .trim()
+                    .parse::<f64>()
+                    .ok()
+                    .or(fallback_body_weight)
+                    .unwrap_or(70.0);
+                Some((body - raw_kg).max(0.0))
+            },
             _ => None,
         }
     }
@@ -112,8 +160,11 @@ pub enum Message
     KeyPoints(String),
     Completed(bool),
     Mode(String),
+    Unit(String),
     ConverterValue(String),
     BarWeight(String),
+    BodyWeight(String),
+    SyncDefaults(bool),
     FillWeight,
     Save,
     Saved(Result<serde_json::Value, crate::api::ApiError>),
@@ -121,6 +172,8 @@ pub enum Message
     DeleteConfirm,
     DeleteCancel,
     Deleted(Result<serde_json::Value, crate::api::ApiError>),
+    ChartLoaded(Result<crate::model::ExerciseStats, crate::api::ApiError>),
+    ConfigSaved(Result<serde_json::Value, crate::api::ApiError>),
 }
 
 pub fn update(app: &mut crate::app::App, message: Message) -> iced::Task<crate::app::Message>
@@ -171,7 +224,12 @@ pub fn update(app: &mut crate::app::App, message: Message) -> iced::Task<crate::
         Message::Mode(value) =>
         {
             app.record.mode = value;
-            iced::Task::none()
+            save_config(app)
+        },
+        Message::Unit(value) =>
+        {
+            app.record.unit = value;
+            save_config(app)
         },
         Message::ConverterValue(value) =>
         {
@@ -181,6 +239,16 @@ pub fn update(app: &mut crate::app::App, message: Message) -> iced::Task<crate::
         Message::BarWeight(value) =>
         {
             app.record.bar_weight = value;
+            save_config(app)
+        },
+        Message::BodyWeight(value) =>
+        {
+            app.record.body_weight = value;
+            iced::Task::none()
+        },
+        Message::SyncDefaults(value) =>
+        {
+            app.record.sync_defaults = value;
             iced::Task::none()
         },
         Message::FillWeight =>
@@ -235,6 +303,7 @@ pub fn update(app: &mut crate::app::App, message: Message) -> iced::Task<crate::
                 app.record.error = Some(text.invalid_sets.to_string());
                 return iced::Task::none();
             }
+            let bar_weight = app.record.bar_weight.trim().parse::<f64>().unwrap_or(0.0);
             let input = crate::model::RecordInput {
                 weight,
                 sets,
@@ -244,6 +313,10 @@ pub fn update(app: &mut crate::app::App, message: Message) -> iced::Task<crate::
                 strategy: app.record.strategy.clone(),
                 key_points: app.record.key_points.clone(),
                 completed: app.record.completed,
+                mode: app.record.mode.clone(),
+                bar_weight,
+                unit: app.record.unit.clone(),
+                sync_defaults: app.record.sync_defaults,
             };
             let api = app.api.clone();
             let plan_id = app.record.plan_id;
@@ -301,6 +374,28 @@ pub fn update(app: &mut crate::app::App, message: Message) -> iced::Task<crate::
             app.record.confirm_delete = false;
             iced::Task::none()
         },
+        Message::ChartLoaded(result) => match result
+        {
+            Ok(stats) =>
+            {
+                app.record.chart = Some(stats.records);
+                iced::Task::none()
+            },
+            Err(_) => iced::Task::none(),
+        },
+        Message::ConfigSaved(result) => match result
+        {
+            Ok(_) => iced::Task::none(),
+            Err(error) => match error
+            {
+                crate::api::ApiError::Unauthorized => crate::app::report_error(app, error),
+                other =>
+                {
+                    app.record.error = Some(other.to_string());
+                    iced::Task::none()
+                },
+            },
+        },
         Message::Deleted(result) => match result
         {
             Ok(_) =>
@@ -315,13 +410,25 @@ pub fn update(app: &mut crate::app::App, message: Message) -> iced::Task<crate::
     }
 }
 
+fn save_config(app: &mut crate::app::App) -> iced::Task<crate::app::Message>
+{
+    let api = app.api.clone();
+    let id = app.record.exercise_id;
+    let mode = app.record.mode.clone();
+    let bar_weight = app.record.bar_weight.trim().parse::<f64>().unwrap_or(0.0);
+    let unit = app.record.unit.clone();
+    iced::Task::perform(
+        async move { api.exercise_config(id, &mode, bar_weight, &unit).await },
+        |result| crate::app::Message::Record(Message::ConfigSaved(result)),
+    )
+}
+
 fn mode_options(text: &crate::copy::record::Text) -> Vec<String>
 {
     vec![
         text.mode_bar.to_string(),
         text.mode_std.to_string(),
         text.mode_support.to_string(),
-        text.mode_lb.to_string(),
     ]
 }
 
@@ -331,7 +438,6 @@ fn mode_label(text: &crate::copy::record::Text, mode: &str) -> String
     {
         "std" => text.mode_std.to_string(),
         "support" => text.mode_support.to_string(),
-        "lb" => text.mode_lb.to_string(),
         _ => text.mode_bar.to_string(),
     }
 }
@@ -345,10 +451,6 @@ fn mode_from_label(text: &crate::copy::record::Text, label: &str) -> String
     else if label == text.mode_support
     {
         "support".to_string()
-    }
-    else if label == text.mode_lb
-    {
-        "lb".to_string()
     }
     else
     {
@@ -385,6 +487,43 @@ pub fn view(app: &crate::app::App) -> crate::ui::El<'_>
         ]
         .spacing(6),
     ));
+
+    if !state.plan_note.trim().is_empty()
+        || state
+            .item_note
+            .as_deref()
+            .is_some_and(|note| !note.trim().is_empty())
+    {
+        content = content.push(crate::ui::flat_card(
+            iced::widget::column![
+                iced::widget::text(text.plan_note)
+                    .size(12)
+                    .color(crate::style::MUTED),
+                iced::widget::text(state.plan_note.as_str())
+                    .size(13)
+                    .color(crate::style::TEXT),
+                iced::widget::text(text.item_note)
+                    .size(12)
+                    .color(crate::style::MUTED),
+                iced::widget::text(state.item_note.as_deref().unwrap_or(common.not_set))
+                    .size(13)
+                    .color(crate::style::TEXT),
+            ]
+            .spacing(4),
+        ));
+    }
+
+    if let Some(chart) = &state.chart
+        && !chart.is_empty()
+    {
+        content = content.push(crate::ui::card(
+            iced::widget::column![
+                crate::ui::section_title(text.trend),
+                crate::pages::stats::chart(chart),
+            ]
+            .spacing(8),
+        ));
+    }
 
     if let Some(last) = &state.last
     {
@@ -467,6 +606,9 @@ pub fn view(app: &crate::app::App) -> crate::ui::El<'_>
         crate::ui::checkbox_field(common.completed, state.completed, |value| {
             crate::app::Message::Record(Message::Completed(value))
         },),
+        crate::ui::checkbox_field(text.sync_defaults, state.sync_defaults, |value| {
+            crate::app::Message::Record(Message::SyncDefaults(value))
+        },),
     ]
     .spacing(10);
     content = content.push(crate::ui::card(form));
@@ -483,6 +625,12 @@ pub fn view(app: &crate::app::App) -> crate::ui::El<'_>
             Some(mode_label(&text, &state.mode)),
             move |label| crate::app::Message::Record(Message::Mode(mode_from_label(&text, &label))),
         ),
+        crate::ui::pick_field(
+            text.unit,
+            vec!["kg".to_string(), "lb".to_string()],
+            Some(state.unit.clone()),
+            |value| crate::app::Message::Record(Message::Unit(value)),
+        ),
         crate::ui::text_field(
             text.raw_value,
             "0.0",
@@ -494,25 +642,39 @@ pub fn view(app: &crate::app::App) -> crate::ui::El<'_>
     .spacing(10);
     if state.mode == "bar"
     {
-        converter = converter.push(crate::ui::text_field(
+        converter = converter.push(crate::ui::pick_field(
             text.bar_weight,
-            "20",
-            &state.bar_weight,
+            vec![
+                "20".to_string(),
+                "11.3".to_string(),
+                "10".to_string(),
+                "0".to_string(),
+            ],
+            Some(state.bar_weight.clone()),
             |value| crate::app::Message::Record(Message::BarWeight(value)),
+        ));
+    }
+    if state.mode == "support"
+    {
+        converter = converter.push(crate::ui::text_field(
+            text.body_weight,
+            "70",
+            &state.body_weight,
+            |value| crate::app::Message::Record(Message::BodyWeight(value)),
             false,
         ));
     }
     converter = converter
-        .push(
+        .push(crate::ui::centered(
             iced::widget::text(format!("{}: {}", text.total, total_text))
                 .size(18)
                 .font(crate::style::bold())
                 .color(crate::style::PRIMARY_LIGHT),
-        )
-        .push(crate::ui::secondary_button(
+        ))
+        .push(crate::ui::centered(crate::ui::secondary_button(
             text.fill_weight,
             crate::app::Message::Record(Message::FillWeight),
-        ));
+        )));
     content = content.push(crate::ui::card(converter));
 
     if let Some(error) = &state.error
@@ -542,6 +704,10 @@ pub fn view(app: &crate::app::App) -> crate::ui::El<'_>
             Some(crate::app::Message::Record(Message::Save))
         },
     ));
+    content = content.push(crate::ui::centered(crate::ui::secondary_button(
+        text.trend,
+        crate::app::Message::OpenStats(state.exercise_id, state.exercise_name.clone()),
+    )));
 
     if state.last.is_some()
     {
@@ -552,7 +718,7 @@ pub fn view(app: &crate::app::App) -> crate::ui::El<'_>
                     iced::widget::text(text.confirm_delete)
                         .size(14)
                         .color(crate::style::TEXT),
-                    iced::widget::row![
+                    crate::ui::action_row([
                         crate::ui::danger_button(
                             common.yes,
                             crate::app::Message::Record(Message::Delete),
@@ -561,18 +727,17 @@ pub fn view(app: &crate::app::App) -> crate::ui::El<'_>
                             common.no,
                             crate::app::Message::Record(Message::DeleteCancel),
                         ),
-                    ]
-                    .spacing(10),
+                    ]),
                 ]
                 .spacing(10),
             ));
         }
         else
         {
-            content = content.push(crate::ui::danger_button(
+            content = content.push(crate::ui::centered(crate::ui::danger_outline_button(
                 text.delete_record,
                 crate::app::Message::Record(Message::DeleteConfirm),
-            ));
+            )));
         }
     }
 

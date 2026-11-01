@@ -137,6 +137,36 @@ impl Api
         self.send(request).await
     }
 
+    pub async fn dashboard(&self) -> Result<crate::model::Dashboard, ApiError>
+    {
+        let request = self.client.get(self.url("/api/v1/dashboard"));
+        self.send(request).await
+    }
+
+    pub async fn admin_users(&self) -> Result<Vec<crate::model::AdminUser>, ApiError>
+    {
+        let request = self.client.get(self.url("/api/v1/admin/users"));
+        self.send(request).await
+    }
+
+    pub async fn admin_create_user(
+        &self,
+        username: &str,
+        password: &str,
+        is_admin: bool,
+    ) -> Result<crate::model::AdminUser, ApiError>
+    {
+        let request = self
+            .client
+            .post(self.url("/api/v1/admin/users"))
+            .json(&serde_json::json!({
+                "username": username,
+                "password": password,
+                "is_admin": is_admin,
+            }));
+        self.send(request).await
+    }
+
     pub async fn update_me(&self, body_weight: Option<f64>)
     -> Result<crate::model::User, ApiError>
     {
@@ -231,6 +261,25 @@ impl Api
         self.send(request).await
     }
 
+    pub async fn exercise_config(
+        &self,
+        id: i64,
+        mode: &str,
+        bar_weight: f64,
+        unit: &str,
+    ) -> Result<serde_json::Value, ApiError>
+    {
+        let request = self
+            .client
+            .post(self.url(&format!("/api/v1/exercises/{id}/config")))
+            .json(&serde_json::json!({
+                "default_mode": mode,
+                "bar_weight": bar_weight,
+                "default_unit": unit,
+            }));
+        self.send(request).await
+    }
+
     pub async fn exercise_stats(&self, id: i64) -> Result<crate::model::ExerciseStats, ApiError>
     {
         let request = self
@@ -278,6 +327,19 @@ impl Api
         let request = self
             .client
             .delete(self.url(&format!("/api/v1/templates/{id}")));
+        self.send(request).await
+    }
+
+    pub async fn template_sort(
+        &self,
+        id: i64,
+        dir: &str,
+    ) -> Result<Vec<crate::model::Template>, ApiError>
+    {
+        let request = self
+            .client
+            .post(self.url(&format!("/api/v1/templates/{id}/sort")))
+            .query(&[("dir", dir)]);
         self.send(request).await
     }
 

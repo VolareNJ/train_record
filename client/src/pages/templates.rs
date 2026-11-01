@@ -24,6 +24,9 @@ pub enum Message
     Deleted(Result<serde_json::Value, crate::api::ApiError>),
     DeleteCancel,
     UseTemplate(i64),
+    MoveUp(i64),
+    MoveDown(i64),
+    Sorted(Result<Vec<crate::model::Template>, crate::api::ApiError>),
 }
 
 pub fn update(app: &mut crate::app::App, message: Message) -> iced::Task<crate::app::Message>
@@ -120,6 +123,30 @@ pub fn update(app: &mut crate::app::App, message: Message) -> iced::Task<crate::
             app.templates.confirm_delete = None;
             iced::Task::none()
         },
+        Message::MoveUp(id) =>
+        {
+            let api = app.api.clone();
+            iced::Task::perform(async move { api.template_sort(id, "up").await }, |result| {
+                crate::app::Message::Templates(Message::Sorted(result))
+            })
+        },
+        Message::MoveDown(id) =>
+        {
+            let api = app.api.clone();
+            iced::Task::perform(
+                async move { api.template_sort(id, "down").await },
+                |result| crate::app::Message::Templates(Message::Sorted(result)),
+            )
+        },
+        Message::Sorted(result) => match result
+        {
+            Ok(items) =>
+            {
+                app.templates.items = items;
+                iced::Task::none()
+            },
+            Err(error) => crate::app::report_error(app, error),
+        },
         Message::UseTemplate(id) =>
         {
             if let Some(template) = app.templates.items.iter().find(|item| item.id == id)
@@ -198,6 +225,14 @@ pub fn view(app: &crate::app::App) -> crate::ui::El<'_>
                     .font(crate::style::bold())
                     .color(crate::style::TEXT),
                 iced::widget::space().width(iced::Length::Fill),
+                crate::ui::ghost_button(
+                    "↑",
+                    crate::app::Message::Templates(Message::MoveUp(template.id)),
+                ),
+                crate::ui::ghost_button(
+                    "↓",
+                    crate::app::Message::Templates(Message::MoveDown(template.id)),
+                ),
                 crate::ui::badge(
                     format!("{} {}", template.items.len(), text.items),
                     crate::style::PRIMARY_LIGHT,
@@ -216,7 +251,7 @@ pub fn view(app: &crate::app::App) -> crate::ui::El<'_>
             )
             .size(13)
             .color(crate::style::MUTED),
-            iced::widget::row![
+            crate::ui::action_row([
                 crate::ui::secondary_button(
                     text.use_template,
                     crate::app::Message::Templates(Message::UseTemplate(template.id)),
@@ -225,29 +260,30 @@ pub fn view(app: &crate::app::App) -> crate::ui::El<'_>
                     common.edit,
                     crate::app::Message::Templates(Message::Edit(template.id)),
                 ),
-                crate::ui::danger_button(
+                crate::ui::danger_outline_button(
                     common.delete,
                     crate::app::Message::Templates(Message::Delete(template.id)),
                 ),
-            ]
-            .spacing(8),
+            ]),
         ]
         .spacing(8);
         if app.templates.confirm_delete == Some(template.id)
         {
             card = card.push(
-                iced::widget::row![
+                iced::widget::column![
                     iced::widget::text(text.delete_confirm)
                         .size(12)
                         .color(crate::style::DANGER),
-                    crate::ui::danger_button(
-                        common.yes,
-                        crate::app::Message::Templates(Message::DeleteConfirmed(template.id)),
-                    ),
-                    crate::ui::secondary_button(
-                        common.no,
-                        crate::app::Message::Templates(Message::DeleteCancel),
-                    ),
+                    crate::ui::action_row([
+                        crate::ui::danger_button(
+                            common.yes,
+                            crate::app::Message::Templates(Message::DeleteConfirmed(template.id)),
+                        ),
+                        crate::ui::secondary_button(
+                            common.no,
+                            crate::app::Message::Templates(Message::DeleteCancel),
+                        ),
+                    ]),
                 ]
                 .spacing(6),
             );

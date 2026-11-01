@@ -41,6 +41,14 @@ pub struct TodayItemOut
     pub plan_weight: Option<f64>,
     pub plan_rest: Option<i64>,
     pub plan_key_points: Option<String>,
+    pub plan_note: Option<String>,
+    /// 动作库默认计重设置（客户端换算观察强度用）
+    pub default_mode: String,
+    pub bar_weight: f64,
+    pub default_unit: String,
+    pub default_sets: i64,
+    pub default_reps: i64,
+    pub default_key_points: String,
     /// 该计划项最近一条记录（无 → None）
     pub last_record: Option<LastRecordOut>,
 }
@@ -49,12 +57,28 @@ pub struct TodayItemOut
 pub struct LastRecordOut
 {
     pub id: i64,
+    pub record_date: String,
     pub weight: f64,
     pub sets: i64,
     pub reps: i64,
     pub rest: i64,
     pub feeling: String,
     pub strategy: String,
+    pub completed: bool,
+    pub mode: String,
+    pub key_points: String,
+}
+
+struct ExerciseMeta
+{
+    name: String,
+    body_part: String,
+    default_mode: String,
+    bar_weight: f64,
+    default_unit: String,
+    default_sets: i64,
+    default_reps: i64,
+    default_key_points: String,
 }
 
 #[derive(serde::Serialize)]
@@ -185,8 +209,8 @@ pub(crate) async fn today_view(
             .await
             .map_err(crate::api::rest::ApiError::Database)?;
 
-            // 动作索引（id → (name, body_part)）
-            let ex_index: std::collections::HashMap<i64, (String, String)> =
+            // 动作索引（id → 名称/部位/默认计重设置）
+            let ex_index: std::collections::HashMap<i64, ExerciseMeta> =
                 sqlx::query_as::<_, crate::models::Exercise>(
                     "SELECT * FROM exercises WHERE user_id = ?",
                 )
@@ -195,7 +219,21 @@ pub(crate) async fn today_view(
                 .await
                 .map_err(crate::api::rest::ApiError::Database)?
                 .into_iter()
-                .map(|e| (e.id, (e.name, e.body_part)))
+                .map(|e| {
+                    (
+                        e.id,
+                        ExerciseMeta {
+                            name: e.name,
+                            body_part: e.body_part,
+                            default_mode: e.default_mode,
+                            bar_weight: e.bar_weight,
+                            default_unit: e.default_unit,
+                            default_sets: e.default_sets,
+                            default_reps: e.default_reps,
+                            default_key_points: e.key_points,
+                        },
+                    )
+                })
                 .collect();
 
             // 每个计划项的最近记录
@@ -211,29 +249,47 @@ pub(crate) async fn today_view(
                 .await
                 .map_err(crate::api::rest::ApiError::Database)?;
 
-                let (ex_name, body_part) = ex_index
-                    .get(&item.exercise_id)
-                    .cloned()
-                    .unwrap_or_else(|| ("未知动作".to_string(), "未分组".to_string()));
+                let meta = ex_index.get(&item.exercise_id);
 
                 items.push(TodayItemOut {
                     id: item.id,
                     exercise_id: item.exercise_id,
-                    exercise_name: ex_name,
-                    body_part,
+                    exercise_name: meta
+                        .map(|m| m.name.clone())
+                        .unwrap_or_else(|| "未知动作".to_string()),
+                    body_part: meta
+                        .map(|m| m.body_part.clone())
+                        .unwrap_or_else(|| "未分组".to_string()),
                     plan_sets: item.plan_sets,
                     plan_reps: item.plan_reps,
                     plan_weight: item.plan_weight,
                     plan_rest: item.plan_rest,
                     plan_key_points: item.plan_key_points.clone(),
+                    plan_note: item.plan_note.clone(),
+                    default_mode: meta
+                        .map(|m| m.default_mode.clone())
+                        .unwrap_or_else(|| "bar".to_string()),
+                    bar_weight: meta.map(|m| m.bar_weight).unwrap_or(20.0),
+                    default_unit: meta
+                        .map(|m| m.default_unit.clone())
+                        .unwrap_or_else(|| "kg".to_string()),
+                    default_sets: meta.map(|m| m.default_sets).unwrap_or(3),
+                    default_reps: meta.map(|m| m.default_reps).unwrap_or(8),
+                    default_key_points: meta
+                        .map(|m| m.default_key_points.clone())
+                        .unwrap_or_default(),
                     last_record: last.map(|r| LastRecordOut {
                         id: r.id,
+                        record_date: r.record_date,
                         weight: r.weight,
                         sets: r.sets,
                         reps: r.reps,
                         rest: r.rest,
                         feeling: r.feeling,
                         strategy: r.strategy,
+                        completed: r.completed,
+                        mode: r.mode,
+                        key_points: r.key_points,
                     }),
                 });
             }
@@ -274,6 +330,18 @@ pub struct RecordCreateReq
     pub key_points: String,
     #[serde(default)]
     pub completed: bool,
+    /// 计重方式：bar/std/support；空/缺省 → 动作库默认值
+    #[serde(default)]
+    pub mode: Option<String>,
+    /// 杆重；缺省 → 动作库默认值
+    #[serde(default)]
+    pub bar_weight: Option<f64>,
+    /// 记录时展示单位 kg/lb；缺省 → 动作库默认值
+    #[serde(default)]
+    pub unit: Option<String>,
+    /// 是否同步组数/次数到动作库默认值
+    #[serde(default)]
+    pub sync_defaults: bool,
 }
 
 // ============================================================
@@ -389,33 +457,55 @@ pub(crate) async fn record_upsert(
         ));
     }
 
-    // 5. 查该计划项最近记录：有 → UPDATE，无 → INSERT
-    let most_recent = sqlx::query_as::<_, crate::models::Record>(
-        "SELECT * FROM records WHERE plan_item_id = ?
-                 ORDER BY record_date DESC, id DESC LIMIT 1",
-    )
-    .bind(item_id)
-    .fetch_optional(pool)
-    .await
-    .map_err(crate::api::rest::ApiError::Database)?;
-
-    // 6. 计重方式（mode）：API 简化 —— 用动作库默认值，不落库回写
-    let mode = sqlx::query_scalar::<_, String>(
-        "SELECT default_mode FROM exercises WHERE id = ? AND user_id = ?",
+    // 5. 动作默认计重设置（记录缺省时兜底，同时用于回写）
+    let exercise = sqlx::query_as::<_, crate::models::Exercise>(
+        "SELECT * FROM exercises WHERE id = ? AND user_id = ?",
     )
     .bind(plan_item.exercise_id)
     .bind(user_id)
     .fetch_optional(pool)
     .await
     .map_err(crate::api::rest::ApiError::Database)?
-    .unwrap_or_else(|| "bar".to_string());
+    .ok_or_else(|| crate::api::rest::ApiError::NotFound("动作不存在".to_string()))?;
 
-    // 7. INSERT 或 UPDATE（当天已有记录 → 更新同一行）
+    let requested_mode = req.mode.as_deref().unwrap_or("").trim();
+    let mode = match requested_mode
+    {
+        "bar" | "support" | "std" => requested_mode.to_string(),
+        _ => exercise.default_mode.clone(),
+    };
+    let bar_weight = req
+        .bar_weight
+        .filter(|value| *value >= 0.0)
+        .unwrap_or(exercise.bar_weight);
+    let unit = req
+        .unit
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| *value == "kg" || *value == "lb")
+        .unwrap_or(exercise.default_unit.as_str())
+        .to_string();
+
+    // 6. 事务：记录 + 动作库默认设置（多表写入，必须原子）
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(crate::api::rest::ApiError::Database)?;
+
+    let most_recent = sqlx::query_as::<_, crate::models::Record>(
+        "SELECT * FROM records WHERE plan_item_id = ?
+         ORDER BY record_date DESC, id DESC LIMIT 1",
+    )
+    .bind(item_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(crate::api::rest::ApiError::Database)?;
+
     let saved: crate::models::Record = match most_recent
     {
         Some(record) => sqlx::query_as::<_, crate::models::Record>(
             "UPDATE records SET completed = ?, weight = ?, sets = ?, reps = ?, rest = ?,
-                feeling = ?, strategy = ?, key_points = ?
+                feeling = ?, strategy = ?, key_points = ?, mode = ?
                 WHERE id = ?
                 RETURNING *",
         )
@@ -427,14 +517,15 @@ pub(crate) async fn record_upsert(
         .bind(&req.feeling)
         .bind(&req.strategy)
         .bind(&req.key_points)
+        .bind(&mode)
         .bind(record.id)
-        .fetch_one(pool)
+        .fetch_one(&mut *tx)
         .await
         .map_err(crate::api::rest::ApiError::Database)?,
         None =>
         {
             let today_dt = sqlx::query_scalar::<_, String>("SELECT date('now', 'localtime')")
-                .fetch_one(pool)
+                .fetch_one(&mut *tx)
                 .await
                 .map_err(crate::api::rest::ApiError::Database)?;
             sqlx::query_as::<_, crate::models::Record>(
@@ -457,11 +548,46 @@ pub(crate) async fn record_upsert(
             .bind(&req.strategy)
             .bind(&req.key_points)
             .bind(&mode)
-            .fetch_one(pool)
+            .fetch_one(&mut *tx)
             .await
             .map_err(crate::api::rest::ApiError::Database)?
         },
     };
+
+    // 7. 回写动作库（与 HTML record_save 对齐）
+    if !req.key_points.trim().is_empty()
+    {
+        sqlx::query("UPDATE exercises SET key_points = ? WHERE id = ? AND user_id = ?")
+            .bind(&req.key_points)
+            .bind(plan_item.exercise_id)
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(crate::api::rest::ApiError::Database)?;
+    }
+    sqlx::query(
+        "UPDATE exercises
+         SET default_mode = ?, bar_weight = ?, default_unit = ?,
+             default_sets = CASE WHEN ? THEN ? ELSE default_sets END,
+             default_reps = CASE WHEN ? THEN ? ELSE default_reps END
+         WHERE id = ? AND user_id = ?",
+    )
+    .bind(&mode)
+    .bind(bar_weight)
+    .bind(&unit)
+    .bind(req.sync_defaults)
+    .bind(req.sets)
+    .bind(req.sync_defaults)
+    .bind(req.reps)
+    .bind(plan_item.exercise_id)
+    .bind(user_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(crate::api::rest::ApiError::Database)?;
+
+    tx.commit()
+        .await
+        .map_err(crate::api::rest::ApiError::Database)?;
 
     // 8. 返回保存后的记录 JSON（补动作名）
     record_out(pool, &saved, user_id).await

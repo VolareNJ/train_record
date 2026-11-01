@@ -14,6 +14,12 @@ pub struct Text
     pub saved: &'static str,
     pub invalid_weight: &'static str,
     pub sign_out_confirm: &'static str,
+    pub overview: &'static str,
+    pub phases: &'static str,
+    pub exercises: &'static str,
+    pub templates: &'static str,
+    pub plans: &'static str,
+    pub current_phase: &'static str,
 }
 
 pub fn text(lang: crate::i18n::Lang) -> Text
@@ -34,6 +40,12 @@ pub fn text(lang: crate::i18n::Lang) -> Text
             saved: "已保存",
             invalid_weight: "体重必须是 0 到 500 之间的数字",
             sign_out_confirm: "确定退出登录？",
+            overview: "概览",
+            phases: "阶段",
+            exercises: "动作",
+            templates: "模板",
+            plans: "计划",
+            current_phase: "当前阶段",
         },
         crate::i18n::Lang::En => Text {
             body_weight: "Body weight",
@@ -49,6 +61,12 @@ pub fn text(lang: crate::i18n::Lang) -> Text
             saved: "Saved",
             invalid_weight: "Body weight must be between 0 and 500",
             sign_out_confirm: "Sign out?",
+            overview: "Overview",
+            phases: "Phases",
+            exercises: "Exercises",
+            templates: "Templates",
+            plans: "Plans",
+            current_phase: "Current phase",
         },
     }
 }

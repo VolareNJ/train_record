@@ -150,7 +150,9 @@ impl axum::response::IntoResponse for ApiError
 // 1. 声明子模块（本文件已列好）
 // 2. 用 Router::new() 链式注册所有 /api/v1/... 路由
 // 3. 返回 Router<AppState>（与 main.rs 的 Router 状态一致）
+pub mod admin;
 pub mod auth;
+pub mod dashboard;
 pub mod exercises;
 pub mod phases;
 pub mod plans;
@@ -201,6 +203,10 @@ pub fn router() -> axum::Router<crate::AppState>
                 .patch(exercises::update)
                 .delete(exercises::delete),
         )
+        .route(
+            "/api/v1/exercises/{id}/config",
+            axum::routing::post(exercises::update_config),
+        )
         // ----------------------------------------------------------
         // 第 5 步：模板 + 计划 API（src/api/plans.rs）
         // ----------------------------------------------------------
@@ -213,6 +219,10 @@ pub fn router() -> axum::Router<crate::AppState>
             axum::routing::patch(plans::template_update).delete(plans::template_delete),
         )
         .route(
+            "/api/v1/templates/{id}/sort",
+            axum::routing::post(plans::template_sort),
+        )
+        .route(
             "/api/v1/phases/{phase_id}/plans",
             axum::routing::get(plans::plan_list).post(plans::plan_create),
         )
@@ -221,6 +231,10 @@ pub fn router() -> axum::Router<crate::AppState>
             axum::routing::get(plans::plan_detail)
                 .patch(plans::plan_update)
                 .delete(plans::plan_delete),
+        )
+        .route(
+            "/api/v1/plans/{id}/items/{item_id}/move",
+            axum::routing::post(plans::plan_item_move),
         )
         // ----------------------------------------------------------
         // 第 6 步：记录 API（src/api/records.rs）
@@ -246,5 +260,28 @@ pub fn router() -> axum::Router<crate::AppState>
         .route(
             "/api/v1/exercises/{id}/stats",
             axum::routing::get(stats::exercise_stats),
+        )
+        // ----------------------------------------------------------
+        // 管理员 API
+        // ----------------------------------------------------------
+        .route(
+            "/api/v1/dashboard",
+            axum::routing::get(dashboard::dashboard),
+        )
+        .route(
+            "/api/v1/admin/users",
+            axum::routing::get(admin::users).post(admin::create_user),
+        )
+        .route(
+            "/api/v1/admin/backup/download",
+            axum::routing::get(admin::backup_download),
+        )
+        .route(
+            "/api/v1/admin/backup/upload",
+            axum::routing::post(admin::backup_upload),
+        )
+        .route(
+            "/api/v1/admin/backup/export",
+            axum::routing::get(admin::export_records),
         )
 }

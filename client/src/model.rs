@@ -1,4 +1,12 @@
 #[derive(Debug, Clone, serde::Deserialize)]
+pub struct AdminUser
+{
+    pub id: i64,
+    pub username: String,
+    pub is_admin: bool,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
 pub struct User
 {
     pub id: i64,
@@ -85,18 +93,23 @@ pub struct Plan
 pub struct LastRecord
 {
     pub id: i64,
+    pub record_date: String,
     pub weight: f64,
     pub sets: i64,
     pub reps: i64,
     pub rest: i64,
     pub feeling: String,
     pub strategy: String,
+    pub completed: bool,
+    pub mode: String,
+    pub key_points: String,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct TodayItem
 {
     pub id: i64,
+    pub exercise_id: i64,
     pub exercise_name: String,
     pub body_part: String,
     pub plan_sets: Option<i64>,
@@ -104,6 +117,13 @@ pub struct TodayItem
     pub plan_weight: Option<f64>,
     pub plan_rest: Option<i64>,
     pub plan_key_points: Option<String>,
+    pub plan_note: Option<String>,
+    pub default_mode: String,
+    pub bar_weight: f64,
+    pub default_unit: String,
+    pub default_sets: i64,
+    pub default_reps: i64,
+    pub default_key_points: String,
     pub last_record: Option<LastRecord>,
 }
 
@@ -132,6 +152,23 @@ pub struct Today
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
+pub struct DashboardPhase
+{
+    pub name: String,
+    pub days: i64,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct Dashboard
+{
+    pub phase_count: i64,
+    pub exercise_count: i64,
+    pub template_count: i64,
+    pub plan_count: i64,
+    pub current_phase: Option<DashboardPhase>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
 pub struct Calendar
 {
     pub train_days: Vec<String>,
@@ -151,6 +188,9 @@ pub struct DayRecord
     pub feeling: String,
     pub strategy: String,
     pub key_points: String,
+    pub bar_weight: f64,
+    pub unit: String,
+    pub completed: bool,
     #[serde(rename = "1rm")]
     pub one_rm: f64,
 }
@@ -160,6 +200,11 @@ pub struct ExerciseBrief
 {
     pub name: String,
     pub body_part: String,
+    pub default_mode: String,
+    pub bar_weight: f64,
+    pub default_unit: String,
+    pub default_sets: i64,
+    pub default_reps: i64,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -169,8 +214,19 @@ pub struct ExerciseRecord
     pub weight: f64,
     pub sets: i64,
     pub reps: i64,
+    pub rest: i64,
+    pub feeling: String,
+    pub strategy: String,
+    pub mode: String,
+    pub bar_weight: f64,
+    pub unit: String,
+    pub completed: bool,
     #[serde(rename = "1rm")]
     pub one_rm: f64,
+    #[serde(rename = "2rm")]
+    pub two_rm: f64,
+    #[serde(rename = "3rm")]
+    pub three_rm: f64,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -179,6 +235,8 @@ pub struct ExerciseStats
     pub exercise: ExerciseBrief,
     pub records: Vec<ExerciseRecord>,
     pub best_1rm: f64,
+    pub best_2rm: f64,
+    pub best_3rm: f64,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -246,6 +304,10 @@ pub struct RecordInput
     pub strategy: String,
     pub key_points: String,
     pub completed: bool,
+    pub mode: String,
+    pub bar_weight: f64,
+    pub unit: String,
+    pub sync_defaults: bool,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]

@@ -570,6 +570,10 @@ impl From<&crate::api::grpc::pb::UpsertRecordRequest> for crate::api::rest::reco
             strategy: req.strategy.clone(),
             key_points: req.key_points.clone(),
             completed: req.completed,
+            mode: None,
+            bar_weight: None,
+            unit: None,
+            sync_defaults: false,
         }
     }
 }

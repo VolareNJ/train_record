@@ -209,7 +209,33 @@ pub fn view(app: &crate::app::App) -> crate::ui::El<'_>
             .align_y(iced::Alignment::Center),
             crate::ui::stat_line(text.best, best),
             crate::ui::stat_line(text.last, last),
-            iced::widget::row![
+            crate::ui::stat_line(
+                text.default_mode,
+                format!(
+                    "{}  {}kg  {}",
+                    crate::i18n::mode_label(app.lang, &exercise.default_mode),
+                    exercise.bar_weight,
+                    exercise.default_unit
+                ),
+            ),
+            crate::ui::stat_line(
+                text.defaults,
+                format!("{}*{}", exercise.default_sets, exercise.default_reps),
+            ),
+            if let Some(date) = exercise.last_record_date.as_deref()
+            {
+                crate::ui::stat_line(
+                    text.days_since,
+                    crate::platform::days_since(date)
+                        .map(|days| common.days_ago(days))
+                        .unwrap_or_else(|| common.not_set.to_string()),
+                )
+            }
+            else
+            {
+                crate::ui::stat_line(text.days_since, common.not_set)
+            },
+            crate::ui::action_row([
                 crate::ui::secondary_button(
                     text.stats,
                     crate::app::Message::Library(Message::Stats(exercise.id)),
@@ -218,32 +244,32 @@ pub fn view(app: &crate::app::App) -> crate::ui::El<'_>
                     common.edit,
                     crate::app::Message::Library(Message::Edit(exercise.id)),
                 ),
-                crate::ui::danger_button(
+                crate::ui::danger_outline_button(
                     common.delete,
                     crate::app::Message::Library(Message::Delete(exercise.id)),
                 ),
-            ]
-            .spacing(8),
+            ]),
         ]
         .spacing(8);
         if app.library.confirm_delete == Some(exercise.id)
         {
             card = card.push(
-                iced::widget::row![
+                iced::widget::column![
                     iced::widget::text(text.delete_confirm)
                         .size(12)
                         .color(crate::style::DANGER),
-                    crate::ui::danger_button(
-                        common.yes,
-                        crate::app::Message::Library(Message::DeleteConfirmed(exercise.id)),
-                    ),
-                    crate::ui::secondary_button(
-                        common.no,
-                        crate::app::Message::Library(Message::DeleteCancel),
-                    ),
+                    crate::ui::action_row([
+                        crate::ui::danger_button(
+                            common.yes,
+                            crate::app::Message::Library(Message::DeleteConfirmed(exercise.id)),
+                        ),
+                        crate::ui::secondary_button(
+                            common.no,
+                            crate::app::Message::Library(Message::DeleteCancel),
+                        ),
+                    ]),
                 ]
-                .spacing(6)
-                .align_y(iced::Alignment::Center),
+                .spacing(6),
             );
         }
         content = content.push(crate::ui::card(card));

@@ -195,6 +195,24 @@ pub fn view(app: &crate::app::App) -> crate::ui::El<'_>
         content = content.push(crate::ui::section_title(title));
         for phase in phases
         {
+            let mut actions = vec![
+                crate::ui::secondary_button(
+                    text.templates,
+                    crate::app::Message::Phases(Message::Templates(phase.id, phase.name.clone())),
+                ),
+                crate::ui::secondary_button(
+                    text.plans,
+                    crate::app::Message::Phases(Message::Plans(phase.id, phase.name.clone())),
+                ),
+            ];
+            if !phase.archived
+            {
+                actions.push(crate::ui::secondary_button(
+                    common.edit,
+                    crate::app::Message::Phases(Message::Edit(phase.id)),
+                ));
+            }
+
             let mut card = iced::widget::column![
                 iced::widget::row![
                     iced::widget::text(phase.name.as_str())
@@ -228,24 +246,7 @@ pub fn view(app: &crate::app::App) -> crate::ui::El<'_>
                 iced::widget::text(common.or_not_set(&phase.note))
                     .size(13)
                     .color(crate::style::TEXT),
-                iced::widget::row![
-                    crate::ui::secondary_button(
-                        text.templates,
-                        crate::app::Message::Phases(Message::Templates(
-                            phase.id,
-                            phase.name.clone(),
-                        )),
-                    ),
-                    crate::ui::secondary_button(
-                        text.plans,
-                        crate::app::Message::Phases(Message::Plans(phase.id, phase.name.clone(),)),
-                    ),
-                    crate::ui::secondary_button(
-                        common.edit,
-                        crate::app::Message::Phases(Message::Edit(phase.id)),
-                    ),
-                ]
-                .spacing(8),
+                crate::ui::action_row(actions),
             ]
             .spacing(8);
 
@@ -256,7 +257,7 @@ pub fn view(app: &crate::app::App) -> crate::ui::El<'_>
                         iced::widget::text(text.archive_confirm)
                             .size(12)
                             .color(crate::style::DANGER),
-                        iced::widget::row![
+                        crate::ui::action_row([
                             crate::ui::danger_button(
                                 common.yes,
                                 crate::app::Message::Phases(Message::ArchiveConfirmed(phase.id)),
@@ -265,15 +266,14 @@ pub fn view(app: &crate::app::App) -> crate::ui::El<'_>
                                 common.no,
                                 crate::app::Message::Phases(Message::CancelArchive),
                             ),
-                        ]
-                        .spacing(8),
+                        ]),
                     ]
                     .spacing(6),
                 );
             }
             else
             {
-                card = card.push(crate::ui::ghost_button(
+                card = card.push(crate::ui::centered(crate::ui::ghost_button(
                     if phase.archived
                     {
                         text.unarchive
@@ -283,7 +283,7 @@ pub fn view(app: &crate::app::App) -> crate::ui::El<'_>
                         text.archive
                     },
                     crate::app::Message::Phases(Message::Archive(phase.id, !phase.archived)),
-                ));
+                )));
             }
             content = content.push(crate::ui::card(card));
         }

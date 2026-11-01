@@ -8,6 +8,10 @@ pub struct Text
     pub no_training: &'static str,
     pub day_title: &'static str,
     pub no_records: &'static str,
+    pub year: &'static str,
+    pub by_exercise: &'static str,
+    pub all_parts: &'static str,
+    pub no_exercises: &'static str,
 }
 
 pub fn text(lang: crate::i18n::Lang) -> Text
@@ -22,6 +26,10 @@ pub fn text(lang: crate::i18n::Lang) -> Text
             no_training: "本月还没有训练记录",
             day_title: "当天记录",
             no_records: "这天没有记录",
+            year: "年份",
+            by_exercise: "按动作查看",
+            all_parts: "全部",
+            no_exercises: "还没有动作",
         },
         crate::i18n::Lang::En => Text {
             prev: "Prev",
@@ -31,6 +39,10 @@ pub fn text(lang: crate::i18n::Lang) -> Text
             no_training: "No training this month",
             day_title: "Day records",
             no_records: "No records on this day",
+            year: "Year",
+            by_exercise: "By exercise",
+            all_parts: "All",
+            no_exercises: "No exercises yet",
         },
     }
 }

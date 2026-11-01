@@ -7,6 +7,7 @@ pub struct State
     pub name: String,
     pub selected: Vec<i64>,
     pub exercises: Vec<crate::model::Exercise>,
+    pub filter: Option<String>,
     pub saving: bool,
     pub error: Option<String>,
 }
@@ -22,6 +23,7 @@ impl State
             name: String::new(),
             selected: Vec::new(),
             exercises: exercises.to_vec(),
+            filter: None,
             saving: false,
             error: None,
         }
@@ -41,6 +43,7 @@ impl State
             name: template.name.clone(),
             selected: template.items.iter().map(|item| item.exercise_id).collect(),
             exercises: exercises.to_vec(),
+            filter: None,
             saving: false,
             error: None,
         }
@@ -51,6 +54,7 @@ impl State
 pub enum Message
 {
     Name(String),
+    Filter(String),
     Pick(String),
     MoveUp(usize),
     MoveDown(usize),
@@ -66,6 +70,19 @@ pub fn update(app: &mut crate::app::App, message: Message) -> iced::Task<crate::
         Message::Name(value) =>
         {
             app.template_form.name = value;
+            iced::Task::none()
+        },
+        Message::Filter(value) =>
+        {
+            let text = crate::copy::template::text(app.lang);
+            app.template_form.filter = if value == text.all_parts
+            {
+                None
+            }
+            else
+            {
+                Some(crate::i18n::part_code(app.lang, &value))
+            };
             iced::Task::none()
         },
         Message::Pick(label) =>
@@ -176,9 +193,34 @@ pub fn view(app: &crate::app::App) -> crate::ui::El<'_>
     let text = crate::copy::template::text(app.lang);
     let common = crate::copy::common(app.lang);
     let state = &app.template_form;
+    let mut parts = state
+        .exercises
+        .iter()
+        .map(|exercise| exercise.body_part.clone())
+        .collect::<Vec<_>>();
+    parts.sort_by_key(|part| crate::weight::part_rank(part));
+    parts.dedup();
+    let mut filter_options = vec![text.all_parts.to_string()];
+    filter_options.extend(
+        parts
+            .iter()
+            .map(|part| crate::i18n::part_label(app.lang, part)),
+    );
+    let filter_selected = state
+        .filter
+        .as_deref()
+        .map(|part| crate::i18n::part_label(app.lang, part))
+        .unwrap_or_else(|| text.all_parts.to_string());
     let options: Vec<String> = state
         .exercises
         .iter()
+        .filter(|exercise| {
+            state
+                .filter
+                .as_deref()
+                .is_none_or(|part| part == exercise.body_part)
+                && !state.selected.contains(&exercise.id)
+        })
         .map(|exercise| exercise.name.clone())
         .collect();
     let mut content = iced::widget::column![
@@ -192,6 +234,12 @@ pub fn view(app: &crate::app::App) -> crate::ui::El<'_>
             |value| crate::app::Message::TemplateForm(Message::Name(value)),
             false,
         ),
+        crate::ui::pick_field(
+            text.filter,
+            filter_options,
+            Some(filter_selected),
+            |value| { crate::app::Message::TemplateForm(Message::Filter(value)) },
+        ),
         crate::ui::pick_field(text.pick_exercise, options, None, |label| {
             crate::app::Message::TemplateForm(Message::Pick(label))
         },),
@@ -203,36 +251,56 @@ pub fn view(app: &crate::app::App) -> crate::ui::El<'_>
     {
         content = content.push(crate::ui::muted(text.no_items));
     }
+    let mut groups: Vec<(String, Vec<(usize, &crate::model::Exercise)>)> = Vec::new();
     for (index, exercise_id) in state.selected.iter().enumerate()
     {
-        let name = state
+        let Some(exercise) = state
             .exercises
             .iter()
             .find(|exercise| exercise.id == *exercise_id)
-            .map(|exercise| exercise.name.as_str())
-            .unwrap_or("?");
-        content = content.push(
-            iced::widget::row![
-                iced::widget::text(name)
-                    .size(15)
-                    .color(crate::style::TEXT)
-                    .width(iced::Length::Fill),
-                crate::ui::ghost_button(
-                    text.move_up,
-                    crate::app::Message::TemplateForm(Message::MoveUp(index)),
-                ),
-                crate::ui::ghost_button(
-                    text.move_down,
-                    crate::app::Message::TemplateForm(Message::MoveDown(index)),
-                ),
-                crate::ui::ghost_button(
-                    common.remove,
-                    crate::app::Message::TemplateForm(Message::Remove(index)),
-                ),
-            ]
-            .spacing(4)
-            .align_y(iced::Alignment::Center),
-        );
+        else
+        {
+            continue;
+        };
+        match groups
+            .iter_mut()
+            .find(|(part, _)| *part == exercise.body_part)
+        {
+            Some((_, rows)) => rows.push((index, exercise)),
+            None => groups.push((exercise.body_part.clone(), vec![(index, exercise)])),
+        }
+    }
+    groups.sort_by_key(|(part, _)| crate::weight::part_rank(part));
+    for (part, rows) in groups
+    {
+        content = content.push(crate::ui::section_title(crate::i18n::part_label(
+            app.lang, &part,
+        )));
+        for (index, exercise) in rows
+        {
+            content = content.push(
+                iced::widget::row![
+                    iced::widget::text(exercise.name.as_str())
+                        .size(15)
+                        .color(crate::style::TEXT)
+                        .width(iced::Length::Fill),
+                    crate::ui::ghost_button(
+                        text.move_up,
+                        crate::app::Message::TemplateForm(Message::MoveUp(index)),
+                    ),
+                    crate::ui::ghost_button(
+                        text.move_down,
+                        crate::app::Message::TemplateForm(Message::MoveDown(index)),
+                    ),
+                    crate::ui::ghost_button(
+                        common.remove,
+                        crate::app::Message::TemplateForm(Message::Remove(index)),
+                    ),
+                ]
+                .spacing(4)
+                .align_y(iced::Alignment::Center),
+            );
+        }
     }
 
     if let Some(error) = &state.error

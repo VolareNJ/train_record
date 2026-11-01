@@ -53,7 +53,11 @@ pub fn primary_button(
             radius: 12.0.into(),
             ..iced::Border::default()
         },
-        shadow: iced::Shadow::default(),
+        shadow: iced::Shadow {
+            offset: iced::Vector::new(0.0, 3.0),
+            blur_radius: 10.0,
+            color: iced::Color::from_rgba(PRIMARY.r, PRIMARY.g, PRIMARY.b, 0.22),
+        },
         snap: true,
     }
 }
@@ -66,8 +70,8 @@ pub fn secondary_button(
     let background = match status
     {
         iced::widget::button::Status::Hovered => SURFACE_3,
-        iced::widget::button::Status::Pressed => SURFACE_2,
-        _ => SURFACE,
+        iced::widget::button::Status::Pressed => SURFACE,
+        _ => SURFACE_2,
     };
     iced::widget::button::Style {
         background: Some(iced::Background::Color(background)),
@@ -127,6 +131,36 @@ pub fn danger_button(
     }
 }
 
+pub fn danger_outline_button(
+    _theme: &iced::Theme,
+    status: iced::widget::button::Status,
+) -> iced::widget::button::Style
+{
+    let background = match status
+    {
+        iced::widget::button::Status::Hovered =>
+        {
+            iced::Color::from_rgba(DANGER.r, DANGER.g, DANGER.b, 0.18)
+        },
+        iced::widget::button::Status::Pressed =>
+        {
+            iced::Color::from_rgba(DANGER.r, DANGER.g, DANGER.b, 0.28)
+        },
+        _ => SURFACE_2,
+    };
+    iced::widget::button::Style {
+        background: Some(iced::Background::Color(background)),
+        text_color: DANGER,
+        border: iced::Border {
+            color: iced::Color::from_rgba(DANGER.r, DANGER.g, DANGER.b, 0.45),
+            width: 1.0,
+            radius: 12.0.into(),
+        },
+        shadow: iced::Shadow::default(),
+        snap: true,
+    }
+}
+
 pub fn nav_button(
     active: bool,
 ) -> impl Fn(&iced::Theme, iced::widget::button::Status) -> iced::widget::button::Style + 'static
@@ -167,7 +201,11 @@ pub fn card(_theme: &iced::Theme) -> iced::widget::container::Style
             width: 1.0,
             radius: 16.0.into(),
         },
-        shadow: iced::Shadow::default(),
+        shadow: iced::Shadow {
+            offset: iced::Vector::new(0.0, 6.0),
+            blur_radius: 18.0,
+            color: iced::Color::from_rgba(0.0, 0.0, 0.0, 0.18),
+        },
         snap: true,
     }
 }

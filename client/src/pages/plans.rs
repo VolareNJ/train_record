@@ -4,7 +4,7 @@ type LoadedData = (
     Vec<crate::model::Exercise>,
 );
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct State
 {
     pub phase_id: i64,
@@ -15,6 +15,28 @@ pub struct State
     pub loading: bool,
     pub error: Option<String>,
     pub confirm_delete: Option<i64>,
+    pub calendar_year: i32,
+    pub calendar_month: u32,
+}
+
+impl Default for State
+{
+    fn default() -> Self
+    {
+        let (calendar_year, calendar_month) = crate::platform::current_month();
+        Self {
+            phase_id: 0,
+            phase_name: String::new(),
+            plans: Vec::new(),
+            templates: Vec::new(),
+            exercises: Vec::new(),
+            loading: false,
+            error: None,
+            confirm_delete: None,
+            calendar_year,
+            calendar_month,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -29,6 +51,8 @@ pub enum Message
     DeleteConfirmed(i64),
     Deleted(Result<serde_json::Value, crate::api::ApiError>),
     DeleteCancel,
+    PrevMonth,
+    NextMonth,
 }
 
 pub fn update(app: &mut crate::app::App, message: Message) -> iced::Task<crate::app::Message>
@@ -144,6 +168,22 @@ pub fn update(app: &mut crate::app::App, message: Message) -> iced::Task<crate::
             app.plans.confirm_delete = None;
             iced::Task::none()
         },
+        Message::PrevMonth =>
+        {
+            let (year, month) =
+                crate::platform::shift_month(app.plans.calendar_year, app.plans.calendar_month, -1);
+            app.plans.calendar_year = year;
+            app.plans.calendar_month = month;
+            iced::Task::none()
+        },
+        Message::NextMonth =>
+        {
+            let (year, month) =
+                crate::platform::shift_month(app.plans.calendar_year, app.plans.calendar_month, 1);
+            app.plans.calendar_year = year;
+            app.plans.calendar_month = month;
+            iced::Task::none()
+        },
     }
 }
 
@@ -162,6 +202,113 @@ pub fn view(app: &crate::app::App) -> crate::ui::El<'_>
         text.new_plan,
         crate::app::Message::Plans(Message::New),
     ));
+
+    let history_text = crate::copy::history::text(app.lang);
+    content = content.push(
+        iced::widget::row![
+            crate::ui::ghost_button(
+                history_text.prev,
+                crate::app::Message::Plans(Message::PrevMonth),
+            ),
+            iced::widget::container(
+                iced::widget::text(crate::platform::month_key(
+                    app.plans.calendar_year,
+                    app.plans.calendar_month,
+                ))
+                .size(18)
+                .font(crate::style::bold())
+                .color(crate::style::TEXT),
+            )
+            .width(iced::Length::Fill)
+            .center_x(iced::Length::Fill),
+            crate::ui::ghost_button(
+                history_text.next,
+                crate::app::Message::Plans(Message::NextMonth),
+            ),
+        ]
+        .width(iced::Length::Fill)
+        .align_y(iced::Alignment::Center),
+    );
+    let mut weekdays = iced::widget::row![].spacing(4);
+    for label in history_text.weekdays
+    {
+        weekdays = weekdays.push(
+            iced::widget::container(
+                iced::widget::text(label)
+                    .size(11)
+                    .color(crate::style::MUTED),
+            )
+            .width(iced::Length::FillPortion(1))
+            .center_x(iced::Length::Fill),
+        );
+    }
+    content = content.push(weekdays);
+    let offset =
+        crate::platform::weekday_index(app.plans.calendar_year, app.plans.calendar_month, 1);
+    let days = crate::platform::days_in_month(app.plans.calendar_year, app.plans.calendar_month);
+    let mut cells: Vec<(u32, Option<i64>)> = vec![(0, None); offset as usize];
+    for day in 1..=days
+    {
+        let key = crate::platform::date_key(app.plans.calendar_year, app.plans.calendar_month, day);
+        let plan_id = app
+            .plans
+            .plans
+            .iter()
+            .find(|plan| plan.date == key)
+            .map(|plan| plan.id);
+        cells.push((day, plan_id));
+    }
+    while !cells.len().is_multiple_of(7)
+    {
+        cells.push((0, None));
+    }
+    for week in cells.chunks(7)
+    {
+        let mut row = iced::widget::row![].spacing(4);
+        for (day, plan_id) in week
+        {
+            if *day == 0
+            {
+                row = row.push(
+                    iced::widget::space()
+                        .width(iced::Length::FillPortion(1))
+                        .height(38),
+                );
+            }
+            else if let Some(plan_id) = plan_id
+            {
+                row = row.push(
+                    iced::widget::button(
+                        iced::widget::text(day.to_string())
+                            .size(14)
+                            .font(crate::style::bold()),
+                    )
+                    .width(iced::Length::FillPortion(1))
+                    .height(38)
+                    .padding(0)
+                    .style(crate::style::primary_button)
+                    .on_press(crate::app::Message::Plans(Message::Edit(*plan_id))),
+                );
+            }
+            else
+            {
+                row = row.push(
+                    iced::widget::container(
+                        iced::widget::text(day.to_string())
+                            .size(14)
+                            .color(crate::style::MUTED),
+                    )
+                    .width(iced::Length::FillPortion(1))
+                    .height(38)
+                    .center_x(iced::Length::Fill)
+                    .align_y(iced::Alignment::Center)
+                    .style(crate::style::card_flat),
+                );
+            }
+        }
+        content = content.push(row);
+    }
+
     if app.plans.loading
     {
         content = content.push(crate::ui::loading(common.loading));
@@ -244,34 +391,35 @@ pub fn view(app: &crate::app::App) -> crate::ui::El<'_>
             iced::widget::text(common.or_not_set(&plan.note))
                 .size(13)
                 .color(crate::style::TEXT),
-            iced::widget::row![
+            crate::ui::action_row([
                 crate::ui::secondary_button(
                     common.edit,
                     crate::app::Message::Plans(Message::Edit(plan.id)),
                 ),
-                crate::ui::danger_button(
+                crate::ui::danger_outline_button(
                     common.delete,
                     crate::app::Message::Plans(Message::Delete(plan.id)),
                 ),
-            ]
-            .spacing(8),
+            ]),
         ]
         .spacing(8);
         if app.plans.confirm_delete == Some(plan.id)
         {
             card = card.push(
-                iced::widget::row![
+                iced::widget::column![
                     iced::widget::text(text.delete_confirm)
                         .size(12)
                         .color(crate::style::DANGER),
-                    crate::ui::danger_button(
-                        common.yes,
-                        crate::app::Message::Plans(Message::DeleteConfirmed(plan.id)),
-                    ),
-                    crate::ui::secondary_button(
-                        common.no,
-                        crate::app::Message::Plans(Message::DeleteCancel),
-                    ),
+                    crate::ui::action_row([
+                        crate::ui::danger_button(
+                            common.yes,
+                            crate::app::Message::Plans(Message::DeleteConfirmed(plan.id)),
+                        ),
+                        crate::ui::secondary_button(
+                            common.no,
+                            crate::app::Message::Plans(Message::DeleteCancel),
+                        ),
+                    ]),
                 ]
                 .spacing(6),
             );

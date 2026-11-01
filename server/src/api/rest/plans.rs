@@ -372,6 +372,117 @@ pub(crate) async fn template_list_impl(
 }
 
 // ============================================================
+// 模板排序（POST /api/v1/templates/{id}/sort?dir=up|down）
+// ============================================================
+#[derive(serde::Deserialize)]
+pub struct SortQuery
+{
+    pub dir: String,
+}
+
+pub async fn template_sort(
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    crate::api::rest::auth::ApiAuthUser(user): crate::api::rest::auth::ApiAuthUser,
+    axum::extract::Path(id): axum::extract::Path<i64>,
+    axum::extract::Query(query): axum::extract::Query<SortQuery>,
+) -> Result<axum::Json<Vec<TemplateOut>>, crate::api::rest::ApiError>
+{
+    let pool = state.pool.read().await.clone();
+    template_sort_impl(&pool, user.id, id, &query.dir).await?;
+    Ok(axum::Json(
+        template_list_impl(&pool, user.id, template_phase(&pool, user.id, id).await?).await?,
+    ))
+}
+
+async fn template_phase(
+    pool: &sqlx::SqlitePool,
+    user_id: i64,
+    template_id: i64,
+) -> Result<i64, crate::api::rest::ApiError>
+{
+    sqlx::query_as::<_, crate::models::Template>(
+        "SELECT t.* FROM templates t INNER JOIN phases p ON t.phase_id = p.id
+         WHERE t.id = ? AND p.user_id = ?",
+    )
+    .bind(template_id)
+    .bind(user_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(crate::api::rest::ApiError::Database)?
+    .map(|template| template.phase_id)
+    .ok_or_else(|| crate::api::rest::ApiError::NotFound("模板不存在".to_string()))
+}
+
+pub(crate) async fn template_sort_impl(
+    pool: &sqlx::SqlitePool,
+    user_id: i64,
+    template_id: i64,
+    dir: &str,
+) -> Result<(), crate::api::rest::ApiError>
+{
+    let phase_id = template_phase(pool, user_id, template_id).await?;
+    let siblings = sqlx::query_as::<_, crate::models::Template>(
+        "SELECT * FROM templates WHERE phase_id = ? ORDER BY sort_order, id",
+    )
+    .bind(phase_id)
+    .fetch_all(pool)
+    .await
+    .map_err(crate::api::rest::ApiError::Database)?;
+    let Some(index) = siblings.iter().position(|t| t.id == template_id)
+    else
+    {
+        return Ok(());
+    };
+    let target = match dir
+    {
+        "up" => index.checked_sub(1),
+        "down" =>
+        {
+            let next = index + 1;
+            (next < siblings.len()).then_some(next)
+        },
+        _ =>
+        {
+            return Err(crate::api::rest::ApiError::Validation(
+                "dir 必须是 up 或 down".to_string(),
+            ));
+        },
+    };
+    let Some(target) = target
+    else
+    {
+        return Ok(());
+    };
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(crate::api::rest::ApiError::Database)?;
+    for (i, template) in siblings.iter().enumerate()
+    {
+        sqlx::query("UPDATE templates SET sort_order = ? WHERE id = ?")
+            .bind((i + 1) as i64)
+            .bind(template.id)
+            .execute(&mut *tx)
+            .await
+            .map_err(crate::api::rest::ApiError::Database)?;
+    }
+    let (a, b) = (&siblings[index], &siblings[target]);
+    for (template, order) in [(a, target + 1), (b, index + 1)]
+    {
+        sqlx::query("UPDATE templates SET sort_order = ? WHERE id = ?")
+            .bind(order as i64)
+            .bind(template.id)
+            .execute(&mut *tx)
+            .await
+            .map_err(crate::api::rest::ApiError::Database)?;
+    }
+    tx.commit()
+        .await
+        .map_err(crate::api::rest::ApiError::Database)?;
+    Ok(())
+}
+
+// ============================================================
 // 创建模板（POST /api/v1/phases/{phase_id}/templates）
 // ============================================================
 /// 创建模板（含动作项）→ 返回新模板 JSON
@@ -882,13 +993,29 @@ pub(crate) async fn plan_update_impl(
     let plan = verify_plan(pool, user_id, plan_id).await?;
     verify_phase(pool, user_id, plan.phase_id).await?;
 
-    // 2. 校验 date 格式、items 非空
+    // 2. 校验 date 格式、items 非空、日期不被同阶段其他计划占用
     validate_date(&req.date)?;
     if req.items.is_empty()
     {
         return Err(crate::api::rest::ApiError::Validation(
             "至少选择一个动作".to_string(),
         ));
+    }
+    if sqlx::query_scalar::<_, i64>(
+        "SELECT id FROM plans WHERE phase_id = ? AND date = ? AND id != ?",
+    )
+    .bind(plan.phase_id)
+    .bind(&req.date)
+    .bind(plan_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(crate::api::rest::ApiError::Database)?
+    .is_some()
+    {
+        return Err(crate::api::rest::ApiError::Validation(format!(
+            "该日期 {} 已有计划，不能重复",
+            req.date
+        )));
     }
 
     let mut tx = pool
@@ -994,6 +1121,101 @@ pub(crate) async fn plan_update_impl(
         .await
         .map_err(crate::api::rest::ApiError::Database)?;
 
+    plan_out(pool, &updated, user_id).await
+}
+
+// ============================================================
+// 计划项排序（POST /api/v1/plans/{id}/items/{item_id}/move?dir=up|down）
+// ============================================================
+pub async fn plan_item_move(
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    crate::api::rest::auth::ApiAuthUser(user): crate::api::rest::auth::ApiAuthUser,
+    axum::extract::Path((plan_id, item_id)): axum::extract::Path<(i64, i64)>,
+    axum::extract::Query(query): axum::extract::Query<SortQuery>,
+) -> Result<axum::Json<PlanOut>, crate::api::rest::ApiError>
+{
+    let pool = state.pool.read().await.clone();
+    Ok(axum::Json(
+        plan_item_move_impl(&pool, user.id, plan_id, item_id, &query.dir).await?,
+    ))
+}
+
+pub(crate) async fn plan_item_move_impl(
+    pool: &sqlx::SqlitePool,
+    user_id: i64,
+    plan_id: i64,
+    item_id: i64,
+    dir: &str,
+) -> Result<PlanOut, crate::api::rest::ApiError>
+{
+    let plan = verify_plan(pool, user_id, plan_id).await?;
+    verify_phase(pool, user_id, plan.phase_id).await?;
+
+    let siblings = sqlx::query_as::<_, crate::models::PlanItem>(
+        "SELECT * FROM plan_items WHERE plan_id = ? ORDER BY sort_order, id",
+    )
+    .bind(plan_id)
+    .fetch_all(pool)
+    .await
+    .map_err(crate::api::rest::ApiError::Database)?;
+    let Some(index) = siblings.iter().position(|item| item.id == item_id)
+    else
+    {
+        return Err(crate::api::rest::ApiError::NotFound(
+            "计划项不存在".to_string(),
+        ));
+    };
+    let target = match dir
+    {
+        "up" => index.checked_sub(1),
+        "down" =>
+        {
+            let next = index + 1;
+            (next < siblings.len()).then_some(next)
+        },
+        _ =>
+        {
+            return Err(crate::api::rest::ApiError::Validation(
+                "dir 必须是 up 或 down".to_string(),
+            ));
+        },
+    };
+
+    if let Some(target) = target
+    {
+        let mut tx = pool
+            .begin()
+            .await
+            .map_err(crate::api::rest::ApiError::Database)?;
+        for (i, item) in siblings.iter().enumerate()
+        {
+            sqlx::query("UPDATE plan_items SET sort_order = ? WHERE id = ?")
+                .bind((i + 1) as i64)
+                .bind(item.id)
+                .execute(&mut *tx)
+                .await
+                .map_err(crate::api::rest::ApiError::Database)?;
+        }
+        let (a, b) = (&siblings[index], &siblings[target]);
+        for (item, order) in [(a, target + 1), (b, index + 1)]
+        {
+            sqlx::query("UPDATE plan_items SET sort_order = ? WHERE id = ?")
+                .bind(order as i64)
+                .bind(item.id)
+                .execute(&mut *tx)
+                .await
+                .map_err(crate::api::rest::ApiError::Database)?;
+        }
+        tx.commit()
+            .await
+            .map_err(crate::api::rest::ApiError::Database)?;
+    }
+
+    let updated = sqlx::query_as::<_, crate::models::Plan>("SELECT * FROM plans WHERE id = ?")
+        .bind(plan_id)
+        .fetch_one(pool)
+        .await
+        .map_err(crate::api::rest::ApiError::Database)?;
     plan_out(pool, &updated, user_id).await
 }
 

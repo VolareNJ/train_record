@@ -1,3 +1,4 @@
+pub mod admin;
 pub mod history;
 pub mod library;
 pub mod login;
@@ -37,6 +38,7 @@ pub struct Common
     pub strategy: &'static str,
     pub key_points: &'static str,
     pub completed: &'static str,
+    pub logged: &'static str,
     pub plan: &'static str,
     pub today: &'static str,
     pub history: &'static str,
@@ -82,6 +84,7 @@ pub fn common(lang: crate::i18n::Lang) -> Common
             strategy: "策略",
             key_points: "要领",
             completed: "已完成",
+            logged: "已记录",
             plan: "计划",
             today: "今日",
             history: "历史",
@@ -122,6 +125,7 @@ pub fn common(lang: crate::i18n::Lang) -> Common
             strategy: "Strategy",
             key_points: "Key points",
             completed: "Completed",
+            logged: "Logged",
             plan: "Plan",
             today: "Today",
             history: "History",
@@ -187,6 +191,15 @@ impl Common
         else
         {
             format!("{sets}*{reps}")
+        }
+    }
+
+    pub fn days_ago(&self, days: i64) -> String
+    {
+        match self.lang
+        {
+            crate::i18n::Lang::Zh => format!("{days} 天前"),
+            crate::i18n::Lang::En => format!("{days} days ago"),
         }
     }
 

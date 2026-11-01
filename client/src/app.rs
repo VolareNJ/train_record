@@ -22,6 +22,8 @@ pub enum Nav
     Plans,
     PlanForm,
     Day,
+    AdminUsers,
+    Backup,
 }
 
 #[derive(Debug, Clone)]
@@ -34,6 +36,7 @@ pub enum Message
     Nav(Nav),
     OpenRecord(i64, i64),
     OpenPlans(i64, String),
+    OpenNewPlan(i64, String),
     OpenDay(String),
     OpenStats(i64, String),
     Logout,
@@ -53,6 +56,9 @@ pub enum Message
     Plans(crate::pages::plans::Message),
     PlanForm(crate::pages::plan_form::Message),
     Settings(crate::pages::settings::Message),
+    Admin(crate::pages::admin::Message),
+    Backup(crate::pages::backup::Message),
+    OpenUrl(String),
 }
 
 pub struct App
@@ -78,6 +84,8 @@ pub struct App
     pub plans: crate::pages::plans::State,
     pub plan_form: crate::pages::plan_form::State,
     pub settings: crate::pages::settings::State,
+    pub admin: crate::pages::admin::State,
+    pub backup: crate::pages::backup::State,
 }
 
 pub fn boot() -> (App, iced::Task<Message>)
@@ -108,6 +116,8 @@ pub fn boot() -> (App, iced::Task<Message>)
         plans: crate::pages::plans::State::default(),
         plan_form: crate::pages::plan_form::State::default(),
         settings: crate::pages::settings::State::default(),
+        admin: crate::pages::admin::State::default(),
+        backup: crate::pages::backup::State::default(),
     };
     let task = iced::Task::perform(async move { api_for_task.me().await }, Message::BootChecked);
     (app, task)
@@ -133,11 +143,7 @@ pub fn update(app: &mut App, message: Message) -> iced::Task<Message>
         },
         Message::Tab(tab) => navigate(app, Nav::Home(tab)),
         Message::Nav(nav) => navigate(app, nav),
-        Message::OpenRecord(plan_id, item_id) =>
-        {
-            open_record(app, plan_id, item_id);
-            iced::Task::none()
-        },
+        Message::OpenRecord(plan_id, item_id) => open_record(app, plan_id, item_id),
         Message::OpenPlans(phase_id, phase_name) =>
         {
             app.plans.phase_id = phase_id;
@@ -146,6 +152,17 @@ pub fn update(app: &mut App, message: Message) -> iced::Task<Message>
             app.plans.templates.clear();
             app.route = Nav::Plans;
             crate::pages::plans::update(app, crate::pages::plans::Message::Refresh)
+        },
+        Message::OpenNewPlan(phase_id, phase_name) =>
+        {
+            app.plan_form = crate::pages::plan_form::State::new(
+                phase_id,
+                phase_name,
+                &app.library.items,
+                crate::platform::today(),
+            );
+            app.route = Nav::PlanForm;
+            iced::Task::none()
         },
         Message::OpenDay(date) => open_day(app, date),
         Message::OpenStats(id, name) => open_stats(app, id, name),
@@ -166,6 +183,13 @@ pub fn update(app: &mut App, message: Message) -> iced::Task<Message>
         Message::Plans(message) => crate::pages::plans::update(app, message),
         Message::PlanForm(message) => crate::pages::plan_form::update(app, message),
         Message::Settings(message) => crate::pages::settings::update(app, message),
+        Message::Admin(message) => crate::pages::admin::update(app, message),
+        Message::Backup(message) => crate::pages::backup::update(app, message),
+        Message::OpenUrl(url) =>
+        {
+            crate::platform::open_url(&url);
+            iced::Task::none()
+        },
     }
 }
 
@@ -252,6 +276,10 @@ pub fn navigate(app: &mut App, nav: Nav) -> iced::Task<Message>
                 Tab::Settings =>
                 {
                     app.settings.sync(&app.user);
+                    tasks.push(crate::pages::settings::update(
+                        app,
+                        crate::pages::settings::Message::Dashboard,
+                    ));
                 },
             }
             iced::Task::batch(tasks)
@@ -282,6 +310,16 @@ pub fn navigate(app: &mut App, nav: Nav) -> iced::Task<Message>
             app.route = Nav::Day;
             crate::pages::day::update(app, crate::pages::day::Message::Refresh)
         },
+        Nav::AdminUsers =>
+        {
+            app.route = Nav::AdminUsers;
+            crate::pages::admin::update(app, crate::pages::admin::Message::Refresh)
+        },
+        Nav::Backup =>
+        {
+            app.route = Nav::Backup;
+            iced::Task::none()
+        },
     }
 }
 
@@ -295,7 +333,7 @@ pub fn load_home(app: &mut App) -> iced::Task<Message>
     iced::Task::batch(tasks)
 }
 
-pub fn open_record(app: &mut App, plan_id: i64, item_id: i64)
+pub fn open_record(app: &mut App, plan_id: i64, item_id: i64) -> iced::Task<Message>
 {
     let item = app
         .today
@@ -306,11 +344,25 @@ pub fn open_record(app: &mut App, plan_id: i64, item_id: i64)
     if let Some(item) = item
     {
         app.record = crate::pages::record::State::from_item(app, plan_id, &item);
+        app.record.plan_note = app
+            .today
+            .data
+            .as_ref()
+            .and_then(|today| today.plan.as_ref())
+            .map(|plan| plan.note.clone())
+            .unwrap_or_default();
         app.route = Nav::Record;
+        let api = app.api.clone();
+        let exercise_id = item.exercise_id;
+        iced::Task::perform(
+            async move { api.exercise_stats(exercise_id).await },
+            |result| Message::Record(crate::pages::record::Message::ChartLoaded(result)),
+        )
     }
     else
     {
         app.toast = Some(crate::copy::common(app.lang).unknown.to_string());
+        iced::Task::none()
     }
 }
 
@@ -368,6 +420,8 @@ pub fn reset_data(app: &mut App)
     app.plan_form = crate::pages::plan_form::State::default();
     app.record = crate::pages::record::State::default();
     app.settings = crate::pages::settings::State::default();
+    app.admin = crate::pages::admin::State::default();
+    app.backup = crate::pages::backup::State::default();
 }
 
 fn sign_out(app: &mut App) -> iced::Task<Message>
@@ -400,6 +454,8 @@ pub fn view(app: &App) -> crate::ui::El<'_>
         Nav::Plans => crate::pages::plans::view(app),
         Nav::PlanForm => crate::pages::plan_form::view(app),
         Nav::Day => crate::pages::day::view(app),
+        Nav::AdminUsers => crate::pages::admin::view(app),
+        Nav::Backup => crate::pages::backup::view(app),
     }
 }
 

@@ -171,6 +171,9 @@ pub struct DayRecordOut
     pub feeling: String,
     pub strategy: String,
     pub key_points: String,
+    pub bar_weight: f64,
+    pub unit: String,
+    pub completed: bool,
     /// Epley 1RM（实时计算，无效记录 → 0.0）
     #[serde(rename = "1rm")]
     pub one_rm: f64,
@@ -199,7 +202,7 @@ pub(crate) async fn day_records(
 
     // 查该天记录（JOIN exercises 数据隔离）
     // 元组：(id, exercise_id, mode, weight, sets, reps, rest,
-    //        feeling, strategy, key_points, bar, unit, body_part)
+    //        feeling, strategy, key_points, bar, unit, body_part, completed)
     let rows_raw = sqlx::query_as::<
         _,
         (
@@ -216,12 +219,13 @@ pub(crate) async fn day_records(
             Option<f64>,
             String,
             String,
+            bool,
         ),
     >(
         "SELECT r.id, r.exercise_id, r.mode, r.weight, r.sets, r.reps, r.rest,
         r.feeling, r.strategy, r.key_points,
         COALESCE(pi.plan_bar_weight, e.bar_weight) AS bar,
-        e.default_unit, e.body_part
+        e.default_unit, e.body_part, r.completed
         FROM records r
         INNER JOIN exercises e ON r.exercise_id = e.id
         LEFT JOIN plan_items pi ON r.plan_item_id = pi.id
@@ -260,9 +264,10 @@ pub(crate) async fn day_records(
                 feeling,
                 strategy,
                 key_points,
-                _bar,
-                _unit,
+                bar,
+                unit,
                 body_part,
+                completed,
             )| {
                 DayRecordOut {
                     id: *id,
@@ -280,6 +285,9 @@ pub(crate) async fn day_records(
                     feeling: feeling.clone(),
                     strategy: strategy.clone(),
                     key_points: key_points.clone(),
+                    bar_weight: bar.unwrap_or(0.0),
+                    unit: unit.clone(),
+                    completed: *completed,
                     one_rm: crate::calc::epley_1rm(*weight, *reps),
                 }
             },
@@ -315,6 +323,8 @@ pub struct ExerciseStatsOut
     pub exercise: ExerciseBriefOut,
     pub records: Vec<ExerciseRecordOut>,
     pub best_1rm: f64,
+    pub best_2rm: f64,
+    pub best_3rm: f64,
 }
 
 #[derive(serde::Serialize)]
@@ -323,6 +333,11 @@ pub struct ExerciseBriefOut
     pub id: i64,
     pub name: String,
     pub body_part: String,
+    pub default_mode: String,
+    pub bar_weight: f64,
+    pub default_unit: String,
+    pub default_sets: i64,
+    pub default_reps: i64,
 }
 
 #[derive(serde::Serialize)]
@@ -332,8 +347,19 @@ pub struct ExerciseRecordOut
     pub weight: f64,
     pub sets: i64,
     pub reps: i64,
+    pub rest: i64,
+    pub feeling: String,
+    pub strategy: String,
+    pub mode: String,
+    pub bar_weight: f64,
+    pub unit: String,
+    pub completed: bool,
     #[serde(rename = "1rm")]
     pub one_rm: f64,
+    #[serde(rename = "2rm")]
+    pub two_rm: f64,
+    #[serde(rename = "3rm")]
+    pub three_rm: f64,
 }
 
 pub async fn exercise_stats(
@@ -377,26 +403,63 @@ pub(crate) async fn exercise_stats_view(
     // 组装（1rm 实时算）
     let recs_out = records
         .iter()
-        .map(|r| ExerciseRecordOut {
-            date: r.record_date.clone(),
-            weight: r.weight,
-            sets: r.sets,
-            reps: r.reps,
-            one_rm: crate::calc::epley_1rm(r.weight, r.reps),
+        .map(|r| {
+            let one_rm = crate::calc::epley_1rm(r.weight, r.reps);
+            let two_rm = if r.reps > 2 && crate::calc::wathan_mrm(one_rm, 2) > r.weight
+            {
+                crate::calc::wathan_mrm(one_rm, 2)
+            }
+            else
+            {
+                r.weight
+            };
+            let three_rm = if r.reps > 3 && crate::calc::wathan_mrm(one_rm, 3) > r.weight
+            {
+                crate::calc::wathan_mrm(one_rm, 3)
+            }
+            else
+            {
+                r.weight
+            };
+            ExerciseRecordOut {
+                date: r.record_date.clone(),
+                weight: r.weight,
+                sets: r.sets,
+                reps: r.reps,
+                rest: r.rest,
+                feeling: r.feeling.clone(),
+                strategy: r.strategy.clone(),
+                mode: r.mode.clone(),
+                bar_weight: ex.bar_weight,
+                unit: ex.default_unit.clone(),
+                completed: r.completed,
+                one_rm,
+                two_rm,
+                three_rm,
+            }
         })
         .collect::<Vec<_>>();
 
-    // best_1rm：全记录 1RM 最大值（epley 无效输入返回 0.0，正好忽略）
+    // best_1rm/2rm/3rm：全记录最大值
     let best_1rm = recs_out.iter().map(|r| r.one_rm).fold(0.0f64, f64::max);
+    let best_2rm = recs_out.iter().map(|r| r.two_rm).fold(0.0f64, f64::max);
+    let best_3rm = recs_out.iter().map(|r| r.three_rm).fold(0.0f64, f64::max);
 
     Ok(ExerciseStatsOut {
         exercise: ExerciseBriefOut {
             id: ex.id,
             name: ex.name.clone(),
             body_part: ex.body_part.clone(),
+            default_mode: ex.default_mode.clone(),
+            bar_weight: ex.bar_weight,
+            default_unit: ex.default_unit.clone(),
+            default_sets: ex.default_sets,
+            default_reps: ex.default_reps,
         },
         records: recs_out,
         best_1rm,
+        best_2rm,
+        best_3rm,
     })
 }
 

@@ -280,12 +280,25 @@ pub fn view(app: &crate::app::App) -> crate::ui::El<'_>
             |value| crate::app::Message::ExerciseForm(Message::Name(value)),
             false,
         ),
-        crate::ui::text_field(
+        crate::ui::pick_field(
             text.body_part,
-            "胸 / 背 / 腿",
-            &state.body_part,
-            |value| crate::app::Message::ExerciseForm(Message::BodyPart(value)),
-            false,
+            text.body_parts[1..]
+                .iter()
+                .map(|part| (*part).to_string())
+                .collect(),
+            if state.body_part.is_empty()
+            {
+                None
+            }
+            else
+            {
+                Some(crate::i18n::part_label(app.lang, &state.body_part))
+            },
+            |label| {
+                crate::app::Message::ExerciseForm(Message::BodyPart(crate::i18n::part_code(
+                    app.lang, &label,
+                )))
+            },
         ),
         crate::ui::section_title(text.defaults),
         crate::ui::pick_field(
@@ -294,12 +307,16 @@ pub fn view(app: &crate::app::App) -> crate::ui::El<'_>
             Some(mode),
             move |label| crate::app::Message::ExerciseForm(Message::Mode(mode_code(&text, &label))),
         ),
-        crate::ui::text_field(
+        crate::ui::pick_field(
             text.bar_weight,
-            "20",
-            &state.bar_weight,
+            vec![
+                "20".to_string(),
+                "11.3".to_string(),
+                "10".to_string(),
+                "0".to_string(),
+            ],
+            Some(state.bar_weight.clone()),
             |value| crate::app::Message::ExerciseForm(Message::BarWeight(value)),
-            false,
         ),
         crate::ui::pick_field(
             text.default_unit,
@@ -366,35 +383,41 @@ pub fn view(app: &crate::app::App) -> crate::ui::El<'_>
             Some(crate::app::Message::ExerciseForm(Message::Save))
         },
     ));
-    if state.id.is_some()
+    if let Some(id) = state.id
     {
+        content = content.push(crate::ui::centered(crate::ui::secondary_button(
+            text.stats,
+            crate::app::Message::OpenStats(id, state.name.clone()),
+        )));
         if state.confirm_delete
         {
             content = content.push(
-                iced::widget::row![
+                iced::widget::column![
                     iced::widget::text(text.delete_confirm)
                         .size(12)
                         .color(crate::style::DANGER),
-                    crate::ui::danger_button(
-                        common.yes,
-                        crate::app::Message::ExerciseForm(Message::DeleteConfirmed(
-                            state.id.unwrap_or(0),
-                        )),
-                    ),
-                    crate::ui::secondary_button(
-                        common.no,
-                        crate::app::Message::ExerciseForm(Message::DeleteCancel),
-                    ),
+                    crate::ui::action_row([
+                        crate::ui::danger_button(
+                            common.yes,
+                            crate::app::Message::ExerciseForm(Message::DeleteConfirmed(
+                                state.id.unwrap_or(0),
+                            )),
+                        ),
+                        crate::ui::secondary_button(
+                            common.no,
+                            crate::app::Message::ExerciseForm(Message::DeleteCancel),
+                        ),
+                    ]),
                 ]
                 .spacing(6),
             );
         }
         else
         {
-            content = content.push(crate::ui::danger_button(
+            content = content.push(crate::ui::centered(crate::ui::danger_outline_button(
                 common.delete,
                 crate::app::Message::ExerciseForm(Message::Delete),
-            ));
+            )));
         }
     }
 

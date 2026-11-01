@@ -126,7 +126,7 @@ pub fn view(app: &crate::app::App) -> crate::ui::El<'_>
             text.plan_missing_hint,
             Some(crate::ui::primary_button(
                 text.create_plan,
-                crate::app::Message::OpenPlans(phase.id, phase.name.clone()),
+                crate::app::Message::OpenNewPlan(phase.id, phase.name.clone()),
             )),
         ));
         return content.into();
@@ -159,81 +159,116 @@ pub fn view(app: &crate::app::App) -> crate::ui::El<'_>
         .align_y(iced::Alignment::Center),
     );
 
+    let mut groups: Vec<(String, Vec<&crate::model::TodayItem>)> = Vec::new();
     for item in &plan.items
     {
-        let status = match &item.last_record
+        match groups.iter_mut().find(|(part, _)| *part == item.body_part)
         {
-            Some(_) => crate::ui::badge(text.trained, crate::style::SUCCESS),
-            None => crate::ui::badge(text.untrained, crate::style::MUTED),
-        };
-        let plan_line = format!(
-            "{} {}  {} {}",
-            common.plan,
-            common.sets_reps(item.plan_sets, item.plan_reps),
-            common.weight,
-            common.weight_text(item.plan_weight)
-        );
-        let mut body = iced::widget::column![
-            iced::widget::row![
-                iced::widget::text(item.exercise_name.as_str())
-                    .size(17)
-                    .font(crate::style::bold())
-                    .color(crate::style::TEXT),
-                iced::widget::space().width(iced::Length::Fill),
-                status,
-            ]
-            .align_y(iced::Alignment::Center),
-            iced::widget::text(format!("{}  {}", item.body_part, plan_line))
-                .size(13)
-                .color(crate::style::MUTED),
-        ]
-        .spacing(6);
-        match &item.last_record
+            Some((_, items)) => items.push(item),
+            None => groups.push((item.body_part.clone(), vec![item])),
+        }
+    }
+    groups.sort_by_key(|(part, _)| crate::weight::part_rank(part));
+
+    for (part, items) in groups
+    {
+        content = content.push(crate::ui::section_title(crate::i18n::part_label(
+            app.lang, &part,
+        )));
+        for item in items
         {
-            Some(record) =>
+            let status = match &item.last_record
             {
-                body = body.push(
-                    iced::widget::text(format!(
-                        "{}: {}  {}",
-                        text.last_record,
-                        common.volume(record.sets, record.reps, record.weight),
-                        if record.feeling.trim().is_empty()
-                        {
-                            String::new()
-                        }
-                        else
-                        {
-                            format!("| {}", record.feeling)
-                        }
-                    ))
+                Some(record) if record.completed =>
+                {
+                    crate::ui::badge(text.trained, crate::style::SUCCESS)
+                },
+                Some(_) => crate::ui::badge(text.draft, crate::style::WARN),
+                None => crate::ui::badge(text.untrained, crate::style::MUTED),
+            };
+            let observed = item
+                .plan_weight
+                .map(|weight| {
+                    crate::weight::observed_label(
+                        &item.default_mode,
+                        weight,
+                        item.bar_weight,
+                        app.user.as_ref().and_then(|user| user.body_weight),
+                        &item.default_unit,
+                    )
+                })
+                .unwrap_or_else(|| common.not_set.to_string());
+            let plan_line = format!(
+                "{} {}  {}",
+                common.plan,
+                common.sets_reps(item.plan_sets, item.plan_reps),
+                observed
+            );
+            let mut body = iced::widget::column![
+                iced::widget::row![
+                    iced::widget::text(item.exercise_name.as_str())
+                        .size(17)
+                        .font(crate::style::bold())
+                        .color(crate::style::TEXT),
+                    iced::widget::space().width(iced::Length::Fill),
+                    status,
+                ]
+                .align_y(iced::Alignment::Center),
+                iced::widget::text(plan_line)
                     .size(13)
-                    .color(crate::style::TEXT),
-                );
-                if !record.strategy.trim().is_empty()
+                    .color(crate::style::MUTED),
+            ]
+            .spacing(6);
+            match &item.last_record
+            {
+                Some(record) =>
                 {
                     body = body.push(
-                        iced::widget::text(format!("{}: {}", text.strategy_hint, record.strategy))
+                        iced::widget::text(format!(
+                            "{}: {}  {}",
+                            text.last_record,
+                            common.volume(record.sets, record.reps, record.weight),
+                            if record.feeling.trim().is_empty()
+                            {
+                                String::new()
+                            }
+                            else
+                            {
+                                format!("| {}", record.feeling)
+                            }
+                        ))
+                        .size(13)
+                        .color(crate::style::TEXT),
+                    );
+                    if !record.strategy.trim().is_empty()
+                    {
+                        body = body.push(
+                            iced::widget::text(format!(
+                                "{}: {}",
+                                text.strategy_hint, record.strategy
+                            ))
                             .size(13)
                             .color(crate::style::WARN),
+                        );
+                    }
+                },
+                None =>
+                {
+                    body = body.push(
+                        iced::widget::text(text.no_last)
+                            .size(12)
+                            .color(crate::style::MUTED),
                     );
-                }
-            },
-            None =>
-            {
-                body = body.push(
-                    iced::widget::text(text.no_last)
-                        .size(12)
-                        .color(crate::style::MUTED),
-                );
-            },
+                },
+            }
+            content = content.push(
+                iced::widget::button(body)
+                    .width(iced::Length::Fill)
+                    .padding(14)
+                    .style(crate::style::list_button)
+                    .on_press(crate::app::Message::OpenRecord(plan.id, item.id)),
+            );
         }
-        content = content.push(
-            iced::widget::button(body)
-                .width(iced::Length::Fill)
-                .padding(14)
-                .style(crate::style::list_button)
-                .on_press(crate::app::Message::OpenRecord(plan.id, item.id)),
-        );
     }
 
     content = content.push(

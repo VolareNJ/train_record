@@ -1,3 +1,6 @@
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::JsCast;
+
 const LANG_KEY: &str = "train_record.lang";
 #[cfg(not(target_arch = "wasm32"))]
 const TOKEN_KEY: &str = "train_record.token";
@@ -83,6 +86,69 @@ fn storage_remove(key: &str)
     {
         let _ = std::fs::remove_file(path);
     }
+}
+
+#[cfg(target_arch = "wasm32")]
+pub async fn upload_backup() -> Result<String, String>
+{
+    let window = web_sys::window().ok_or_else(|| "没有浏览器窗口".to_string())?;
+    let function = js_sys::Reflect::get(
+        &window,
+        &wasm_bindgen::JsValue::from_str("trainRecordUploadBackup"),
+    )
+    .map_err(|_| "没有上传桥接函数".to_string())?;
+    let function: js_sys::Function = function
+        .dyn_into()
+        .map_err(|_| "上传桥接不是函数".to_string())?;
+    let promise = function
+        .call0(&window)
+        .map_err(|_| "无法打开文件选择器".to_string())?;
+    let promise: js_sys::Promise = promise
+        .dyn_into()
+        .map_err(|_| "上传桥接没有返回 Promise".to_string())?;
+    let result = wasm_bindgen_futures::JsFuture::from(promise)
+        .await
+        .map_err(|_| "上传失败".to_string())?;
+    let ok = js_sys::Reflect::get(&result, &wasm_bindgen::JsValue::from_str("ok"))
+        .ok()
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    let message = js_sys::Reflect::get(&result, &wasm_bindgen::JsValue::from_str("message"))
+        .ok()
+        .and_then(|value| value.as_string())
+        .unwrap_or_default();
+    if ok
+    {
+        Ok(
+            if message.is_empty()
+            {
+                "数据库已恢复".to_string()
+            }
+            else
+            {
+                message
+            },
+        )
+    }
+    else
+    {
+        Err(
+            if message.is_empty()
+            {
+                "上传恢复失败".to_string()
+            }
+            else
+            {
+                message
+            },
+        )
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn upload_backup() -> Result<String, String>
+{
+    Err("上传恢复目前仅支持网页版".to_string())
 }
 
 pub fn base_url() -> String
@@ -186,6 +252,35 @@ pub fn parse_year_month(date: &str) -> Option<(i32, u32)>
     {
         None
     }
+}
+
+fn days_from_civil(year: i64, month: i64, day: i64) -> i64
+{
+    let year = if month <= 2 { year - 1 } else { year };
+    let era = if year >= 0 { year } else { year - 399 } / 400;
+    let yoe = year - era * 400;
+    let month = if month > 2 { month - 3 } else { month + 9 };
+    let doy = (153 * month + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+pub fn days_since(date: &str) -> Option<i64>
+{
+    let parts = date.split('-').collect::<Vec<_>>();
+    if parts.len() != 3
+    {
+        return None;
+    }
+    let year = parts[0].parse::<i64>().ok()?;
+    let month = parts[1].parse::<i64>().ok()?;
+    let day = parts[2].parse::<i64>().ok()?;
+    let today = today();
+    let today_parts = today.split('-').collect::<Vec<_>>();
+    let today_year = today_parts.first()?.parse::<i64>().ok()?;
+    let today_month = today_parts.get(1)?.parse::<i64>().ok()?;
+    let today_day = today_parts.get(2)?.parse::<i64>().ok()?;
+    Some(days_from_civil(today_year, today_month, today_day) - days_from_civil(year, month, day))
 }
 
 pub fn month_key(year: i32, month: u32) -> String
@@ -309,6 +404,13 @@ pub fn open_url(url: &str)
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let _ = url;
+        #[cfg(target_os = "macos")]
+        let _ = std::process::Command::new("open").arg(url).spawn();
+        #[cfg(target_os = "windows")]
+        let _ = std::process::Command::new("cmd")
+            .args(["/C", "start", "", url])
+            .spawn();
+        #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+        let _ = std::process::Command::new("xdg-open").arg(url).spawn();
     }
 }

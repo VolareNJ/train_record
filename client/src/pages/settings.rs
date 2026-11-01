@@ -5,6 +5,7 @@ pub struct State
     pub saving: bool,
     pub error: Option<String>,
     pub confirm_logout: bool,
+    pub dashboard: Option<crate::model::Dashboard>,
 }
 
 impl State
@@ -33,6 +34,8 @@ pub enum Message
     Logout,
     Users,
     Backup,
+    Dashboard,
+    DashboardLoaded(Result<crate::model::Dashboard, crate::api::ApiError>),
 }
 
 pub fn update(app: &mut crate::app::App, message: Message) -> iced::Task<crate::app::Message>
@@ -118,15 +121,23 @@ pub fn update(app: &mut crate::app::App, message: Message) -> iced::Task<crate::
             iced::Task::none()
         },
         Message::Logout => iced::Task::done(crate::app::Message::Logout),
-        Message::Users =>
+        Message::Users => crate::app::navigate(app, crate::app::Nav::AdminUsers),
+        Message::Backup => crate::app::navigate(app, crate::app::Nav::Backup),
+        Message::Dashboard =>
         {
-            crate::platform::open_url(&format!("{}/admin/users", app.api.base_url()));
-            iced::Task::none()
+            let api = app.api.clone();
+            iced::Task::perform(async move { api.dashboard().await }, |result| {
+                crate::app::Message::Settings(Message::DashboardLoaded(result))
+            })
         },
-        Message::Backup =>
+        Message::DashboardLoaded(result) => match result
         {
-            crate::platform::open_url(&format!("{}/admin/backup", app.api.base_url()));
-            iced::Task::none()
+            Ok(dashboard) =>
+            {
+                app.settings.dashboard = Some(dashboard);
+                iced::Task::none()
+            },
+            Err(error) => crate::app::report_error(app, error),
         },
     }
 }
@@ -178,7 +189,7 @@ pub fn view(app: &crate::app::App) -> crate::ui::El<'_>
             |value| crate::app::Message::Settings(Message::BodyWeight(value)),
             false,
         ),
-        crate::ui::secondary_button(
+        crate::ui::primary_button_enabled(
             if app.settings.saving
             {
                 common.saving
@@ -187,11 +198,38 @@ pub fn view(app: &crate::app::App) -> crate::ui::El<'_>
             {
                 common.save
             },
-            crate::app::Message::Settings(Message::Save),
+            if app.settings.saving
+            {
+                None
+            }
+            else
+            {
+                Some(crate::app::Message::Settings(Message::Save))
+            },
         ),
     ]
     .spacing(10);
     content = content.push(crate::ui::card(account));
+
+    if let Some(dashboard) = &app.settings.dashboard
+    {
+        let mut overview = iced::widget::column![
+            crate::ui::section_title(text.overview),
+            crate::ui::stat_line(text.phases, dashboard.phase_count.to_string()),
+            crate::ui::stat_line(text.exercises, dashboard.exercise_count.to_string()),
+            crate::ui::stat_line(text.templates, dashboard.template_count.to_string()),
+            crate::ui::stat_line(text.plans, dashboard.plan_count.to_string()),
+        ]
+        .spacing(6);
+        if let Some(phase) = &dashboard.current_phase
+        {
+            overview = overview.push(crate::ui::stat_line(
+                text.current_phase,
+                format!("{} ({})", phase.name, common.days_text(phase.days)),
+            ));
+        }
+        content = content.push(crate::ui::card(overview));
+    }
 
     if let Some(error) = &app.settings.error
     {
@@ -200,7 +238,7 @@ pub fn view(app: &crate::app::App) -> crate::ui::El<'_>
 
     let training = iced::widget::column![
         crate::ui::section_title(text.training),
-        crate::ui::secondary_button(
+        crate::ui::wide_secondary_button(
             text.phases_plans,
             crate::app::Message::Nav(crate::app::Nav::Phases),
         ),
@@ -237,7 +275,7 @@ pub fn view(app: &crate::app::App) -> crate::ui::El<'_>
         content = content.push(crate::ui::card(
             iced::widget::column![
                 crate::ui::section_title(text.admin_tools),
-                iced::widget::row![
+                crate::ui::action_row([
                     crate::ui::secondary_button(
                         text.users,
                         crate::app::Message::Settings(Message::Users),
@@ -246,8 +284,7 @@ pub fn view(app: &crate::app::App) -> crate::ui::El<'_>
                         text.backup,
                         crate::app::Message::Settings(Message::Backup),
                     ),
-                ]
-                .spacing(8),
+                ]),
             ]
             .spacing(10),
         ));
@@ -260,7 +297,7 @@ pub fn view(app: &crate::app::App) -> crate::ui::El<'_>
                 iced::widget::text(text.sign_out_confirm)
                     .size(14)
                     .color(crate::style::TEXT),
-                iced::widget::row![
+                crate::ui::action_row([
                     crate::ui::danger_button(
                         common.yes,
                         crate::app::Message::Settings(Message::Logout),
@@ -269,18 +306,17 @@ pub fn view(app: &crate::app::App) -> crate::ui::El<'_>
                         common.no,
                         crate::app::Message::Settings(Message::LogoutCancel),
                     ),
-                ]
-                .spacing(8),
+                ]),
             ]
             .spacing(10),
         ));
     }
     else
     {
-        content = content.push(crate::ui::danger_button(
+        content = content.push(crate::ui::centered(crate::ui::danger_outline_button(
             common.logout,
             crate::app::Message::Settings(Message::LogoutConfirm),
-        ));
+        )));
     }
 
     content.into()

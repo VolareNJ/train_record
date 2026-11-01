@@ -18,6 +18,8 @@ pub struct Text
     pub item_note: &'static str,
     pub from_template: &'static str,
     pub no_templates: &'static str,
+    pub move_up: &'static str,
+    pub move_down: &'static str,
 }
 
 pub fn text(lang: crate::i18n::Lang) -> Text
@@ -42,6 +44,8 @@ pub fn text(lang: crate::i18n::Lang) -> Text
             item_note: "动作备注",
             from_template: "从模板新建",
             no_templates: "本阶段还没有模板",
+            move_up: "上移",
+            move_down: "下移",
         },
         crate::i18n::Lang::En => Text {
             title: "Plans",
@@ -61,6 +65,8 @@ pub fn text(lang: crate::i18n::Lang) -> Text
             item_note: "Exercise note",
             from_template: "Plan from template",
             no_templates: "No templates in this phase",
+            move_up: "Up",
+            move_down: "Down",
         },
     }
 }

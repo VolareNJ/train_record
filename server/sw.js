@@ -11,10 +11,11 @@
 //   2. 光有 fetch 缓存不够——首次注册的页面还没被 SW 控制，
 //      导航请求从未经过 SW 就进不了缓存；必须 install 时 addAll 预缓存
 // 数据请求（/admin/backup 等）不缓存——只缓存 GET 静态资源 + 关键页面。
-const CACHE = 'train-record-v2';
+const CACHE = 'train-record-v9';
 const PRECACHE = [
     '/',
     '/today',
+    '/static/app/',
     '/static/style.css',
     '/static/manifest.json',
     '/static/icon-192.png',
@@ -22,8 +23,12 @@ const PRECACHE = [
 ];
 
 self.addEventListener('install', (e) => {
+    // 逐条预缓存：生产环境可能没有 /static/app/（未构建 WASM），
+    // 单条失败不应让整个 Service Worker 安装失败。
     e.waitUntil(
-        caches.open(CACHE).then((c) => c.addAll(PRECACHE))
+        caches.open(CACHE).then((c) =>
+            Promise.all(PRECACHE.map((url) => c.add(url).catch(() => null)))
+        )
     );
     self.skipWaiting();
 });

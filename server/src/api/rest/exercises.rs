@@ -250,6 +250,67 @@ pub(crate) async fn exercise_list(
 }
 
 // ============================================================
+// 快速更新计重设置（POST /api/v1/exercises/{id}/config）
+// ============================================================
+// 训练记录页切换模式/杆重/单位时立即回写动作库默认值，
+// 与 SSR record_form 的 /exercises/{id}/config 行为一致。
+#[derive(serde::Deserialize)]
+pub struct ExerciseConfigReq
+{
+    pub default_mode: String,
+    pub bar_weight: f64,
+    pub default_unit: String,
+}
+
+pub async fn update_config(
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    crate::api::rest::auth::ApiAuthUser(user): crate::api::rest::auth::ApiAuthUser,
+    axum::extract::Path(id): axum::extract::Path<i64>,
+    axum::Json(req): axum::Json<ExerciseConfigReq>,
+) -> Result<axum::Json<serde_json::Value>, crate::api::rest::ApiError>
+{
+    if !["bar", "std", "support"].contains(&req.default_mode.as_str())
+    {
+        return Err(crate::api::rest::ApiError::Validation(
+            "计重模式必须是 bar/std/support".to_string(),
+        ));
+    }
+    if req.bar_weight < 0.0
+    {
+        return Err(crate::api::rest::ApiError::Validation(
+            "杆重不能为负数".to_string(),
+        ));
+    }
+    if !["kg", "lb"].contains(&req.default_unit.as_str())
+    {
+        return Err(crate::api::rest::ApiError::Validation(
+            "单位必须是 kg/lb".to_string(),
+        ));
+    }
+    let pool = state.pool.read().await.clone();
+    let affected = sqlx::query(
+        "UPDATE exercises SET default_mode = ?, bar_weight = ?, default_unit = ?
+         WHERE id = ? AND user_id = ?",
+    )
+    .bind(&req.default_mode)
+    .bind(req.bar_weight)
+    .bind(&req.default_unit)
+    .bind(id)
+    .bind(user.id)
+    .execute(&pool)
+    .await
+    .map_err(crate::api::rest::ApiError::Database)?
+    .rows_affected();
+    if affected == 0
+    {
+        return Err(crate::api::rest::ApiError::NotFound(
+            "动作不存在".to_string(),
+        ));
+    }
+    Ok(axum::Json(serde_json::json!({ "ok": true })))
+}
+
+// ============================================================
 // 创建动作（POST /api/v1/exercises）
 // ============================================================
 /// 创建动作 → 返回新动作 JSON（含 id）

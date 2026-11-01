@@ -11,6 +11,10 @@
 ```bash
 rustup target add wasm32-unknown-unknown
 cargo install --locked trunk
+# wasm-opt 必须用 binaryen >= 123
+# Ubuntu 24.04 apt 的 binaryen 108 会错误改写 externref table 的导出索引，
+# 浏览器启动时报 RangeError: WebAssembly.Table.grow(): failed to grow table by 4，
+# 页面只剩背景色。可下载官方 release 后把 wasm-opt 放进 /usr/local/bin。
 ```
 
 构建：
@@ -60,10 +64,15 @@ Cookie 与 Bearer 认证均可用。
 - 内嵌 Carlito（拉丁）与 Droid Sans Fallback（中日韩）两套字体；
   iced 在 WebAssembly 下不读取浏览器系统字体，故必须内嵌。
 - 默认深色主题，主色 `#4d8dff`。
+- 手机软键盘：winit 0.30 的 Web 后端不支持 IME / 软键盘，
+  `index.html` 用一个隐藏 input 接收触摸输入并转发 keydown 给 canvas。
+  修改输入相关逻辑时要同时检查这一段。
 
 ## 离线与体积
 
 - 字体使 WASM 约 10MB；首次加载后由浏览器缓存。
 - `--release` 构建默认开启 `wasm-opt`（trunk 自动下载）。
+- WASM 更新后若文件名哈希没变，务必同步提升 `server/sw.js` 的 `CACHE`
+  版本号：Service Worker 对 `/static/` 是 cache-first，否则浏览器会继续用旧 WASM。
 - 若需减小体积，可用 `pyftsubset` 按实际用字裁剪
   `assets/DroidSansFallbackFull.ttf`；用户可输入任意中文名，裁剪范围需留足。

@@ -64,7 +64,7 @@ fn top_bar<'a>(app: &'a crate::app::App, title: &'a str, back: Option<crate::app
     let common = crate::copy::common(app.lang);
     let left: El<'a> = match back
     {
-        Some(nav) => iced::widget::button(iced::widget::text("<").size(18))
+        Some(nav) => iced::widget::button(iced::widget::text("←").size(20))
             .padding([6, 12])
             .style(crate::style::ghost_button)
             .on_press(crate::app::Message::Nav(nav))
@@ -125,7 +125,12 @@ fn bottom_nav<'a>(app: &'a crate::app::App) -> El<'a>
         (common.library, crate::app::Tab::Library),
         (common.settings, crate::app::Tab::Settings),
     ];
-    let mut row = iced::widget::row![].spacing(4).padding([6, 8]);
+    let mut row = iced::widget::row![].spacing(4).padding(iced::Padding {
+        top: 6.0,
+        right: 8.0,
+        bottom: 10.0,
+        left: 8.0,
+    });
     for (label, tab) in tabs
     {
         row = row.push(
@@ -181,6 +186,34 @@ pub fn card<'a>(content: impl Into<El<'a>>) -> El<'a>
         .into()
 }
 
+/// 把一组按钮排成等宽列，并在每列内居中。
+/// 用于卡片底部的操作区，避免按钮全挤在左侧。
+pub fn action_row<'a>(buttons: impl IntoIterator<Item = El<'a>>) -> El<'a>
+{
+    let mut row = iced::widget::row![]
+        .width(iced::Length::Fill)
+        .spacing(8)
+        .align_y(iced::Alignment::Center);
+    for button in buttons
+    {
+        row = row.push(
+            iced::widget::container(button)
+                .width(iced::Length::FillPortion(1))
+                .center_x(iced::Length::Fill),
+        );
+    }
+    row.into()
+}
+
+/// 单个紧凑按钮居中显示（不拉伸到整行宽）。
+pub fn centered<'a>(content: impl Into<El<'a>>) -> El<'a>
+{
+    iced::widget::container(content)
+        .width(iced::Length::Fill)
+        .center_x(iced::Length::Fill)
+        .into()
+}
+
 pub fn flat_card<'a>(content: impl Into<El<'a>>) -> El<'a>
 {
     iced::widget::container(content)
@@ -227,11 +260,30 @@ pub fn secondary_button<'a>(label: &'a str, message: crate::app::Message) -> El<
         .into()
 }
 
+pub fn wide_secondary_button<'a>(label: &'a str, message: crate::app::Message) -> El<'a>
+{
+    iced::widget::button(iced::widget::text(label).size(15))
+        .width(iced::Length::Fill)
+        .padding([10, 14])
+        .style(crate::style::secondary_button)
+        .on_press(message)
+        .into()
+}
+
 pub fn danger_button<'a>(label: &'a str, message: crate::app::Message) -> El<'a>
 {
     iced::widget::button(iced::widget::text(label).size(14))
         .padding([9, 12])
         .style(crate::style::danger_button)
+        .on_press(message)
+        .into()
+}
+
+pub fn danger_outline_button<'a>(label: &'a str, message: crate::app::Message) -> El<'a>
+{
+    iced::widget::button(iced::widget::text(label).size(14))
+        .padding([9, 12])
+        .style(crate::style::danger_outline_button)
         .on_press(message)
         .into()
 }
@@ -342,7 +394,7 @@ pub fn empty_card<'a>(title: &'a str, hint: &'a str, action: Option<El<'a>>) -> 
     .spacing(8);
     if let Some(action) = action
     {
-        content = content.push(action);
+        content = content.push(centered(action));
     }
     card(content)
 }
@@ -361,7 +413,7 @@ pub fn error_card<'a>(lang: crate::i18n::Lang, message: &'a str, retry: Option<E
     .spacing(6);
     if let Some(retry) = retry
     {
-        content = content.push(retry);
+        content = content.push(centered(retry));
     }
     card(content)
 }
@@ -375,6 +427,7 @@ pub fn loading<'a>(label: impl Into<String>) -> El<'a>
     )
     .width(iced::Length::Fill)
     .padding(24)
+    .center_x(iced::Length::Fill)
     .into()
 }
 

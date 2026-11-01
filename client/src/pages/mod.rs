@@ -1,3 +1,5 @@
+pub mod admin;
+pub mod backup;
 pub mod day;
 pub mod exercise_form;
 pub mod history;
