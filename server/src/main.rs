@@ -946,6 +946,11 @@ async fn home(
         r#"{head}
         <h1>训练记录系统</h1>
         <p>欢迎回来，{username}！</p>
+        <p>
+            <a href="/static/app/" style="display:inline-block;padding:10px 18px;background:#4d8dff;color:#fff;border-radius:10px;text-decoration:none;font-weight:600">
+                打开新版 iced WASM 客户端
+            </a>
+        </p>
         <h2>数据概览</h2>
         <p>进行中阶段：{phase_count} 个</p>
         <p>动作库：{exercise_count} 个</p>
